@@ -1,5 +1,4 @@
 // import Product from "../models/productModel.js";
-import mongoose from "mongoose";
 interface IgenerateRandomString {
   length?: number;
   type?: "number" | "string";
@@ -71,6 +70,6 @@ async function generateUniqueRandomString({
 // const randomString = generateRandomString();
 //   console.log(randomString); // Output: a random string of 6 characters
 export {
-  generateUniqueRandomString as generateUniqueCharacter,
-  generateRandomString,
+  generateRandomString, generateUniqueRandomString as generateUniqueCharacter
 };
+

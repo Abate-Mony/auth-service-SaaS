@@ -1,0 +1,1 @@
+export type USER_ROLES  = 'admin' | 'user'|"moderator";

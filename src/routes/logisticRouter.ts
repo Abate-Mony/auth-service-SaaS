@@ -5,6 +5,8 @@ import {
   deleteLogistic,
   getLogistics,
   getStaticLogistic,
+  updateLogistic,
+  showStats,
 } from "../controllers/logisticController.js";
 import {
   authenticateUser,
@@ -12,6 +14,7 @@ import {
 } from "../middleware/authMiddleware.js";
 import { USER_ROLES } from "../utils/constant.js";
 import upload from "../middleware/multerMiddleware.js";
+import { paginationMiddleware } from "../middleware/paginationMiddleware.js";
 router.post(
   "/new",
   authenticateUser,
@@ -19,7 +22,19 @@ router.post(
   upload.array("uploadedImages", 10),
   createLogistic
 );
-router.get("/all",authenticateUser, getLogistics);
+router.get("/all", authenticateUser, paginationMiddleware, getLogistics);
 router.get("/", getStaticLogistic);
-router.delete("/delete", authenticateUser, deleteLogistic);
+router.delete("/delete/:id", authenticateUser, deleteLogistic);
+router.patch(
+  "/update/:tracking_number",
+  authenticateUser,
+  authorizePermissions("user", "admin"),
+  updateLogistic
+);
+router.get(
+  "/stats",
+  authenticateUser,
+  authorizePermissions("admin", "user"),
+  showStats
+);
 export default router;

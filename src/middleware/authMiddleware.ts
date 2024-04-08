@@ -4,6 +4,7 @@ import {
   BadRequestError,
 } from "../errors/customErrors.js";
 import { verifyJWT } from "../utils/tokenUtils.js";
+import { USER_ROLES } from "../utils/types.js";
 
 export const authenticateUser = (req, res, next) => {
   const { token } = req?.cookies;
@@ -19,7 +20,7 @@ export const authenticateUser = (req, res, next) => {
   }
 };
 
-export const authorizePermissions = (...roles) => {
+export const authorizePermissions = (...roles: USER_ROLES[])  => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
       throw new UnauthorizedError("Unauthorized to access this route");

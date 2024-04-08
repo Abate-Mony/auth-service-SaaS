@@ -21,7 +21,6 @@ const filepath = path.resolve(__dirname, "../public/");
 console.log(`this is the file path here :`, filepath);
 app.use(
   cors({
- 
     origin: true,
     credentials: true,
   })
