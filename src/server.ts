@@ -60,7 +60,7 @@ const db = new Database({
     family: 4, // Use IPv4, skip trying IPv6
     // useFindAndModify: false
   },
-  uri: process.env.MONGO_URL,
+  uri: process.env.MONGO_PROD_URL,
 });
 const start = async (): Promise<void> => {
   try {
