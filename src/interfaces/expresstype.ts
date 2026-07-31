@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import mongoose from "mongoose";
 interface IReqUser {
-  userId: typeof mongoose.Types.ObjectId;
+  user_id: typeof mongoose.Types.ObjectId;
   role: string;
 }
 

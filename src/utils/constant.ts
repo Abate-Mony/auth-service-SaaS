@@ -8,7 +8,7 @@ interface IProductStates {
 }
 export const USER_ROLES: IUserTypes = {
   admin: "admin",
-  user: "user",
+  user: "worker",
   moderator: "moderator",
 };
 export const PRODUCT_STATES :IProductStates = {
@@ -16,3 +16,4 @@ export const PRODUCT_STATES :IProductStates = {
   recieve:"recieve",
   sent:"sent"
 };
+// lettinge

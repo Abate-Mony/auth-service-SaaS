@@ -5,7 +5,7 @@ export interface cookieObject {
   expires: Date;
   secure: boolean;
 }
-export const setCookies = (time: number = null): cookieObject => {
+export const setCookies = (time: number | null = 0): cookieObject => {
   const obj: cookieObject = {
     httpOnly: isProduction,
     expires: time ? new Date(Date.now() + time) : new Date(Date.now()),

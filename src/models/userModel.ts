@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+import mongoose, { InferSchemaType, Schema } from "mongoose";
 import { USER_ROLES } from "../utils/constant.js";
 import { IUser } from "../interfaces/models/user.js";
 import { string } from "zod";
@@ -7,27 +7,67 @@ export interface IUserModel extends mongoose.Document, IUser {
   getDefaultResultOrder(): void;
 }
 
-const UserSchema = new mongoose.Schema<IUserModel>({
-  name: {
-    required: [true, "please "],
-    type: String,
+
+const UserSchema = new Schema(
+  {
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
+    fullname: {
+      type: String,
+      required: true,
+    },
+    company: {
+      type: String,
+      required: true,
+    },
+
+
+    password: {
+      type: String,
+      required: true,
+      select: false,
+    },
+
+    role: {
+      type: String,
+      enum: ["admin", "manager", "worker"],
+      default: "worker",
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: function (this: any) {
+        return this.role === "worker";
+      },
+    },
+    isVerified: {
+      type: Boolean,
+      default: false,
+    },
+
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+
+    lastLogin: Date,
+
+    refreshToken: {
+      type: String,
+      select: false,
+    },
   },
-  email: String,
-  userId: Number,
-  password: String,
-  role: {
-    type: String,
-    enum: Object.values(USER_ROLES),
-    default: USER_ROLES.user,
-  },
-  avatar: String,
-  avatarPublicId: String,
-  isVerified: {
-    type: Boolean,
-    enum: [true, false],
-    default: "false",
-  },
-});
+  {
+    timestamps: true,
+  }
+);
+
+
 
 UserSchema.methods.toJSON = function () {
   let obj = this.toObject();
@@ -36,6 +76,5 @@ UserSchema.methods.toJSON = function () {
 };
 // UserSchema.pre("validate",async function(){
 
-//   this.userId=await generateUniqueCharacter({Model:this,type:"number"})
-// })
+export type User = InferSchemaType<typeof UserSchema>;
 export default mongoose.model("User", UserSchema);

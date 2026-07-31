@@ -7,12 +7,13 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc && node dist/server.js",
-    "startDev": "tsc -w && nodemon dist/server.js"
+    "dev": "concurrently \"tsc -w\" \"nodemon dist/server.js\""
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.11.17",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^1.37.3",
@@ -40,6 +41,7 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.18.2",
+    "google-auth-library": "^10.9.1",
     "zod": "^3.22.4"
   }
 }

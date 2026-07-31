@@ -1,3 +1,4 @@
+// @ts-ignore
 import "express-async-errors";
 import * as dotenv from "dotenv";
 dotenv.config({ path: "./.env" });
@@ -12,7 +13,8 @@ import Database from "./db/connections.js";
 import errorHandlerMiddleware from "./middleware/errorHandlerMiddleware.js";
 import cors from "cors";
 import { authenticateUser } from "./middleware/authMiddleware.js";
-import logisticRouter from "./routes/logisticRouter.js";
+import jobRouter from "./routes/jobRouter.js";
+import workerRouter from "./routes/workerRouter.js"
 const app = express();
 app.use(express.json());
 const v1 = "/api/v1";
@@ -41,9 +43,15 @@ app.use(
   )
 );
 app.use(`/api/v1/auth`, authRouter);
-app.use(`/api/v1/users`, authenticateUser, userRouter);
-app.use("/api/v1/logistics", logisticRouter);
-app.use("*", async (req, res) => {
+app.use(`/api/v1/users`,
+  authenticateUser,
+  userRouter);
+app.use("/api/v1/jobs", authenticateUser, jobRouter);
+app.use("/api/v1/workers",
+  authenticateUser,
+  workerRouter
+)
+app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });
 app.use(errorHandlerMiddleware);
@@ -60,7 +68,7 @@ const db = new Database({
     family: 4, // Use IPv4, skip trying IPv6
     // useFindAndModify: false
   },
-  uri: process.env.MONGO_PROD_URL,
+  uri: process.env.MONGO_URI as string,
 });
 const start = async (): Promise<void> => {
   try {
