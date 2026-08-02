@@ -12,7 +12,6 @@ export const authenticateUser = (req, res, next) => {
 
   try {
     const payload = verifyJWT(token);
-    console.log("in authmiddleware :",payload)
     const { user_id, role } = payload;
     req.user = { user_id, role };
     next();

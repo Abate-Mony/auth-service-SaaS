@@ -22,7 +22,6 @@ export const getAllUser: MiddlewareFn = async (
   res
 ): Promise<void> => {
   const { search } = req.query;
-  console.log("search : ", search)
   const queryObject: any = {};
   queryObject.createdBy = req.user.user_id
   if (search) {

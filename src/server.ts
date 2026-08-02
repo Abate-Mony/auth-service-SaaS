@@ -15,6 +15,7 @@ import cors from "cors";
 import { authenticateUser } from "./middleware/authMiddleware.js";
 import jobRouter from "./routes/jobRouter.js";
 import workerRouter from "./routes/workerRouter.js"
+import activityLogRouter from "./routes/activity_logs_router.js"
 const app = express();
 app.use(express.json());
 const v1 = "/api/v1";
@@ -51,6 +52,7 @@ app.use("/api/v1/workers",
   authenticateUser,
   workerRouter
 )
+app.use("/api/v1/activity-logs", authenticateUser, activityLogRouter);
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });

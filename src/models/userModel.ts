@@ -1,8 +1,5 @@
 import mongoose, { InferSchemaType, Schema } from "mongoose";
-import { USER_ROLES } from "../utils/constant.js";
 import { IUser } from "../interfaces/models/user.js";
-import { string } from "zod";
-import { generateUniqueCharacter } from "../utils/generateRandomNumbers.js";
 export interface IUserModel extends mongoose.Document, IUser {
   getDefaultResultOrder(): void;
 }
@@ -21,10 +18,13 @@ const UserSchema = new Schema(
       type: String,
       required: true,
     },
-    company: {
-      type: String,
-      required: true,
-    },
+    // company: {
+    //   type: mongoose.Schema.Types.ObjectId,
+    //   ref: "Company",
+    //   required: function (this: any) {
+    //     return this.role === "admin"; // only company creators/admins are required to have one on creation
+    //   },
+    // },
 
 
     password: {

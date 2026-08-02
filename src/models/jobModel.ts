@@ -1,157 +1,64 @@
-import mongoose from "mongoose";
+import mongoose, { InferSchemaType, Schema } from "mongoose";
 
-const JobSchema = new mongoose.Schema(
-    {
-        // company: {
-        //   type: mongoose.Schema.Types.ObjectId,
-        //   ref: "Company",
-        //   required: true,
-        //   index: true,
-        // },
-
-        description: {
-            type: String,
-            required: true,
-            trim: true,
-        },
-        title: {
-            type: String,
-            required: true,
-            trim: true,
-        },
-
-        company: {
-            type: String,
-            required: true,
-            trim: true,
-        },
-
-        client: {
-            type: String,
-            trim: true,
-            default: "",
-        },
-
-        location: {
-            type: String,
-            required: true,
-        },
-
-        address: {
-            type: String,
-            default: "",
-        },
-
-        date: {
-            type: Date,
-            required: true,
-        },
-
-        startTime: {
-            type: String,
-            required: true,
-        },
-
-        endTime: {
-            type: String,
-            required: true,
-        },
-
-        hours: {
-            type: String,
-            required: true,
-        },
-
-        workers: [
-            {
-                user: {
-                    type: mongoose.Schema.Types.ObjectId,
-                    ref: "User",
-                },
-                fullname: String,
-                email: String,
-                phone: String,
-            }
-        ],
-
-        // supervisor: {
-        //     user: {
-        //         type: mongoose.Schema.Types.ObjectId,
-        //         ref: "User",
-        //     },
-        //     fullname: String,
-        //     email: String,
-        //     phone: String,
-        // },
-
-        requiredWorkers: {
-            type: Number,
-            default: 1,
-        },
-
-        // filledWorkers: {
-        //     type: Number,
-        //     default: 0,
-        // },
-
-        // payRate: {
-        //     type: Number,
-        //     default: 0,
-        // },
-
-        // chargeRate: {
-        //     type: Number,
-        //     default: 0,
-        // },
-
-        status: {
-            type: String,
-            enum: [
-                "draft",
-                "published",
-                "assigned",
-                "in-progress",
-                "completed",
-                "cancelled",
-            ],
-            default: "draft",
-        },
-
-        // priority: {
-        //     type: String,
-        //     enum: ["low", "medium", "high", "urgent"],
-        //     default: "medium",
-        // },
-
-        notes: {
-            type: String,
-            default: "",
-        },
-
-        instructions: {
-            type: String,
-            default: "",
-        },
-
-        recurrence: {
-            type: String,
-            enum: ["none", "daily", "weekly", "monthly"],
-            default: "none",
-        },
-
-        isPublished: {
-            type: Boolean,
-            default: false,
-        },
-
-        createdBy: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "User",
-        },
+const JobSchema = new Schema(
+  {
+    company: {
+      type: String,
+      required: true,
     },
-    {
-        timestamps: true,
-    }
+    client: { type: String, trim: true, default: "" },
+    title: { type: String, required: true, trim: true },
+    description: { type: String, required: true, trim: true },
+    location: { type: String, required: true, trim: true },
+    address: { type: String, default: "", trim: true },
+    date: { type: Date, required: true, index: true },
+    startTime: { type: String, required: true },
+    endTime: { type: String, required: true },
+    hours: { type: Number, required: true, min: 0 },
+
+    status: {
+      type: String,
+      enum: ["draft", "published", "completed", "cancelled"],
+      default: "draft",
+      index: true,
+    },
+    priority: {
+      type: String,
+      enum: ["low", "medium", "high", "urgent"],
+      default: "medium",
+    },
+
+    requiredWorkers: { type: Number, default: 1, min: 1 },
+
+    supervisor: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+
+    payRate: { type: Number, default: 0, min: 0 },
+    chargeRate: { type: Number, default: 0, min: 0 },
+
+    recurringJob: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "RecurringJob",
+      default: null,
+      index: true,
+    },
+
+    notes: { type: String, default: "", trim: true },
+    instructions: { type: String, default: "", trim: true },
+    isPublished: { type: Boolean, default: false },
+
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
+  },
+  { timestamps: true }
 );
 
+JobSchema.index({ company: 1, date: 1, status: 1 });
+
+export type Job = InferSchemaType<typeof JobSchema>;
 export default mongoose.model("Job", JobSchema);

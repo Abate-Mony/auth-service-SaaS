@@ -12,7 +12,7 @@ router
   .route("/current-user")
   .get(authorizePermissions("user", "admin","moderator","worker"), currentUser);
 router.route("/allusers").get(authorizePermissions("admin","worker"), getAllUser);
-router.route("/users").get(getAllUser)
+router.route("/users").get(authorizePermissions("admin","manager"), getAllUser);
 router.route("/:userId").get(
 authorizePermissions("admin"),
 getStaticUser);

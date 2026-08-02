@@ -7,9 +7,10 @@ import {
 } from "../errors/customErrors.js";
 import { createJWT, sanitizeUser } from "../utils/tokenUtils.js";
 import { StatusCodes } from "http-status-codes";
-import { USER_ROLES } from "../utils/constant.js";
+import { USER_ROLES, UserroleTypes } from "../utils/constant.js";
 import { setCookies } from "../utils/cookieUtils.js";
 import { OAuth2Client } from "google-auth-library";
+import Company from "../models/company.js";
 
 
 
@@ -94,24 +95,54 @@ export const login: MiddlewareFn = async (req, res) => {
 };
 
 export const register: MiddlewareFn = async (req, res) => {
-  const isFirstAccount = (await User.countDocuments()) === 0;
-  req.body.role = isFirstAccount ? USER_ROLES.admin : USER_ROLES.user;
-  const { password, email }: { password: string; email: string } = req.body;
-  console.log("this is req.body", req.body)
+  console.log("this is the register route body :", req.body)
+  //    name: 'Ako Bate',
+  // [1]   email: 'akobateemmanuel@gmail.com',
+  // [1]   password: 'akobateemmanuel@gmail.com',
+  // [1]   confirmPassword: 'akobateemmanuel@gmail.com',
+  // [1]   companyName: 'company name ',
+  // [1]   businessType: 'Cleaning Company',
+  // [1]   companySize: '1–10 workers',
+  // [1]   website: 'example.com',
+  // [1]   phone: '99999999999',
+  // [1]   country: 'United Kingdom'
+
+  // return res.status(StatusCodes.OK).json({ msg: "register route is working" });
+  // req.body.role = isFirstAccount ? USER_ROLES.admin : USER_ROLES.user;
+  const { password, email, name }: { password: string; email: string; role: UserroleTypes; name: string } = req.body;
+  req.body.fullname = name.trim();
+  // if (!["admin", "moderator", "worker"].includes(role)) {
+  //   throw new BadRequestError(`Invalid role: ${role}. Must be one of: admin, user, moderator, worker.`);
+  // }
+  req.body.role = "admin"//role when creating an account from the register route, it will always be an admin account. Other accounts can be created by the admin account.
+  // console.log("this is req.body", req.body)
   //   prevent user from creating multi account with the same email
   const isUserAlreadyExist = await User.findOne({ email });
   if (isUserAlreadyExist)
     throw new BadRequestError(`user already exist with email ${email}`);
-  console.log("password : ", password)
   const hashedPassword = await hashPassword(password);
   req.body.password = hashedPassword;
-
-  // console.log("this the user id", userId);
-
 
   const user = await User.create({
     ...req.body,
   });
+  // creating company and assigning the company id to the user is now handled in the companyController.ts file, so we don't need to do it here anymore. The register route will only create a user account, and the company creation will be handled separately.
+  const company = await Company.create({
+    name: req.body.companyName,
+    type: req.body.businessType,
+    size: req.body.companySize,
+    website: req.body.website || "",
+    country: req.body.country || "",
+    phone: req.body.phone || "",
+    owner: user._id, // we will update this later after the user is created
+    isActive: true,
+    businessType: req.body.businessType,
+
+  });
+  if (!company) {
+    await user.deleteOne({ _id: user._id });
+    throw new BadRequestError("company creation failed");
+  }
   const token = createJWT({
     user_id: String(user._id),
     role: user.role,
