@@ -51,7 +51,7 @@ export const getAllUser: MiddlewareFn = async (
   res.status(200).json({ users, numberOfPage, limit, currentPage: page, nHits: totalUsers });
 };
 export const getStaticUser: MiddlewareFn = async (req, res) => {
-  const user_id = req.params.user_id;
+  const user_id = req.params.userId;
   const user = await userModel.findOne({ _id: user_id });
   if (!user)
     throw new UnauthenticatedError(`

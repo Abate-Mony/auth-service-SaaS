@@ -157,16 +157,24 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     if (!allowedStatuses.includes(status)) {
         throw new BadRequestError("Invalid status");
     }
+    //PREVENT USER FROM STARTING A JOB IF THERE ARE ALREADY IN AN ACTIVE JOB 
 
-    const assignment = await JobAssignment.findOne({
-        job: id,
+    let assignment = await JobAssignment.findOne({
         worker: req.user.user_id,
+        job: id,
+
     });
 
     if (!assignment) {
         throw new NotFoundError("You are not assigned to this job.");
     }
-
+    const all_assigment_for_user = await JobAssignment.find({
+        worker: req.user.user_id
+    })
+    if (all_assigment_for_user.length && all_assigment_for_user.map(as => as.status).includes("in-progress") && status!=="completed") {
+        throw new BadRequestError("You already have an active Job please complete the job to start another one ")
+    }
+    // if(!assignment.ma)
     switch (status) {
         case "accepted":
             if (assignment.status !== "pending") {

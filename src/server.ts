@@ -43,11 +43,16 @@ app.use(
     filepath
   )
 );
+// DONE WITH AUTH DOCUMENTATION ON POSTMAN
 app.use(`/api/v1/auth`, authRouter);
+// DONE WITH USERS DOCUMENTATION ON POSTMAN
 app.use(`/api/v1/users`,
   authenticateUser,
   userRouter);
+// DONE WITH USERS DOCUMENTATION ON POSTMAN
 app.use("/api/v1/jobs", authenticateUser, jobRouter);
+// DONE WITH WORKERS DOCUMENTATION ON POSTMAN
+
 app.use("/api/v1/workers",
   authenticateUser,
   workerRouter
