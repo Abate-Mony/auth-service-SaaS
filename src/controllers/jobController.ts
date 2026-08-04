@@ -1,85 +1,217 @@
-import { StatusCodes } from "http-status-codes";
-import Job from "../models/jobModel.js";
-import { MiddlewareFn } from "../interfaces/expresstype.js";
-import userModel from "../models/userModel.js";
-import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
-import JobAssignment from "../models/JobAssignment.js";
-import Company from "../models/company.js";
 import dayjs from "dayjs";
+import { StatusCodes } from "http-status-codes";
+import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
+import { MiddlewareFn, getReqUser } from "../interfaces/expresstype.js";
+import JobAssignment from "../models/JobAssignment.js";
+import Job from "../models/jobModel.js";
+import recurringJobModel from "../models/recurringJobModel.js";
+import userModel from "../models/userModel.js";
+import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity } from "../utils/logActivity.js";
+import mongoose from "mongoose";
 
-export const createJob: MiddlewareFn = async (
-    req,
-    res
-): Promise<void> => {
+const jobDuration = (startTime: string, endTime: string) => {
+    const today = dayjs().format("YYYY-MM-DD");
+    const startTimeDate = dayjs(`${today} ${startTime}`);
+    let endTimeDate = dayjs(`${today} ${endTime}`);
 
-
-    const { startTime, endTime } = req.body
-    if (!startTime || !endTime) throw new BadRequestError("start or end time required")
-    let workers: any[] = JSON.parse(req.body.workers)
-    console.log("data from the body :", workers)
-    workers = workers.map(w => w.email)
-
-    const realWorkers = await userModel.find({
-        email: { $in: workers },
-    });
-    const formattedWorkers = realWorkers.map(worker => ({
-        user: worker._id,
-        fullname: worker.fullname,
-        email: worker.email,
-        // phone: worker.phone ?? "",
-    }));
-
-    const [sh, sm] = startTime.split(':').map(Number)
-    const [eh, em] = endTime.split(':').map(Number)
-    const mins = (eh * 60 + em) - (sh * 60 + sm)
-    const h = Math.floor(Math.abs(mins) / 60)
-    const m = Math.abs(mins) % 60
-    //     const today = dayjs().format("YYYY-MM-DD");
-
-    //   const scheduledStart = dayjs(`${today} ${startTime}`);
-    let companId;
-    let isAdmin: any = req.user.role === "admin";
-    let company;
-    if (isAdmin) {
-        company = await Company.findOne({ owner: req.user.user_id });
-    } else {
-        const currentUser = await userModel.findOne({ _id: req.user.user_id });
-        const createdByUser = await userModel.findOne({ _id: currentUser?.createdBy });
-        if (!createdByUser) throw new NotFoundError("could not find the user who created this worker")
-        company = await Company.findOne({ owner: createdByUser._id });
+    // Overnight shift: end time is same as or before start time on the same day
+    // means it actually rolls into the next calendar day.
+    if (!endTimeDate.isAfter(startTimeDate)) {
+        endTimeDate = endTimeDate.add(1, "day");
     }
 
+    const hours = endTimeDate.diff(startTimeDate, "hours", true);
+    return hours;
+};
 
-    const job = await Job.create({
-        ...req.body,
-        hours: m,
-        createdBy: req.user.user_id,
+
+
+export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
+  const {
+    startTime,
+    endTime,
+    isRecurring,
+    frequency,
+    interval = 1,
+    daysOfWeek,
+    endDate,
+    generateAheadDays = 30,
+  } = req.body;
+
+  if (!startTime || !endTime) throw new BadRequestError("start or end time required");
+  if (!req.body.date) throw new BadRequestError("A job date is required");
+
+  const currentUserId = getReqUser(req).user_id;
+
+  // ── Resolve and validate assigned workers ────────────────────────────────
+  let workers: any[] = [];
+  if (req.body.workers) {
+    try {
+      workers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
+    } catch {
+      throw new BadRequestError("Invalid workers payload");
+    }
+  }
+  const workerEmails = workers.map(w => w.email).filter(Boolean);
+
+  const realWorkers = workerEmails.length
+    ? await userModel.find({ email: { $in: workerEmails } })
+    : [];
+
+  const foundEmails = new Set(realWorkers.map(u => u.email));
+  const missingEmails = workerEmails.filter(e => !foundEmails.has(e));
+  if (missingEmails.length) {
+    throw new BadRequestError(`No account found for: ${missingEmails.join(", ")}`);
+  }
+
+  const formattedWorkers = realWorkers.map(worker => ({
+    user: worker._id,
+    fullname: worker.fullname,
+    email: worker.email,
+  }));
+
+  const hours = jobDuration(startTime, endTime);
+
+  const baseJobFields = {
+    ...req.body,
+    startTime,
+    endTime,
+    hours,
+    createdBy: currentUserId,
+    client: req.body.client,
+    company: req.body.company,
+  };
+
+  // ── Recurring job ──────────────────────────────────────────────────────
+  if (isRecurring) {
+    if (!["daily", "weekly", "monthly"].includes(frequency)) {
+      throw new BadRequestError("Invalid frequency");
+    }
+
+    const intervalNum = Number(interval);
+    if (!Number.isInteger(intervalNum) || intervalNum < 1) {
+      throw new BadRequestError("interval must be a positive whole number");
+    }
+
+    let normalizedDaysOfWeek: number[] | undefined;
+    if (frequency === "weekly") {
+      if (!Array.isArray(daysOfWeek) || !daysOfWeek.length) {
+        throw new BadRequestError("daysOfWeek is required for weekly recurrence");
+      }
+      normalizedDaysOfWeek = daysOfWeek.map(Number);
+      if (normalizedDaysOfWeek.some(d => Number.isNaN(d) || d < 0 || d > 6)) {
+        throw new BadRequestError("daysOfWeek values must be between 0 and 6");
+      }
+    }
+
+    if (endDate && new Date(endDate) < new Date(req.body.date)) {
+      throw new BadRequestError("endDate cannot be before the start date");
+    }
+
+    let templateJob;
+    let recurringJob;
+    let generatedJobs: any[] = [];
+
+    try {
+      templateJob = await Job.create({
+        ...baseJobFields,
         status: "published",
-        client: req.body.company,
-        company: req.body.company,
-    });
-    const assignments = formattedWorkers.map(worker => ({
-        job: job._id,
-        worker: worker.user,
-        createdBy: req.user.user_id,
-        fullname: worker.fullname,
-        email: worker.email
-    }));
+        isPublished: false,
+      });
 
-    await logActivity({ job: job._id, type: "job_created", actor: req.user.user_id });
-    await logActivity({
-        job: job._id,
-        type: "workers_assigned",
-        actor: req.user.user_id,
-        workers: formattedWorkers.map(w => w.user),
-    });
-    await JobAssignment.insertMany(assignments);
+      recurringJob = await recurringJobModel.create({
+        templateJob: templateJob._id,
+        frequency,
+        interval: intervalNum,
+        daysOfWeek: normalizedDaysOfWeek,
+        startDate: req.body.date,
+        endDate,
+        createdBy: currentUserId,
+      });
+
+      const generatedUntil = new Date(Date.now() + generateAheadDays * 24 * 60 * 60 * 1000);
+      generatedJobs = await generateOccurrences(recurringJob, generatedUntil);
+
+      if (formattedWorkers.length && generatedJobs.length) {
+        const allAssignments = generatedJobs.flatMap(job =>
+          formattedWorkers.map(worker => ({
+            job: job._id,
+            worker: worker.user,
+            createdBy: currentUserId,
+            fullname: worker.fullname,
+            email: worker.email,
+          }))
+        );
+        await JobAssignment.insertMany(allAssignments);
+      }
+    } catch (err) {
+      // Roll back whatever succeeded before the failure, in reverse order
+      if (generatedJobs.length) {
+        await Job.deleteMany({ _id: { $in: generatedJobs.map(j => j._id) } });
+      }
+      if (recurringJob) {
+        await recurringJobModel.deleteOne({ _id: recurringJob._id });
+      }
+      if (templateJob) {
+        await Job.deleteOne({ _id: templateJob._id });
+      }
+      throw err;
+    }
+
+    await logActivity({ job: templateJob._id, type: "job_created", actor: currentUserId });
+    if (formattedWorkers.length && generatedJobs.length) {
+      await Promise.all(
+        generatedJobs.map(job =>
+          logActivity({
+            job: job._id,
+            type: "workers_assigned",
+            actor: currentUserId,
+            workers: formattedWorkers.map(w => w.user),
+          })
+        )
+      );
+    }
 
     res.status(StatusCodes.CREATED).json({
-        success: true,
-        job: [],
+      success: true,
+      recurringJob,
+      templateJob,
+      generatedJobs,
     });
+    return;
+  }
+
+  // ── One-off job ──────────────────────────────────────────────────────────
+  const job = await Job.create({
+    ...baseJobFields,
+    status: "published",
+  });
+
+  const assignments = formattedWorkers.map(worker => ({
+    job: job._id,
+    worker: worker.user,
+    createdBy: currentUserId,
+    fullname: worker.fullname,
+    email: worker.email,
+  }));
+
+  await logActivity({ job: job._id, type: "job_created", actor: currentUserId });
+
+  if (assignments.length) {
+    await logActivity({
+      job: job._id,
+      type: "workers_assigned",
+      actor: currentUserId,
+      workers: formattedWorkers.map(w => w.user),
+    });
+    await JobAssignment.insertMany(assignments);
+  }
+
+  res.status(StatusCodes.CREATED).json({
+    success: true,
+    job,
+  });
 };
 export const getAllJobs: MiddlewareFn = async (
     req,
@@ -90,12 +222,12 @@ export const getAllJobs: MiddlewareFn = async (
         status,
         priority,
         sort = "newest",
-        page = "1", limit = 10,
+        page = "1", limit: limitQuery = "100",
     } = req.query;
+    const limit = Number(limitQuery) || 10;
 
     const query: Record<string, unknown> = {
-        // companyId: req.user.companyId,.
-        // createdBy: req.user.user_id
+        isDeleted: false
     };
 
     if (search) {
@@ -130,7 +262,7 @@ export const getAllJobs: MiddlewareFn = async (
         .limit(limit);
 
     const assignments = await JobAssignment.find({
-        createdBy: req.user.user_id,
+        createdBy: getReqUser(req).user_id,
         job: {
             $in: jobs.map(job => job._id),
         },
@@ -138,7 +270,7 @@ export const getAllJobs: MiddlewareFn = async (
 
 
     const assignmentMap = assignments.reduce((acc, assignment) => {
-        console.log("assignment :", assignment,)
+        // console.log("assignment :", assignment,)
         const key = assignment.job.toString();
 
         if (!acc[key]) {
@@ -153,7 +285,7 @@ export const getAllJobs: MiddlewareFn = async (
         ...job.toObject(),
         workers: assignmentMap[job._id.toString()] ?? [],
     }));
-    console.log("this is the result : ", result.map(r => r.workers))
+    // console.log("this is the result : ", result.map(r => r.workers))
     const totalJobs = await Job.countDocuments(query);
     res.status(StatusCodes.OK).json({
         success: true,
@@ -169,16 +301,14 @@ export const getJob: MiddlewareFn = async (
 ): Promise<void> => {
     const job = await Job.findOne({
         _id: req.params.id,
-        // companyId: req.user.companyId,
+        isDeleted: false
+        // companyId: getReqUser(req).companyId,
     })
     const assignment = await JobAssignment.find({
         job: req.params.id,
     }).populate("worker", "fullname email");
-    const assignment_without_query = await JobAssignment.find({
-        job: req.params.id,
-    }).populate("worker", "fullname email");
-    console.log("assignment with query :", assignment)
-    console.log("assignment without query :", assignment_without_query)
+
+
     if (!job) throw new NotFoundError("job not found ")
 
     res.status(StatusCodes.OK).json({
@@ -216,7 +346,6 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         job: req.params.id,
     });
 
-    console.log("current assignments :", currentAssignments);
 
     const selectedWorkerIds = selectedUsers.map((u) => u._id.toString());
 
@@ -252,23 +381,13 @@ export const updateJob: MiddlewareFn = async (req, res) => {
             usersToAssign.map((user) => ({
                 job: req.params.id,
                 worker: user._id,
-                createdBy: req.user.user_id,
+                createdBy: getReqUser(req).user_id,
                 fullname: user.fullname,
                 email: user.email,
             }))
         );
     }
 
-    /**
-     * Calculate hours
-     */
-    const [sh, sm] = startTime.split(":").map(Number);
-    const [eh, em] = endTime.split(":").map(Number);
-
-    const totalMinutes = eh * 60 + em - (sh * 60 + sm);
-
-    const hours = Math.floor(Math.abs(totalMinutes) / 60);
-    const minutes = Math.abs(totalMinutes) % 60;
 
     /**
      * Update job
@@ -278,7 +397,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         {
             ...req.body,
             client: "client",
-            hours: minutes,
+            hours: jobDuration(startTime, endTime),
         },
         {
             new: true,
@@ -292,7 +411,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     await logActivity({
         job: job._id,
         type: "workers_assigned",
-        actor: req.user.user_id,
+        actor: getReqUser(req).user_id,
         workers: usersToAssign.map((u) => u._id),
     });
     /**
@@ -308,19 +427,18 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         assignments,
     });
 };
-export const deleteJob: MiddlewareFn = async (
-    req,
-    res
-): Promise<void> => {
-    const job = await Job.findOneAndDelete({
-        _id: req.params.id,
-        companyId: req.user.companyId,
-    });
+export const deleteJob: MiddlewareFn = async (req, res): Promise<void> => {
+
+    const job = await Job.findOneAndUpdate(
+        { _id: req.params.id, isDeleted: false }, // don't "delete" an already-deleted job
+        { isDeleted: true },
+        { new: true }
+    );
 
     if (!job) {
-        throw new BadRequestError("couldnot find job with " + req.params.id,)
+        throw new BadRequestError(`Could not find job with id ${req.params.id}`);
     }
-
+    // await logActivity("")
     res.status(StatusCodes.OK).json({
         success: true,
         message: "Job deleted successfully",

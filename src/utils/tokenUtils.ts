@@ -1,16 +1,15 @@
-import jwt, { Secret } from "jsonwebtoken";
+import jwt, { Secret, SignOptions } from "jsonwebtoken";
 import mongoose from "mongoose";
 // import { IUser } from "../interfaces/models/user.js";
 
 interface Payload {
-  // userId: typeof mongoose.Types.ObjectId;
-  user_id: number | typeof mongoose.Types.ObjectId | string ;
+  user_id: string | mongoose.Types.ObjectId;
   role: string;
 }
 export const createJWT = (payload: Payload): string => {
   const token = jwt.sign(payload, process.env.JWT_SECRET as Secret, {
     expiresIn: process.env.JWT_EXPIRES_IN,
-  });
+  } as SignOptions);
   return token;
 };
 

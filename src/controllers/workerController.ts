@@ -1,21 +1,22 @@
 import { StatusCodes } from "http-status-codes";
 import mongoose from "mongoose";
 import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
-import { MiddlewareFn } from "../interfaces/expresstype.js";
+import { getReqUser, MiddlewareFn } from "../interfaces/expresstype.js";
 import JobAssignment from "../models/JobAssignment.js";
 import jobModel from "../models/jobModel.js";
 import userModel from "../models/userModel.js";
 import { hashPassword } from "../utils/passwordUtils.js";
 import { logActivity } from "../utils/logActivity.js";
+import recurringJobModel from "../models/recurringJobModel.js";
 
 export const createWorker: MiddlewareFn = async (req, res) => {
     const { fullname, email, password, role } = req.body;
     const currentUser = req.user;
 
     if (!currentUser) {
-        return res.status(StatusCodes.UNAUTHORIZED).json({ message: "Unauthorized" });
+        res.status(StatusCodes.UNAUTHORIZED).json({ message: "Unauthorized" });
+        return;
     }
-    console.log("current user role :", role)
     if (!["admin", "manager"].includes(currentUser.role)) {
         throw new BadRequestError("Only admins or managers can create workers.");
     }
@@ -26,7 +27,8 @@ export const createWorker: MiddlewareFn = async (req, res) => {
 
     const existingUser = await userModel.findOne({ email: email.toLowerCase() });
     if (existingUser) {
-        return res.status(StatusCodes.BAD_REQUEST).json({ message: "Email already exists." });
+        res.status(StatusCodes.BAD_REQUEST).json({ message: "Email already exists." });
+        return;
     }
 
     const hashedPassword = await hashPassword(password);
@@ -37,7 +39,7 @@ export const createWorker: MiddlewareFn = async (req, res) => {
         password: hashedPassword,
         role: role,
         createdBy: currentUser.user_id,
-        company: currentUser.company ?? "6a6ec368b301e127831156a3", // pulled straight from req.user — no extra query needed
+        // company: currentUser.company ?? "6a6ec368b301e127831156a3", // pulled straight from req.user — no extra query needed
     });
 
     res.status(StatusCodes.CREATED).json({
@@ -171,7 +173,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     const all_assigment_for_user = await JobAssignment.find({
         worker: req.user.user_id
     })
-    if (all_assigment_for_user.length && all_assigment_for_user.map(as => as.status).includes("in-progress") && status!=="completed") {
+    if (all_assigment_for_user.length && all_assigment_for_user.map(as => as.status).includes("in-progress") && status !== "completed") {
         throw new BadRequestError("You already have an active Job please complete the job to start another one ")
     }
     // if(!assignment.ma)
@@ -247,7 +249,27 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
         assignment,
     });
 };
+export const declineRecurringSeries: MiddlewareFn = async (req, res) => {
+    const { id: recurringJobId } = req.params;
+    const workerId = getReqUser(req).user_id;
 
+    await recurringJobModel.updateOne(
+        { _id: recurringJobId },
+        { $pull: { defaultWorkers: workerId } }
+    );
+
+    const futureJobIds = await jobModel.find({
+        recurringJob: recurringJobId,
+        date: { $gte: new Date() },
+    }).distinct("_id");
+
+    await JobAssignment.updateMany(
+        { job: { $in: futureJobIds }, worker: workerId, status: "pending" },
+        { status: "declined", declinedAt: new Date() }
+    );
+
+    res.status(StatusCodes.OK).json({ success: true });
+};
 // Thin wrapper so there's one route for check-in but no duplicated business logic
 export const checkInJob: MiddlewareFn = async (req, res) => {
     req.body.status = "in-progress";

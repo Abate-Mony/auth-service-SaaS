@@ -144,7 +144,7 @@ export const register: MiddlewareFn = async (req, res) => {
     throw new BadRequestError("company creation failed");
   }
   const token = createJWT({
-    user_id: String(user._id),
+    user_id: user._id,
     role: user.role,
   });
   const oneDay = 1000 * 60 * 60 * 24;

@@ -1,12 +1,12 @@
 // @ts-ignore
 import { StatusCodes } from "http-status-codes";
 import { UnauthenticatedError } from "../errors/customErrors.js";
-import { MiddlewareFn } from "../interfaces/expresstype.js";
+import { MiddlewareFn, getReqUser } from "../interfaces/expresstype.js";
 import userModel from "../models/userModel.js";
 import { sanitizeUser } from "../utils/tokenUtils.js";
 
 export const currentUser: MiddlewareFn = async (req, res) => {
-  const { user_id, role } = req?.user;
+  const { user_id } = getReqUser(req);
   console.log("current user _id :", req.user)
   const user = await userModel.findOne({ _id: user_id });
   if (!user) throw new UnauthenticatedError(`login again `);

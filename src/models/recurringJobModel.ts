@@ -1,14 +1,8 @@
+// models/RecurringJob.ts
 import mongoose, { InferSchemaType, Schema } from "mongoose";
 
 const RecurringJobSchema = new Schema(
   {
-    company: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Company",
-      required: true,
-      index: true,
-    },
-
     // The job used as a template — cloned into new Job docs on each occurrence
     templateJob: {
       type: mongoose.Schema.Types.ObjectId,
@@ -66,7 +60,7 @@ const RecurringJobSchema = new Schema(
   }
 );
 
-RecurringJobSchema.index({ company: 1, active: 1 });
+RecurringJobSchema.index({ active: 1 });
 
 RecurringJobSchema.pre("validate", function (next) {
   if (this.frequency === "weekly" && (!this.daysOfWeek || this.daysOfWeek.length === 0)) {

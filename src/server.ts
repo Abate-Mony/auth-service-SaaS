@@ -11,14 +11,26 @@ import authRouter from "./routes/authRouter.js";
 import userRouter from "./routes/userRouter.js";
 import Database from "./db/connections.js";
 import errorHandlerMiddleware from "./middleware/errorHandlerMiddleware.js";
+import calendarRouter from "./routes/calendarRouter.js"
 import cors from "cors";
 import { authenticateUser } from "./middleware/authMiddleware.js";
 import jobRouter from "./routes/jobRouter.js";
 import workerRouter from "./routes/workerRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
+import cron from "node-cron";
+import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGeneration.js";
+
 const app = express();
 app.use(express.json());
-const v1 = "/api/v1";
+// cron.schedule("0 1 * * *", () => { // 1am daily
+//   // runDailyOccurrenceGeneration();
+// });
+// let sec=0
+cron.schedule("*/1 * * * * *", () => {
+  // ++sec
+  // console.log("Runs every 1 seconds",sec);
+  runDailyOccurrenceGeneration();
+});
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const filepath = path.resolve(__dirname, "../public/");
 console.log(`this is the file path here :`, filepath);
@@ -58,6 +70,7 @@ app.use("/api/v1/workers",
   workerRouter
 )
 app.use("/api/v1/activity-logs", authenticateUser, activityLogRouter);
+app.use("/api/v1/calendar", calendarRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });
