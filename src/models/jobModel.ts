@@ -63,5 +63,14 @@ const JobSchema = new Schema(
 
 JobSchema.index({ company: 1, date: 1, status: 1 });
 
+// Hard backstop against duplicate occurrences for the same recurring
+// schedule + date (belt-and-braces alongside the app-level dedupe in
+// generateOccurrences.ts). Partial so one-off jobs (recurringJob: null)
+// sharing a date don't collide.
+JobSchema.index(
+    { recurringJob: 1, date: 1 },
+    { unique: true, partialFilterExpression: { recurringJob: { $type: "objectId" } } }
+);
+
 export type Job = InferSchemaType<typeof JobSchema>;
 export default mongoose.model("Job", JobSchema);

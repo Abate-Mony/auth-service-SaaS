@@ -22,15 +22,8 @@ import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGenerati
 
 const app = express();
 app.use(express.json());
-// cron.schedule("0 1 * * *", () => { // 1am daily
-//   // runDailyOccurrenceGeneration();
-// });
-// let sec=0
-cron.schedule("*/1 * * * * *", () => {
-  // ++sec
-  // console.log("Runs every 1 seconds",sec);
-  runDailyOccurrenceGeneration();
-});
+// TEMP: every-second interval to stress-test generateOccurrences' race-condition fix. Revert to "0 1 * * *" before committing/deploying.
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const filepath = path.resolve(__dirname, "../public/");
 console.log(`this is the file path here :`, filepath);
@@ -92,10 +85,14 @@ const db = new Database({
 });
 const start = async (): Promise<void> => {
   try {
+
     app.listen(port, () => {
       console.log(`app is running on port ${port} `);
     });
     await db.connect();
+    cron.schedule("0 1 * * *", () => {
+      runDailyOccurrenceGeneration();
+    });
   } catch (err) {
     console.log(err);
   }

@@ -28,190 +28,195 @@ const jobDuration = (startTime: string, endTime: string) => {
 
 
 export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
-  const {
-    startTime,
-    endTime,
-    isRecurring,
-    frequency,
-    interval = 1,
-    daysOfWeek,
-    endDate,
-    generateAheadDays = 30,
-  } = req.body;
+    const {
+        startTime,
+        endTime,
+        isRecurring,
+        frequency,
+        interval = 1,
+        daysOfWeek,
+        endDate,
+        generateAheadDays = 30,
+    } = req.body;
 
-  if (!startTime || !endTime) throw new BadRequestError("start or end time required");
-  if (!req.body.date) throw new BadRequestError("A job date is required");
-
-  const currentUserId = getReqUser(req).user_id;
-
-  // ── Resolve and validate assigned workers ────────────────────────────────
-  let workers: any[] = [];
-  if (req.body.workers) {
-    try {
-      workers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
-    } catch {
-      throw new BadRequestError("Invalid workers payload");
-    }
-  }
-  const workerEmails = workers.map(w => w.email).filter(Boolean);
-
-  const realWorkers = workerEmails.length
-    ? await userModel.find({ email: { $in: workerEmails } })
-    : [];
-
-  const foundEmails = new Set(realWorkers.map(u => u.email));
-  const missingEmails = workerEmails.filter(e => !foundEmails.has(e));
-  if (missingEmails.length) {
-    throw new BadRequestError(`No account found for: ${missingEmails.join(", ")}`);
-  }
-
-  const formattedWorkers = realWorkers.map(worker => ({
-    user: worker._id,
-    fullname: worker.fullname,
-    email: worker.email,
-  }));
-
-  const hours = jobDuration(startTime, endTime);
-
-  const baseJobFields = {
-    ...req.body,
-    startTime,
-    endTime,
-    hours,
-    createdBy: currentUserId,
-    client: req.body.client,
-    company: req.body.company,
-  };
-
-  // ── Recurring job ──────────────────────────────────────────────────────
-  if (isRecurring) {
-    if (!["daily", "weekly", "monthly"].includes(frequency)) {
-      throw new BadRequestError("Invalid frequency");
+    if (!startTime || !endTime) throw new BadRequestError("start or end time required");
+    if (!req.body.date) throw new BadRequestError("A job date is required");
+    if (dayjs(req.body.date).isBefore(dayjs().startOf("day"))) {
+        throw new BadRequestError("Job date cannot be in the past");
     }
 
-    const intervalNum = Number(interval);
-    if (!Number.isInteger(intervalNum) || intervalNum < 1) {
-      throw new BadRequestError("interval must be a positive whole number");
+    const currentUserId = getReqUser(req).user_id;
+
+    // ── Resolve and validate assigned workers ────────────────────────────────
+    let workers: any[] = [];
+    if (req.body.workers) {
+        try {
+            workers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
+        } catch {
+            throw new BadRequestError("Invalid workers payload");
+        }
+    }
+    const workerEmails = workers.map(w => w.email).filter(Boolean);
+
+    const realWorkers = workerEmails.length
+        ? await userModel.find({ email: { $in: workerEmails } })
+        : [];
+
+    const foundEmails = new Set(realWorkers.map(u => u.email));
+    const missingEmails = workerEmails.filter(e => !foundEmails.has(e));
+    if (missingEmails.length) {
+        throw new BadRequestError(`No account found for: ${missingEmails.join(", ")}`);
     }
 
-    let normalizedDaysOfWeek: number[] | undefined;
-    if (frequency === "weekly") {
-      if (!Array.isArray(daysOfWeek) || !daysOfWeek.length) {
-        throw new BadRequestError("daysOfWeek is required for weekly recurrence");
-      }
-      normalizedDaysOfWeek = daysOfWeek.map(Number);
-      if (normalizedDaysOfWeek.some(d => Number.isNaN(d) || d < 0 || d > 6)) {
-        throw new BadRequestError("daysOfWeek values must be between 0 and 6");
-      }
+    const formattedWorkers = realWorkers.map(worker => ({
+        user: worker._id,
+        fullname: worker.fullname,
+        email: worker.email,
+    }));
+
+    const hours = jobDuration(startTime, endTime);
+
+    const baseJobFields = {
+        ...req.body,
+        startTime,
+        endTime,
+        hours,
+        createdBy: currentUserId,
+        client: req.body.client,
+        company: req.body.company,
+    };
+
+    // ── Recurring job ──────────────────────────────────────────────────────
+    if (isRecurring) {
+        if (!["daily", "weekly", "monthly"].includes(frequency)) {
+            throw new BadRequestError("Invalid frequency");
+        }
+
+        const intervalNum = Number(interval);
+        if (!Number.isInteger(intervalNum) || intervalNum < 1) {
+            throw new BadRequestError("interval must be a positive whole number");
+        }
+
+        let normalizedDaysOfWeek: number[] | undefined;
+        if (frequency === "weekly") {
+            if (!Array.isArray(daysOfWeek) || !daysOfWeek.length) {
+                throw new BadRequestError("daysOfWeek is required for weekly recurrence");
+            }
+            normalizedDaysOfWeek = daysOfWeek.map(Number);
+            if (normalizedDaysOfWeek.some(d => Number.isNaN(d) || d < 0 || d > 6)) {
+                throw new BadRequestError("daysOfWeek values must be between 0 and 6");
+            }
+        }
+
+        if (endDate && new Date(endDate) < new Date(req.body.date)) {
+            throw new BadRequestError("endDate cannot be before the start date");
+        }
+
+        let templateJob;
+        let recurringJob;
+        let generatedJobs: any[] = [];
+        console.log("testing creating job : ", req.body)
+        // throw new BadRequestError("testing here ")
+        // testing here 
+        try {
+            templateJob = await Job.create({
+                ...baseJobFields,
+                status: "published",
+                isPublished: false,
+            });
+
+            recurringJob = await recurringJobModel.create({
+                templateJob: templateJob._id,
+                frequency,
+                interval: intervalNum,
+                daysOfWeek: normalizedDaysOfWeek,
+                startDate: req.body.date,
+                endDate,
+                createdBy: currentUserId,
+            });
+            // i think generate until #todo
+            const generatedUntil = new Date(Date.now() + generateAheadDays * 24 * 60 * 60 * 1000);
+            generatedJobs = await generateOccurrences(recurringJob, generatedUntil);
+
+            if (formattedWorkers.length && generatedJobs.length) {
+                const allAssignments = generatedJobs.flatMap(job =>
+                    formattedWorkers.map(worker => ({
+                        job: job._id,
+                        worker: worker.user,
+                        createdBy: currentUserId,
+                        fullname: worker.fullname,
+                        email: worker.email,
+                    }))
+                );
+                await JobAssignment.insertMany(allAssignments);
+            }
+        } catch (err) {
+            // Roll back whatever succeeded before the failure, in reverse order
+            if (generatedJobs.length) {
+                await Job.deleteMany({ _id: { $in: generatedJobs.map(j => j._id) } });
+            }
+            if (recurringJob) {
+                await recurringJobModel.deleteOne({ _id: recurringJob._id });
+            }
+            if (templateJob) {
+                await Job.deleteOne({ _id: templateJob._id });
+            }
+            throw err;
+        }
+
+        await logActivity({ job: templateJob._id, type: "job_created", actor: currentUserId });
+        if (formattedWorkers.length && generatedJobs.length) {
+            await Promise.all(
+                generatedJobs.map(job =>
+                    logActivity({
+                        job: job._id,
+                        type: "workers_assigned",
+                        actor: currentUserId,
+                        workers: formattedWorkers.map(w => w.user),
+                    })
+                )
+            );
+        }
+
+        res.status(StatusCodes.CREATED).json({
+            success: true,
+            recurringJob,
+            templateJob,
+            generatedJobs,
+        });
+        return;
     }
 
-    if (endDate && new Date(endDate) < new Date(req.body.date)) {
-      throw new BadRequestError("endDate cannot be before the start date");
-    }
-
-    let templateJob;
-    let recurringJob;
-    let generatedJobs: any[] = [];
-
-    try {
-      templateJob = await Job.create({
+    // ── One-off job ──────────────────────────────────────────────────────────
+    const job = await Job.create({
         ...baseJobFields,
         status: "published",
-        isPublished: false,
-      });
+    });
 
-      recurringJob = await recurringJobModel.create({
-        templateJob: templateJob._id,
-        frequency,
-        interval: intervalNum,
-        daysOfWeek: normalizedDaysOfWeek,
-        startDate: req.body.date,
-        endDate,
+    const assignments = formattedWorkers.map(worker => ({
+        job: job._id,
+        worker: worker.user,
         createdBy: currentUserId,
-      });
+        fullname: worker.fullname,
+        email: worker.email,
+    }));
 
-      const generatedUntil = new Date(Date.now() + generateAheadDays * 24 * 60 * 60 * 1000);
-      generatedJobs = await generateOccurrences(recurringJob, generatedUntil);
+    await logActivity({ job: job._id, type: "job_created", actor: currentUserId });
 
-      if (formattedWorkers.length && generatedJobs.length) {
-        const allAssignments = generatedJobs.flatMap(job =>
-          formattedWorkers.map(worker => ({
-            job: job._id,
-            worker: worker.user,
-            createdBy: currentUserId,
-            fullname: worker.fullname,
-            email: worker.email,
-          }))
-        );
-        await JobAssignment.insertMany(allAssignments);
-      }
-    } catch (err) {
-      // Roll back whatever succeeded before the failure, in reverse order
-      if (generatedJobs.length) {
-        await Job.deleteMany({ _id: { $in: generatedJobs.map(j => j._id) } });
-      }
-      if (recurringJob) {
-        await recurringJobModel.deleteOne({ _id: recurringJob._id });
-      }
-      if (templateJob) {
-        await Job.deleteOne({ _id: templateJob._id });
-      }
-      throw err;
-    }
-
-    await logActivity({ job: templateJob._id, type: "job_created", actor: currentUserId });
-    if (formattedWorkers.length && generatedJobs.length) {
-      await Promise.all(
-        generatedJobs.map(job =>
-          logActivity({
+    if (assignments.length) {
+        await logActivity({
             job: job._id,
             type: "workers_assigned",
             actor: currentUserId,
             workers: formattedWorkers.map(w => w.user),
-          })
-        )
-      );
+        });
+        await JobAssignment.insertMany(assignments);
     }
 
     res.status(StatusCodes.CREATED).json({
-      success: true,
-      recurringJob,
-      templateJob,
-      generatedJobs,
+        success: true,
+        job,
     });
-    return;
-  }
-
-  // ── One-off job ──────────────────────────────────────────────────────────
-  const job = await Job.create({
-    ...baseJobFields,
-    status: "published",
-  });
-
-  const assignments = formattedWorkers.map(worker => ({
-    job: job._id,
-    worker: worker.user,
-    createdBy: currentUserId,
-    fullname: worker.fullname,
-    email: worker.email,
-  }));
-
-  await logActivity({ job: job._id, type: "job_created", actor: currentUserId });
-
-  if (assignments.length) {
-    await logActivity({
-      job: job._id,
-      type: "workers_assigned",
-      actor: currentUserId,
-      workers: formattedWorkers.map(w => w.user),
-    });
-    await JobAssignment.insertMany(assignments);
-  }
-
-  res.status(StatusCodes.CREATED).json({
-    success: true,
-    job,
-  });
 };
 export const getAllJobs: MiddlewareFn = async (
     req,

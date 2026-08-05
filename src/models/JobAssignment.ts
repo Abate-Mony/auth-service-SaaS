@@ -118,6 +118,11 @@ JobAssignmentSchema.index(
     }
 );
 
+// Supports getMyJobs' $match+$sort (worker/status equality, createdAt sort)
+// and updateWorkerJobStatus's in-progress check — the compound index above
+// can't serve those since worker isn't its leading field.
+JobAssignmentSchema.index({ worker: 1, status: 1, createdAt: -1 });
+
 export type JobAssignment = InferSchemaType<
     typeof JobAssignmentSchema
 >;

@@ -6,16 +6,19 @@ import recurringJobModel from "../models/recurringJobModel.js";
 
 function getOccurrenceDates(
   recurring: HydratedDocument<RecurringJobType>,
-  from: Date,
+  from: Date,//the next day to generate 
   until: Date
 ): Date[] {
   const dates: Date[] = [];
+//   check if the recurring job have an end date
+// if not then the scheduleEnd =null
   const scheduleEnd = recurring.endDate ? dayjs(recurring.endDate) : null;
+//   rangeEnd // this store the date inwhich the first jobs gonna end that is //30days
   const rangeEnd = dayjs(until);
 
   let cursor = dayjs(from).startOf("day");
   const rangeStart = dayjs(recurring.startDate).startOf("day");
-  if (cursor.isBefore(rangeStart)) cursor = rangeStart;
+  if (cursor.isBefore(rangeStart)) cursor = rangeStart;//
 
   while (cursor.isSameOrBefore(rangeEnd, "day")) {
     if (scheduleEnd && cursor.isAfter(scheduleEnd, "day")) break;
@@ -50,12 +53,18 @@ function getOccurrenceDates(
 
 export async function generateOccurrences(
   recurring: HydratedDocument<RecurringJobType>,
-  until: Date
+  requestedUntil: Date
 ) {
   if (!recurring.active) return [];
 
-  const template = await jobModel.findById(recurring.templateJob).lean();
-  if (!template) throw new Error("Template job not found for recurring schedule");
+  // Monthly occurrences are sparse — the default ~30 day lookahead window
+  // would often catch zero or one of them. Guarantee at least a year's
+  // horizon for monthly schedules so a full year of jobs gets generated
+  // instead of being starved by a short window.
+  const yearOut = dayjs().add(365, "day").toDate();
+  const until = recurring.frequency === "monthly" && dayjs(yearOut).isAfter(requestedUntil)
+    ? yearOut
+    : requestedUntil;
 
   // Resume from wherever we last generated up to, so repeated calls don't
   // regenerate/duplicate past occurrences.
@@ -63,11 +72,26 @@ export async function generateOccurrences(
     ? dayjs(recurring.generatedUntil).add(1, "day").toDate()
     : recurring.startDate;
 
+  if (dayjs(generateFrom).isAfter(until, "day")) return [];
+
+  // Atomically claim this window before doing any work: compare-and-swap
+  // generatedUntil off the value we read it as. If another caller (e.g. the
+  // creation request racing the cron tick) already claimed it, this matches
+  // nothing and we bail out instead of racing past the dedupe check below.
+  const claim = await recurringJobModel.updateOne(
+    { _id: recurring._id, generatedUntil: recurring.generatedUntil ?? null },
+    { generatedUntil: until }
+  );
+  if (claim.matchedCount === 0) return [];
+
+  const template = await jobModel.findById(recurring.templateJob).lean();
+  if (!template) throw new Error("Template job not found for recurring schedule");
+
   const occurrenceDates = getOccurrenceDates(recurring, generateFrom, until);
   if (!occurrenceDates.length) return [];
 
   // Belt-and-braces duplicate guard: skip any date that already has a Job
-  // tied to this schedule (in case of overlapping manual + cron runs).
+  // tied to this schedule (covers reruns after generatedUntil is reset).
   const existing = await jobModel
     .find({ recurringJob: recurring._id, date: { $gte: generateFrom, $lte: until } })
     .distinct("date");
@@ -99,12 +123,5 @@ export async function generateOccurrences(
       createdBy: recurring.createdBy,
     }));
 
-  const createdJobs = toCreate.length ? await jobModel.insertMany(toCreate) : [];
-
-  await recurringJobModel.updateOne(
-    { _id: recurring._id },
-    { generatedUntil: until }
-  );
-
-  return createdJobs;
+  return toCreate.length ? await jobModel.insertMany(toCreate) : [];
 }

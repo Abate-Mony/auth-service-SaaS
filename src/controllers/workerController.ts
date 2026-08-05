@@ -8,6 +8,7 @@ import userModel from "../models/userModel.js";
 import { hashPassword } from "../utils/passwordUtils.js";
 import { logActivity } from "../utils/logActivity.js";
 import recurringJobModel from "../models/recurringJobModel.js";
+import dayjs from "dayjs";
 
 export const createWorker: MiddlewareFn = async (req, res) => {
     const { fullname, email, password, role } = req.body;
@@ -49,8 +50,9 @@ export const createWorker: MiddlewareFn = async (req, res) => {
 };
 
 export const getMyJobs: MiddlewareFn = async (req, res) => {
+    const startTime=new Date()
     const workerId = new mongoose.Types.ObjectId(req.user.user_id);
-    const { search, status, page = "1", limit = "20" } = req.query;
+    const { search, status, page = "1", limit = "10" } = req.query;
 
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
     const limitNum = Math.max(1, parseInt(limit as string, 10) || 20);
@@ -60,49 +62,70 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
         assignmentMatch.status = status;
     }
 
-    const jobMatch: Record<string, any> = {};
-    if (search) {
-        jobMatch["job.title"] = { $regex: search, $options: "i" };
-    }
+    const lookupJob: mongoose.PipelineStage.Lookup = {
+        $lookup: {
+            from: "jobs", // Mongoose lowercases + pluralizes "Job" -> "jobs" by default; adjust if you overrode the collection name
+            localField: "job",
+            foreignField: "_id",
+            as: "job",
+        },
+    };
+    const unwindJob: mongoose.PipelineStage.Unwind = { $unwind: "$job" };
+    const projectRow: mongoose.PipelineStage.Project = {
+        $project: {
+            job: 1,
+            status: 1, // assignment status overrides job's own status, same as before
+            workerJobDetails: {
+                assignmentId: "$_id",
+                acceptedAt: "$acceptedAt",
+                declinedAt: "$declinedAt",
+                checkedInAt: "$checkedInAt",
+                checkedOutAt: "$checkedOutAt",
+                completedAt: "$completedAt",
+                hoursWorked: "$hoursWorked",
+            },
+        },
+    };
 
-    const pipeline: mongoose.PipelineStage[] = [
-        { $match: assignmentMatch },
-        {
-            $lookup: {
-                from: "jobs", // Mongoose lowercases + pluralizes "Job" -> "jobs" by default; adjust if you overrode the collection name
-                localField: "job",
-                foreignField: "_id",
-                as: "job",
+    // createdAt lives on the assignment doc, so sorting doesn't need the job
+    // join. Without a search term we skip/limit BEFORE joining, so $lookup
+    // only runs for the page (e.g. 20 docs) instead of every assignment the
+    // worker has ever had. With a search term we still need the join first
+    // since the filter depends on the joined job's title.
+    const pipeline: mongoose.PipelineStage[] = search
+        ? [
+            { $match: assignmentMatch },
+            { $sort: { createdAt: -1 as const } },
+            lookupJob,
+            unwindJob,
+            { $match: { "job.title": { $regex: search, $options: "i" } } },
+            {
+                $facet: {
+                    data: [
+                        { $skip: (pageNum - 1) * limitNum },
+                        { $limit: limitNum },
+                        projectRow,
+                    ],
+                    totalCount: [{ $count: "count" }],
+                },
             },
-        },
-        { $unwind: "$job" },
-        ...(search ? [{ $match: jobMatch }] : []),
-        { $sort: { createdAt: -1 as const } },
-        {
-            $facet: {
-                data: [
-                    { $skip: (pageNum - 1) * limitNum },
-                    { $limit: limitNum },
-                    {
-                        $project: {
-                            job: 1,
-                            status: 1, // assignment status overrides job's own status, same as before
-                            workerJobDetails: {
-                                assignmentId: "$_id",
-                                acceptedAt: "$acceptedAt",
-                                declinedAt: "$declinedAt",
-                                checkedInAt: "$checkedInAt",
-                                checkedOutAt: "$checkedOutAt",
-                                completedAt: "$completedAt",
-                                hoursWorked: "$hoursWorked",
-                            },
-                        },
-                    },
-                ],
-                totalCount: [{ $count: "count" }],
+        ]
+        : [
+            { $match: assignmentMatch },
+            { $sort: { createdAt: -1 as const } },
+            {
+                $facet: {
+                    data: [
+                        { $skip: (pageNum - 1) * limitNum },
+                        { $limit: limitNum },
+                        lookupJob,
+                        unwindJob,
+                        projectRow,
+                    ],
+                    totalCount: [{ $count: "count" }],
+                },
             },
-        },
-    ];
+        ];
 
     const [result] = await JobAssignment.aggregate(pipeline);
     const total = result.totalCount[0]?.count ?? 0;
@@ -112,7 +135,8 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
         status: row.status, // assignment status wins over job.status, same behavior as your original .map
         workerJobDetails: row.workerJobDetails,
     }));
-
+const time_querying=dayjs().diff(startTime,"seconds",true)
+console.log("time quering is : ",time_querying)
     res.status(StatusCodes.OK).json({
         jobs,
         page: pageNum,
@@ -125,15 +149,13 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
 export const getJob: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
 
-    const job = await jobModel.findOne({ _id: id });
+    const [job, jobAssignment] = await Promise.all([
+        jobModel.findOne({ _id: id }),
+        JobAssignment.findOne({ job: id, worker: req.user.user_id }),
+    ]);
     if (!job) {
         throw new BadRequestError("Job not found.");
     }
-
-    const jobAssignment = await JobAssignment.findOne({
-        job: id,
-        worker: req.user.user_id,
-    });
 
     const job_ = {
         ...job.toObject(),
@@ -170,11 +192,14 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     if (!assignment) {
         throw new NotFoundError("You are not assigned to this job.");
     }
-    const all_assigment_for_user = await JobAssignment.find({
-        worker: req.user.user_id
-    })
-    if (all_assigment_for_user.length && all_assigment_for_user.map(as => as.status).includes("in-progress") && status !== "completed") {
-        throw new BadRequestError("You already have an active Job please complete the job to start another one ")
+    if (status=="in-progress") {
+        const hasActiveJob = await JobAssignment.exists({
+            worker: req.user.user_id,
+            status: "in-progress",
+        });
+        if (hasActiveJob) {
+            throw new BadRequestError("You already have an active Job please complete the job to start another one ")
+        }
     }
     // if(!assignment.ma)
     switch (status) {
