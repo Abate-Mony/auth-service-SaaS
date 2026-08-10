@@ -38,12 +38,17 @@ const UserSchema = new Schema(
       enum: ["admin", "manager", "worker"],
       default: "worker",
     },
-    createdBy: {
-      type: mongoose.Schema.Types.ObjectId,
+    // createdBy: {
+    //   type: mongoose.Schema.Types.ObjectId,
+    //   ref: "User",
+    //   required: function (this: any) {
+    //     return this.role === "worker";
+    //   },
+    // },
+     createdBy: {
+      type: Schema.Types.ObjectId,
       ref: "User",
-      required: function (this: any) {
-        return this.role === "worker";
-      },
+      required: function (this: any) { return this.role !== "admin" },
     },
     isVerified: {
       type: Boolean,

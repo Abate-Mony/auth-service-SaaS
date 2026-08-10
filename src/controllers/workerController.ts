@@ -50,7 +50,7 @@ export const createWorker: MiddlewareFn = async (req, res) => {
 };
 
 export const getMyJobs: MiddlewareFn = async (req, res) => {
-    const startTime=new Date()
+    const startTime = new Date()
     const workerId = new mongoose.Types.ObjectId(req.user.user_id);
     const { search, status, page = "1", limit = "10" } = req.query;
 
@@ -135,14 +135,109 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
         status: row.status, // assignment status wins over job.status, same behavior as your original .map
         workerJobDetails: row.workerJobDetails,
     }));
-const time_querying=dayjs().diff(startTime,"seconds",true)
-console.log("time quering is : ",time_querying)
+    const time_querying = dayjs().diff(startTime, "seconds", true)
+    console.log("time quering is : ", time_querying)
     res.status(StatusCodes.OK).json({
         jobs,
         page: pageNum,
         limit: limitNum,
         total,
         totalPages: Math.ceil(total / limitNum),
+    });
+};
+
+// Self-service total for the logged-in worker: sums hoursWorked across their
+// completed assignments, optionally scoped to a date range via completedAt.
+export const getMyTotalHours: MiddlewareFn = async (req, res) => {
+    const workerId = new mongoose.Types.ObjectId(req.user.user_id);
+    const { start, end } = req.query;
+
+    const match: Record<string, any> = { worker: workerId, status: "completed" };
+
+    if (start || end) {
+        const completedAt: Record<string, Date> = {};
+        if (start) {
+            const startDate = new Date(start as string);
+            if (isNaN(startDate.getTime())) throw new BadRequestError("Invalid start date");
+            completedAt.$gte = startDate;
+        }
+        if (end) {
+            const endDate = new Date(end as string);
+            if (isNaN(endDate.getTime())) throw new BadRequestError("Invalid end date");
+            completedAt.$lte = endDate;
+        }
+        match.completedAt = completedAt;
+    }
+
+    const [result] = await JobAssignment.aggregate([
+        { $match: match },
+        {
+            $group: {
+                _id: null,
+                totalHours: { $sum: "$hoursWorked" },
+                totalJobs: { $sum: 1 },
+            },
+        },
+    ]);
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        totalHours: result?.totalHours ?? 0,
+        totalJobs: result?.totalJobs ?? 0,
+    });
+};
+
+const ASSIGNMENT_STATUSES = ["pending", "accepted", "declined", "in-progress", "completed", "cancelled"] as const;
+
+// Self-service dashboard summary for the logged-in worker. One aggregation,
+// three facets: job counts by status (all-time), hours/pay stats from
+// completed work (all-time), and earnings for the current calendar month.
+// Add more facets here as new stats are needed.
+export const getWorkerDashboardStats: MiddlewareFn = async (req, res) => {
+    const workerId = new mongoose.Types.ObjectId(req.user.user_id);
+    const monthStart = dayjs().startOf("month").toDate();
+    const monthEnd = dayjs().endOf("month").toDate();
+
+    const [result] = await JobAssignment.aggregate([
+        { $match: { worker: workerId } },
+        {
+            $facet: {
+                statusCounts: [
+                    { $group: { _id: "$status", count: { $sum: 1 } } },
+                ],
+                completedStats: [
+                    { $match: { status: "completed" } },
+                    {
+                        $group: {
+                            _id: null,
+                            hoursWorked: { $sum: "$hoursWorked" },
+                            averagePayRate: { $avg: "$payRate" },
+                        },
+                    },
+                ],
+                monthlyEarnings: [
+                    { $match: { status: "completed", completedAt: { $gte: monthStart, $lte: monthEnd } } },
+                    { $group: { _id: null, earnings: { $sum: "$totalPay" } } },
+                ],
+            },
+        },
+    ]);
+
+    const jobStats = Object.fromEntries(ASSIGNMENT_STATUSES.map(status => [status, 0])) as Record<typeof ASSIGNMENT_STATUSES[number], number>;
+    for (const row of result.statusCounts) {
+        jobStats[row._id as typeof ASSIGNMENT_STATUSES[number]] = row.count;
+    }
+
+    const completed = result.completedStats[0] ?? {};
+    const monthly = result.monthlyEarnings[0] ?? {};
+    const total_job_completed = Object.values(jobStats).reduce((acc, next) => acc + next)
+    res.status(StatusCodes.OK).json({
+        success: true,
+        jobStats,
+        hoursWorked: completed.hoursWorked ?? 0,
+        averagePayRate: completed.averagePayRate ?? 0,
+        monthlyEarnings: monthly.earnings ?? 0,
+        total_job_completed
     });
 };
 
@@ -192,7 +287,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     if (!assignment) {
         throw new NotFoundError("You are not assigned to this job.");
     }
-    if (status=="in-progress") {
+    if (status == "in-progress") {
         const hasActiveJob = await JobAssignment.exists({
             worker: req.user.user_id,
             status: "in-progress",
@@ -223,6 +318,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             }
             assignment.status = "declined";
             assignment.declinedAt = new Date();
+            //todo add decline note later
             await logActivity({
                 job: assignment.job,
                 assignment: assignment._id,
@@ -238,8 +334,10 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             if (assignment.checkedInAt) {
                 throw new BadRequestError("You have already checked in.");
             }
-            assignment.status = "in-progress";
             assignment.checkedInAt = new Date();
+            assignment.status = "in-progress";
+
+            //todo overtime hours later
             await logActivity({
                 job: assignment.job,
                 assignment: assignment._id,
@@ -254,9 +352,14 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             }
             assignment.status = "completed";
             assignment.completedAt = new Date();
-            assignment.checkedOutAt = new Date(); // now actually persisted
+            // assignment.checkedOutAt = new Date(); 
+            // now actually persisted
             // hoursWorked is no longer computed here — the pre("save") hook on
             // JobAssignment derives it from checkedInAt/checkedOutAt automatically
+            const hours_work = dayjs().diff(dayjs(assignment.checkedInAt), "hours", true);
+            assignment.hoursWorked = hours_work
+            const total_pay = (assignment.payRate || 13) * hours_work
+            assignment.totalPay = total_pay
             await logActivity({
                 job: assignment.job,
                 assignment: assignment._id,
