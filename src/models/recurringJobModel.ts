@@ -3,61 +3,33 @@ import mongoose, { InferSchemaType, Schema } from "mongoose";
 
 const RecurringJobSchema = new Schema(
   {
-    // The job used as a template — cloned into new Job docs on each occurrence
-    templateJob: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Job",
-      required: true,
-    },
+    templateJob: { type: Schema.Types.ObjectId, ref: "Job", required: true },
 
-    frequency: {
-      type: String,
-      enum: ["daily", "weekly", "monthly"],
-      required: true,
-    },
-
-    interval: {
-      type: Number,
-      default: 1,
-      min: 1,
-    },
-
-    // Only meaningful when frequency === "weekly"; 0 = Sunday .. 6 = Saturday
+    frequency: { type: String, enum: ["daily", "weekly", "monthly"], required: true },
+    interval: { type: Number, default: 1, min: 1 },
     daysOfWeek: {
       type: [Number],
       validate: {
-        validator: (arr: number[]) => arr.every(d => d >= 0 && d <= 6),
-        message: "daysOfWeek values must be between 0 and 6",
+        validator: (a: number[]) => a.every(d => d >= 0 && d <= 6),
+        message: "daysOfWeek values must be 0–6",
       },
     },
+    monthlyMode: { type: String, enum: ["day-of-month", "day-of-week"], default: "day-of-month" },
+    monthlyWeekNum: { type: Number, min: 1, max: 5 },
+    monthlyWeekDay: { type: Number, min: 0, max: 6 },
 
-    startDate: {
-      type: Date,
-      required: true,
-    },
-
+    startDate: { type: Date, required: true },
     endDate: Date,
+    maxOccurrences: { type: Number, min: 1 },
+    occurrencesGenerated: { type: Number, default: 0 },
+    generatedUntil: Date,
 
-    // How far in advance job occurrences have actually been created
-    generatedUntil: {
-      type: Date,
-    },
+    defaultWorkers: [{ type: Schema.Types.ObjectId, ref: "User" }],
 
-    active: {
-      type: Boolean,
-      default: true,
-      index: true,
-    },
-
-    createdBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-      required: true,
-    },
+    active: { type: Boolean, default: true, index: true },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
   },
-  {
-    timestamps: true,
-  }
+  { timestamps: true }
 );
 
 RecurringJobSchema.index({ active: 1 });

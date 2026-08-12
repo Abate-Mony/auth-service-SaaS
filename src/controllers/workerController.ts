@@ -1,6 +1,6 @@
 import { StatusCodes } from "http-status-codes";
 import mongoose from "mongoose";
-import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
+import { BadRequestError, NotFoundError, UnauthenticatedError } from "../errors/customErrors.js";
 import { getReqUser, MiddlewareFn } from "../interfaces/expresstype.js";
 import JobAssignment from "../models/JobAssignment.js";
 import jobModel from "../models/jobModel.js";
@@ -9,27 +9,22 @@ import { hashPassword } from "../utils/passwordUtils.js";
 import { logActivity } from "../utils/logActivity.js";
 import recurringJobModel from "../models/recurringJobModel.js";
 import dayjs from "dayjs";
+import Company from "../models/company.js";
 
 export const createWorker: MiddlewareFn = async (req, res) => {
     const { fullname, email, password, role } = req.body;
     const currentUser = req.user;
+    const User = await userModel.findOne({ _id: req.user.user_id })
+    if (!User) throw new BadRequestError("could not find user but this is impossible ")
 
-    if (!currentUser) {
-        res.status(StatusCodes.UNAUTHORIZED).json({ message: "Unauthorized" });
-        return;
-    }
-    if (!["admin", "manager"].includes(currentUser.role)) {
-        throw new BadRequestError("Only admins or managers can create workers.");
-    }
     if (["admin"].includes(role)) {
-        throw new BadRequestError("Invalid role. Only 'worker' role can be created.");
+        throw new BadRequestError("Invalid role. Only 'worker or manager' role can be created.");
     }
 
 
     const existingUser = await userModel.findOne({ email: email.toLowerCase() });
     if (existingUser) {
-        res.status(StatusCodes.BAD_REQUEST).json({ message: "Email already exists." });
-        return;
+        throw new BadRequestError("Email already exists")
     }
 
     const hashedPassword = await hashPassword(password);
@@ -40,7 +35,7 @@ export const createWorker: MiddlewareFn = async (req, res) => {
         password: hashedPassword,
         role: role,
         createdBy: currentUser.user_id,
-        // company: currentUser.company ?? "6a6ec368b301e127831156a3", // pulled straight from req.user — no extra query needed
+        company: User?.company
     });
 
     res.status(StatusCodes.CREATED).json({
@@ -265,6 +260,28 @@ export const getJob: MiddlewareFn = async (req, res) => {
         success: true,
     });
 };
+export const getActiveJob: MiddlewareFn = async (req, res) => {
+    const assignment = await JobAssignment.findOne({
+        status: "in-progress",
+        worker: req.user.user_id,
+    })
+        .populate("job")
+        .lean();
+
+    if (!assignment || !assignment.job) {
+        res.status(StatusCodes.OK).json({ success: true, job: null });
+        return;
+    }
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        job: {
+            ...(assignment.job as any),
+            status: assignment.status,
+            workerJobDetails: assignment,
+        },
+    });
+};
 
 // Single source of truth for worker-driven status transitions.
 // checkInJob below now just calls this instead of duplicating the logic.
@@ -346,27 +363,31 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             });
             break;
 
-        case "completed":
+        case "completed": {
             if (assignment.status !== "in-progress") {
                 throw new BadRequestError("You must start the job before completing it.");
             }
-            assignment.status = "completed";
+            if (!assignment.checkedInAt) {
+                throw new BadRequestError("No check-in recorded for this shift.");
+            }
+
+            // Close any break left open, so it doesn't count as worked time
+            const openBreak = assignment.breaks?.find(b => !b.endedAt);
+            if (openBreak) openBreak.endedAt = new Date();
+
+            assignment.checkedOutAt = new Date();
             assignment.completedAt = new Date();
-            // assignment.checkedOutAt = new Date(); 
-            // now actually persisted
-            // hoursWorked is no longer computed here — the pre("save") hook on
-            // JobAssignment derives it from checkedInAt/checkedOutAt automatically
-            const hours_work = dayjs().diff(dayjs(assignment.checkedInAt), "hours", true);
-            assignment.hoursWorked = hours_work
-            const total_pay = (assignment.payRate || 13) * hours_work
-            assignment.totalPay = total_pay
+            assignment.status = "completed";
+
             await logActivity({
                 job: assignment.job,
                 assignment: assignment._id,
+                worker: assignment.worker,
                 type: "assignment_checked_out",
                 actor: req.user.user_id,
             });
             break;
+        }
     }
 
     await assignment.save();

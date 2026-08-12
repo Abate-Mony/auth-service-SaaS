@@ -1,8 +1,8 @@
 import mongoose, { InferSchemaType, Schema } from "mongoose";
-import { BUSINESS_TYPES, COMPANY_SIZES } from "../utils/constant.js";
+import { BUSINESS_TYPES, COMPANY_SIZES, PLAN_LIMITS } from "../utils/constant.js";
 import { ICompany } from "../interface/model/company.js";
 
-export interface ICompanyModel extends mongoose.Document, ICompany {}
+export interface ICompanyModel extends mongoose.Document, ICompany { }
 
 const CompanySchema = new Schema(
   {
@@ -41,6 +41,19 @@ const CompanySchema = new Schema(
     isActive: {
       type: Boolean,
       default: true,
+    },
+    weeklyHoursTarget: { type: Number, default: 0 },
+    overtimeThresholdHours: { type: Number, default: 8 },
+    overtimeMultiplier: { type: Number, default: 1.5 },
+    plan: {
+      type: String,
+      enum: ["free", "starter", "professional", "enterprise"],
+      default: "free",
+      index: true,
+    },
+    maxWorkers: {
+      type: Number,
+      default: PLAN_LIMITS.free,
     },
   },
   {

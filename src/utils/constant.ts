@@ -27,4 +27,13 @@ export const COMPANY_SIZES = [
   "1–10 workers", "11–25 workers", "26–50 workers",
   "51–100 workers", "100+",
 ] as const;
+export const PLANS = ["free", "starter", "professional", "enterprise"] as const;
+export type Plan = (typeof PLANS)[number];
+
+export const PLAN_LIMITS: Record<Plan, number> = {
+  free: 3,
+  starter: 15,
+  professional: 50,
+  enterprise: -1, // unlimited
+};
 // lettinge

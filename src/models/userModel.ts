@@ -18,14 +18,16 @@ const UserSchema = new Schema(
       type: String,
       required: true,
     },
-    // company: {
-    //   type: mongoose.Schema.Types.ObjectId,
-    //   ref: "Company",
-    //   required: function (this: any) {
-    //     return this.role === "admin"; // only company creators/admins are required to have one on creation
-    //   },
-    // },
-
+    company: {
+      type: Schema.Types.ObjectId,
+      ref: "Company",
+      required: function (this: any) {
+        // Required for managers and workers. 
+        // Admins might not have it strictly on step 1 of registration, 
+        // but it should be attached immediately after the company is created.
+        return this.role !== "admin";
+      },
+    },
 
     password: {
       type: String,
@@ -38,14 +40,8 @@ const UserSchema = new Schema(
       enum: ["admin", "manager", "worker"],
       default: "worker",
     },
-    // createdBy: {
-    //   type: mongoose.Schema.Types.ObjectId,
-    //   ref: "User",
-    //   required: function (this: any) {
-    //     return this.role === "worker";
-    //   },
-    // },
-     createdBy: {
+    phone: { type: String, trim: true, default: "0000-0000-0000" },
+    createdBy: {
       type: Schema.Types.ObjectId,
       ref: "User",
       required: function (this: any) { return this.role !== "admin" },

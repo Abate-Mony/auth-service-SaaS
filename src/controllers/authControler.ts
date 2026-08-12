@@ -11,6 +11,7 @@ import { USER_ROLES, UserroleTypes } from "../utils/constant.js";
 import { setCookies } from "../utils/cookieUtils.js";
 import { OAuth2Client } from "google-auth-library";
 import Company from "../models/company.js";
+import mongoose from "mongoose";
 
 
 
@@ -61,6 +62,7 @@ export const loginWithGoogle: MiddlewareFn = async (req, res) => {
   const token = createJWT({
     user_id: user._id.toString(),
     role: user.role,
+    company_id: user.company as unknown as string
   });
   const oneDay: number = 1000 * 60 * 60 * 24;
   res.cookie("token", token, setCookies(oneDay));
@@ -87,77 +89,92 @@ export const login: MiddlewareFn = async (req, res) => {
   const isValidUser = user && (await comparePassword(password, user.password));
   if (!isValidUser) throw new UnauthenticatedError("invalid credentials");
 
-  const token = createJWT({ user_id: user._id.toString(), role: user.role });
+  const token = createJWT({
+    user_id: user._id.toString(), role: user.role,
+    company_id: user.company as unknown as string
+
+  });
   const oneDay: number = 1000 * 60 * 60 * 24;
   res.cookie("token", token, setCookies(oneDay));
   console.log("token", token)
   res.status(StatusCodes.OK).json({ msg: "user logged in", token, user: sanitizeUser(user) });
 };
 
+
 export const register: MiddlewareFn = async (req, res) => {
-  console.log("this is the register route body :", req.body)
-  //    name: 'Ako Bate',
-  // [1]   email: 'akobateemmanuel@gmail.com',
-  // [1]   password: 'akobateemmanuel@gmail.com',
-  // [1]   confirmPassword: 'akobateemmanuel@gmail.com',
-  // [1]   companyName: 'company name ',
-  // [1]   businessType: 'Cleaning Company',
-  // [1]   companySize: '1–10 workers',
-  // [1]   website: 'example.com',
-  // [1]   phone: '99999999999',
-  // [1]   country: 'United Kingdom'
+  const {
+    password,
+    email,
+    name,
+    companyName,
+    businessType,
+    companySize,
+    website,
+    phone,
+    country,
+  } = req.body;
 
-  // return res.status(StatusCodes.OK).json({ msg: "register route is working" });
-  // req.body.role = isFirstAccount ? USER_ROLES.admin : USER_ROLES.user;
-  const { password, email, name }: { password: string; email: string; role: UserroleTypes; name: string } = req.body;
-  req.body.fullname = name.trim();
-  // if (!["admin", "moderator", "worker"].includes(role)) {
-  //   throw new BadRequestError(`Invalid role: ${role}. Must be one of: admin, user, moderator, worker.`);
-  // }
-  req.body.role = "admin"//role when creating an account from the register route, it will always be an admin account. Other accounts can be created by the admin account.
-  // console.log("this is req.body", req.body)
-  //   prevent user from creating multi account with the same email
+  const fullname = name.trim();
+
+  // 1. Check if user exists
   const isUserAlreadyExist = await User.findOne({ email });
-  if (isUserAlreadyExist)
-    throw new BadRequestError(`user already exist with email ${email}`);
-  const hashedPassword = await hashPassword(password);
-  req.body.password = hashedPassword;
-
-  const user = await User.create({
-    ...req.body,
-  });
-  // creating company and assigning the company id to the user is now handled in the companyController.ts file, so we don't need to do it here anymore. The register route will only create a user account, and the company creation will be handled separately.
-  const company = await Company.create({
-    name: req.body.companyName,
-    type: req.body.businessType,
-    size: req.body.companySize,
-    website: req.body.website || "",
-    country: req.body.country || "",
-    phone: req.body.phone || "",
-    owner: user._id, // we will update this later after the user is created
-    isActive: true,
-    businessType: req.body.businessType,
-
-  });
-  if (!company) {
-    await user.deleteOne({ _id: user._id });
-    throw new BadRequestError("company creation failed");
+  if (isUserAlreadyExist) {
+    throw new BadRequestError(`User already exists with email ${email}`);
   }
+
+  const hashedPassword = await hashPassword(password);
+
+  // 2. Create Admin User
+  const user = await User.create({
+    fullname,
+    email,
+    password: hashedPassword,
+    phone: phone || "0000-0000-0000",
+    role: "admin",
+  });
+
+  // 3. Create Company with manual rollback on failure
+  let company;
+  try {
+    company = await Company.create({
+      name: companyName,
+      businessType,
+      size: companySize,
+      website: website || "",
+      country: country || "",
+      phone: phone || "",
+      owner: user._id,
+      isActive: true,
+    });
+  } catch (error) {
+    // If company creation fails, delete the created user to prevent orphaned data
+    await User.findByIdAndDelete(user._id);
+    throw error;
+  }
+
+  // 4. Attach company ID back to User
+  user.company = company._id;
+  await user.save();
+
+  // 5. Issue Token & Cookie
   const token = createJWT({
     user_id: user._id,
     role: user.role,
+    company_id: user.company as unknown as string
+
   });
+
   const oneDay = 1000 * 60 * 60 * 24;
   res.cookie("token", token, setCookies(oneDay));
+
   res.status(StatusCodes.CREATED).json({
-    msg: "user created",
+    msg: "User and company created successfully",
     user: {
-      fullname: sanitizeUser(user).name,
       ...sanitizeUser(user),
+      company: company._id,
     },
   });
 };
-
 export const logout: MiddlewareFn = (_, res) => {
   res.cookie("token", "logout", setCookies());
   res.status(StatusCodes.OK).json({ msg: "user logged out!" });

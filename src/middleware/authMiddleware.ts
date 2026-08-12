@@ -16,8 +16,9 @@ export const authenticateUser: MiddlewareFn = (req, _res, next) => {
 
   try {
     const payload = verifyJWT(token);
-    const { user_id, role } = payload;
-    req.user = { user_id, role };
+    const { user_id, role ,company_id} = payload;
+    req.user = { user_id, role ,company_id};
+    // console.log("payload : ", payload)
     next();
   } catch (error) {
     throw new UnauthenticatedError("authentication invalid");

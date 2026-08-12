@@ -9,12 +9,13 @@ const JobSchema = new Schema(
         client: { type: String, trim: true, default: "" },
         title: { type: String, required: true, trim: true },
         description: { type: String, required: true, trim: true },
-        location: { type: String, required: true, trim: true },
-        address: { type: String, default: "", trim: true },
+        // location: { type: String, required: true, trim: true },
+        // address: { type: String, default: "", trim: true },
         date: { type: Date, required: true, index: true },
-        startTime: { type: String, required: true },
-        endTime: { type: String, required: true },
-        hours: { type: Number, required: true, min: 0 },
+        startTime: { type: String, required: true },  // "HH:mm"
+        endTime: { type: String, required: true },    // "HH:mm"
+        minutes: { type: Number, required: true, min: 0 },
+        // hours: { type: Number, required: true, min: 0 },
         isDeleted: {
             type: Boolean,
             default: false
@@ -47,7 +48,7 @@ const JobSchema = new Schema(
             default: null,
             index: true,
         },
-
+   isTemplate: { type: Boolean, default: false, index: true },
         notes: { type: String, default: "", trim: true },
         instructions: { type: String, default: "", trim: true },
         isPublished: { type: Boolean, default: false },
@@ -56,6 +57,12 @@ const JobSchema = new Schema(
             type: mongoose.Schema.Types.ObjectId,
             ref: "User",
             required: true,
+        },
+        location: { type: String, required: true, trim: true },
+        address: { type: String, default: "", trim: true },
+        coordinates: {
+            lat: Number,
+            lng: Number,
         },
     },
     { timestamps: true }

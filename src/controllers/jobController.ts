@@ -8,40 +8,62 @@ import recurringJobModel from "../models/recurringJobModel.js";
 import userModel from "../models/userModel.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity } from "../utils/logActivity.js";
-import mongoose from "mongoose";
+import { toUtcDay } from "../utils/dates.js";
+import company from "../models/company.js";
 
-const jobDuration = (startTime: string, endTime: string) => {
-    const today = dayjs().format("YYYY-MM-DD");
-    const startTimeDate = dayjs(`${today} ${startTime}`);
-    let endTimeDate = dayjs(`${today} ${endTime}`);
+export const jobDurationMinutes = (startTime: string, endTime: string): number => {
+    const [sh, sm] = startTime.split(":").map(Number);
+    const [eh, em] = endTime.split(":").map(Number);
 
-    // Overnight shift: end time is same as or before start time on the same day
-    // means it actually rolls into the next calendar day.
-    if (!endTimeDate.isAfter(startTimeDate)) {
-        endTimeDate = endTimeDate.add(1, "day");
+    if ([sh, sm, eh, em].some(n => Number.isNaN(n))) {
+        throw new BadRequestError("Invalid start or end time — expected HH:mm");
     }
 
-    const hours = endTimeDate.diff(startTimeDate, "hours", true);
-    return hours;
+    let minutes = (eh * 60 + em) - (sh * 60 + sm);
+
+    // Overnight shift: end at or before start means it rolls into the next day
+    if (minutes <= 0) minutes += 24 * 60;
+
+    return minutes;
 };
 
 
 
 export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     const {
+        title,
+        description,
+        client,
+        location,
+        address,
+        coordinates,
+        date,
         startTime,
         endTime,
+        requiredWorkers,
+        priority,
+        supervisor,
+        payRate,
+        chargeRate,
+        notes,
+        instructions,
         isRecurring,
         frequency,
         interval = 1,
         daysOfWeek,
+        monthlyMode,
+        monthlyWeekNum,
+        monthlyWeekDay,
         endDate,
+        maxOccurrences,
         generateAheadDays = 30,
     } = req.body;
 
     if (!startTime || !endTime) throw new BadRequestError("start or end time required");
-    if (!req.body.date) throw new BadRequestError("A job date is required");
-    if (dayjs(req.body.date).isBefore(dayjs().startOf("day"))) {
+    if (!date) throw new BadRequestError("A job date is required");
+
+    const jobDate = toUtcDay(date);
+    if (jobDate < toUtcDay(new Date())) {
         throw new BadRequestError("Job date cannot be in the past");
     }
 
@@ -59,31 +81,39 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     const workerEmails = workers.map(w => w.email).filter(Boolean);
 
     const realWorkers = workerEmails.length
-        ? await userModel.find({ email: { $in: workerEmails } })
+        ? await userModel.find({ email: { $in: workerEmails }, isActive: true })
         : [];
 
     const foundEmails = new Set(realWorkers.map(u => u.email));
     const missingEmails = workerEmails.filter(e => !foundEmails.has(e));
     if (missingEmails.length) {
-        throw new BadRequestError(`No account found for: ${missingEmails.join(", ")}`);
+        throw new BadRequestError(`No active account found for: ${missingEmails.join(", ")}`);
     }
 
-    const formattedWorkers = realWorkers.map(worker => ({
-        user: worker._id,
-        fullname: worker.fullname,
-        email: worker.email,
-    }));
+    const workerIds = realWorkers.map(w => w._id);
 
-    const hours = jobDuration(startTime, endTime);
-
+    // Allowlisted — never spread req.body, or clients can set isTemplate/status/createdBy
+    console.log("requested_user ", req.user)
     const baseJobFields = {
-        ...req.body,
+        title,
+        description,
+        company: req.user.company_id,
+        client: client ?? "",
+        location,
+        address: address ?? "",
+        ...(coordinates ? { coordinates } : {}),
+        date: jobDate,
         startTime,
         endTime,
-        hours,
+        minutes: jobDurationMinutes(startTime, endTime),
+        requiredWorkers: requiredWorkers ?? 1,
+        priority: priority ?? "medium",
+        ...(supervisor ? { supervisor } : {}),
+        payRate: payRate ?? 0,
+        chargeRate: chargeRate ?? 0,
+        notes: notes ?? "",
+        instructions: instructions ?? "",
         createdBy: currentUserId,
-        client: req.body.client,
-        company: req.body.company,
     };
 
     // ── Recurring job ──────────────────────────────────────────────────────
@@ -108,21 +138,22 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             }
         }
 
-        if (endDate && new Date(endDate) < new Date(req.body.date)) {
+        const normalizedEndDate = endDate ? toUtcDay(endDate) : undefined;
+        if (normalizedEndDate && normalizedEndDate < jobDate) {
             throw new BadRequestError("endDate cannot be before the start date");
         }
 
         let templateJob;
         let recurringJob;
         let generatedJobs: any[] = [];
-        console.log("testing creating job : ", req.body)
-        // throw new BadRequestError("testing here ")
-        // testing here 
+
         try {
+            // Template is never a real shift — draft + isTemplate keeps it out of
+            // every calendar, list and dashboard query
             templateJob = await Job.create({
                 ...baseJobFields,
-                status: "published",
-                isPublished: false,
+                status: "draft",
+                isTemplate: true,
             });
 
             recurringJob = await recurringJobModel.create({
@@ -130,28 +161,32 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                 frequency,
                 interval: intervalNum,
                 daysOfWeek: normalizedDaysOfWeek,
-                startDate: req.body.date,
-                endDate,
+                ...(frequency === "monthly" ? { monthlyMode, monthlyWeekNum, monthlyWeekDay } : {}),
+                startDate: jobDate,
+                endDate: normalizedEndDate,
+                maxOccurrences,
+                defaultWorkers: workerIds,
                 createdBy: currentUserId,
             });
-            // i think generate until #todo
+
             const generatedUntil = new Date(Date.now() + generateAheadDays * 24 * 60 * 60 * 1000);
             generatedJobs = await generateOccurrences(recurringJob, generatedUntil);
 
-            if (formattedWorkers.length && generatedJobs.length) {
+            if (workerIds.length && generatedJobs.length) {
                 const allAssignments = generatedJobs.flatMap(job =>
-                    formattedWorkers.map(worker => ({
+                    workerIds.map((workerId, idx) => ({
                         job: job._id,
-                        worker: worker.user,
+                        worker: workerId,
                         createdBy: currentUserId,
-                        fullname: worker.fullname,
-                        email: worker.email,
+                        payRate: baseJobFields.payRate,
+                        company: req.user.company_id,
+                        fullname: realWorkers[idx].fullname
                     }))
                 );
-                await JobAssignment.insertMany(allAssignments);
+                // ordered:false so one duplicate doesn't abort the whole batch
+                await JobAssignment.insertMany(allAssignments, { ordered: false });
             }
-        } catch (err) {
-            // Roll back whatever succeeded before the failure, in reverse order
+        } catch (err: any) {
             if (generatedJobs.length) {
                 await Job.deleteMany({ _id: { $in: generatedJobs.map(j => j._id) } });
             }
@@ -161,18 +196,22 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             if (templateJob) {
                 await Job.deleteOne({ _id: templateJob._id });
             }
+
+            if (err?.code === 11000) {
+                throw new BadRequestError("This recurring schedule already exists for those dates.");
+            }
             throw err;
         }
 
         await logActivity({ job: templateJob._id, type: "job_created", actor: currentUserId });
-        if (formattedWorkers.length && generatedJobs.length) {
+        if (workerIds.length && generatedJobs.length) {
             await Promise.all(
                 generatedJobs.map(job =>
                     logActivity({
                         job: job._id,
                         type: "workers_assigned",
                         actor: currentUserId,
-                        workers: formattedWorkers.map(w => w.user),
+                        workers: workerIds,
                     })
                 )
             );
@@ -183,40 +222,40 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             recurringJob,
             templateJob,
             generatedJobs,
+            generatedCount: generatedJobs.length,
         });
         return;
     }
 
     // ── One-off job ──────────────────────────────────────────────────────────
+
     const job = await Job.create({
         ...baseJobFields,
         status: "published",
     });
 
-    const assignments = formattedWorkers.map(worker => ({
-        job: job._id,
-        worker: worker.user,
-        createdBy: currentUserId,
-        fullname: worker.fullname,
-        email: worker.email,
-    }));
-
     await logActivity({ job: job._id, type: "job_created", actor: currentUserId });
 
-    if (assignments.length) {
+    if (workerIds.length) {
+        await JobAssignment.insertMany(
+            workerIds.map((workerId, idx) => ({
+                job: job._id,
+                worker: workerId,
+                createdBy: currentUserId,
+                payRate: baseJobFields.payRate,
+                company: req.user.company_id,
+                fullname: realWorkers[idx].fullname || "testing her"
+            }))
+        );
         await logActivity({
             job: job._id,
             type: "workers_assigned",
             actor: currentUserId,
-            workers: formattedWorkers.map(w => w.user),
+            workers: workerIds,
         });
-        await JobAssignment.insertMany(assignments);
     }
 
-    res.status(StatusCodes.CREATED).json({
-        success: true,
-        job,
-    });
+    res.status(StatusCodes.CREATED).json({ success: true, job });
 };
 export const getAllJobs: MiddlewareFn = async (
     req,
@@ -232,7 +271,9 @@ export const getAllJobs: MiddlewareFn = async (
     const limit = Number(limitQuery) || 10;
 
     const query: Record<string, unknown> = {
-        isDeleted: false
+        isDeleted: false,
+        // createdBy: req.user.user_id
+        company: req.user.company_id
     };
 
     if (search) {
@@ -291,6 +332,7 @@ export const getAllJobs: MiddlewareFn = async (
         workers: assignmentMap[job._id.toString()] ?? [],
     }));
     // console.log("this is the result : ", result.map(r => r.workers))
+
     const totalJobs = await Job.countDocuments(query);
     res.status(StatusCodes.OK).json({
         success: true,
@@ -402,7 +444,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         {
             ...req.body,
             client: "client",
-            hours: jobDuration(startTime, endTime),
+            minutes: jobDurationMinutes(startTime, endTime),
         },
         {
             new: true,

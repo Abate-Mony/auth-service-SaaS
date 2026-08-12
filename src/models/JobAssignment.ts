@@ -1,133 +1,64 @@
 import mongoose, { InferSchemaType, Schema } from "mongoose";
 
 const JobAssignmentSchema = new Schema(
-    {
-        email: {
-            type: String,
-            required: true,
-            unique: true,
-            lowercase: true,
-            trim: true,
-        },
-        fullname: {
-            type: String,
-            required: true,
-        },
-        job: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "Job",
-            required: true,
-        },
+  {
+    
+    fullname: { type: String,  required: [true,"please fullname is require for queries"] },
+    job: { type: Schema.Types.ObjectId, ref: "Job", required: true, index: true },
+    worker: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
 
-        worker: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "User",
-            required: true,
-        },
-
-        createdBy: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "User",
-            required: true,
-        },
-
-        status: {
-            type: String,
-            enum: [
-                "pending",
-                "accepted",
-                "declined",
-                "in-progress",
-                "completed",
-                "cancelled",
-            ],
-            default: "pending",
-        },
-
-        acceptedAt: {
-            type: Date,
-        },
-
-        declinedAt: {
-            type: Date,
-        },
-
-        checkedInAt: {
-            type: Date,
-        },
-
-        checkedOutAt: {
-            type: Date,
-        },
-
-        completedAt: {
-            type: Date,
-        },
-
-        cancellationReason: {
-            type: String,
-            default: "",
-        },
-
-        workerNotes: {
-            type: String,
-            default: "",
-        },
-
-        managerNotes: {
-            type: String,
-            default: "",
-        },
-
-        hoursWorked: {
-            type: Number,
-            default: 0,
-        },
-
-        overtimeHours: {
-            type: Number,
-            default: 0,
-        },
-
-        payRate: {
-            type: Number,
-            default: 0,
-        },
-
-        totalPay: {
-            type: Number,
-            default: 0,
-        },
+    status: {
+      type: String,
+      enum: ["pending", "accepted", "declined", "in-progress", "completed", "cancelled"],
+      default: "pending",
+      index: true,
     },
-    {
-        timestamps: true,
-    }
+    company: {
+      type: Schema.Types.ObjectId,
+      ref: "Company",
+      required: true
+    },
+    acceptedAt: Date,
+    declinedAt: Date,
+    checkedInAt: Date,
+    checkedOutAt: Date,
+    completedAt: Date,
+
+    checkInLocation: { lat: Number, lng: Number, accuracy: Number },
+    checkOutLocation: { lat: Number, lng: Number, accuracy: Number },
+
+    breaks: [{ startedAt: Date, endedAt: Date }],
+
+    autoCompleted: { type: Boolean, default: false },
+
+    cancellationReason: { type: String, default: "", trim: true },
+    workerNotes: { type: String, default: "", trim: true },
+    managerNotes: { type: String, default: "", trim: true },
+
+    payRate: { type: Number, default: 0, min: 0 },
+  },
+  { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );
 
-/**
- * Prevent assigning the same worker twice
- * to the same job.
- */
-JobAssignmentSchema.index(
-    {
-        job: 1,
-        worker: 1,
-    },
-    {
-        unique: true,
-    }
-);
+JobAssignmentSchema.index({ job: 1, worker: 1 }, { unique: true });
+JobAssignmentSchema.index({ worker: 1, status: 1 });
+JobAssignmentSchema.index({ worker: 1, createdAt: -1 });
 
-// Supports getMyJobs' $match+$sort (worker/status equality, createdAt sort)
-// and updateWorkerJobStatus's in-progress check — the compound index above
-// can't serve those since worker isn't its leading field.
-JobAssignmentSchema.index({ worker: 1, status: 1, createdAt: -1 });
-
+JobAssignmentSchema.virtual("workedMinutes").get(function (this: any) {
+  if (!this.checkedInAt || !this.checkedOutAt) return 0;
+  const gross = Math.round((this.checkedOutAt - this.checkedInAt) / 60000);
+  const breakMins = (this.breaks ?? []).reduce(
+    (sum: number, b: any) => b.endedAt ? sum + Math.round((b.endedAt - b.startedAt) / 60000) : sum,
+    0
+  );
+  return Math.max(0, gross - breakMins);
+});
 export type JobAssignment = InferSchemaType<
-    typeof JobAssignmentSchema
+  typeof JobAssignmentSchema
 >;
 
 export default mongoose.model(
-    "JobAssignment",
-    JobAssignmentSchema
+  "JobAssignment",
+  JobAssignmentSchema
 );
