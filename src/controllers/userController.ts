@@ -14,7 +14,7 @@ export const currentUser: MiddlewareFn = async (req, res) => {
   const user = await userModel.findOne({ _id: user_id }).populate("company", "name plan maxWorkers")
 console.log("user : ",user)  
   if (!user) throw new UnauthenticatedError(`login again `);
-// adding comment
+// adding c
   let Iuser = sanitizeUser(user);
   Iuser = {
     ...Iuser,
