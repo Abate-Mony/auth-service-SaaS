@@ -3,6 +3,7 @@ import { MiddlewareFn } from "../interfaces/expresstype.js";
 import ActivityLog from "../models/ActivityLog.js";
 // comment here 
 export const getJobTimeline: MiddlewareFn = async (req, res) => {
+    // edit activity_log controlleer
     const { id: jobId } = req.params;
     // change thios code when crating eventory later in the future thanks 
 
