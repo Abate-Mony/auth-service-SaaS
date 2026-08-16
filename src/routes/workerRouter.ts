@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { createWorker, getActiveJob, getJob, getMyJobs, getMyTotalHours, getWorkerDashboardStats, updateWorkerJobStatus } from "../controllers/workerController.js"
+import { createWorker, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getWorkerDashboardStats, startWorkerBreak, updateWorkerJobStatus } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 const router = express.Router();
@@ -13,5 +13,7 @@ router.route("/stats").get(authorizePermissions("worker"), getWorkerDashboardSta
 router.route("/active-job").get(authorizePermissions("worker"), getActiveJob)
 router.route("/:id/status")
 .patch(updateWorkerJobStatus);
+router.route("/:id/break/start").patch(authorizePermissions("worker"), startWorkerBreak);
+router.route("/:id/break/end").patch(authorizePermissions("worker"), endWorkerBreak);
 router.route("/:id").get(authorizePermissions("worker"), getJob)
 export default router;

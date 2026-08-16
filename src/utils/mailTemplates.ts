@@ -1,0 +1,177 @@
+// utils/mailTemplates.ts
+import dayjs from "./dayjsSetup.js";
+import { TZ } from "./dates.js";
+import { sendMail } from "./sendMailsUtils.js";
+
+const BRAND = "#1E3A5F";
+const ACCENT = "#3B82F6";
+
+/** Shared shell — every email gets the same header, container and footer. */
+function layout({ heading, body }: { heading: string; body: string }) {
+  return `
+  <div style="background:#F8FAFC;padding:32px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+    <div style="max-width:520px;margin:0 auto;background:#ffffff;border:1px solid #E2E8F0;border-radius:16px;overflow:hidden;">
+
+      <div style="padding:20px 28px;border-bottom:1px solid #F1F5F9;">
+        <span style="font-size:17px;font-weight:600;color:#0F172A;letter-spacing:-0.3px;">
+          work<span style="color:${ACCENT};">.wrk</span>
+        </span>
+      </div>
+
+      <div style="padding:28px;">
+        <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#0F172A;">${heading}</h1>
+        ${body}
+      </div>
+
+      <div style="padding:18px 28px;background:#F8FAFC;border-top:1px solid #F1F5F9;">
+        <p style="margin:0;font-size:12px;color:#94A3B8;">
+          You're receiving this because you're on a team using work.wrk.
+        </p>
+      </div>
+
+    </div>
+  </div>`;
+}
+
+function button(href: string, label: string) {
+  return `<a href="${href}" style="display:inline-block;background:${BRAND};color:#ffffff;padding:12px 24px;border-radius:12px;text-decoration:none;font-size:14px;font-weight:700;margin:20px 0;">${label}</a>`;
+}
+
+function detailRow(label: string, value: string) {
+  return `
+  <tr>
+    <td style="padding:8px 0;font-size:13px;color:#94A3B8;width:110px;">${label}</td>
+    <td style="padding:8px 0;font-size:14px;color:#0F172A;font-weight:600;">${value}</td>
+  </tr>`;
+}
+
+interface ShiftJob {
+  _id: string;
+  title: string;
+  location: string;
+  address?: string;
+  date: Date | string;
+  startTime: string;
+  endTime: string;
+  minutes: number;
+}
+
+export async function sendShiftAssigned({
+  worker,
+  job,
+}: {
+  worker: { email: string; fullname: string };
+  job: ShiftJob;
+}) {
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const hours = Math.floor(job.minutes / 60);
+  const mins = job.minutes % 60;
+  const duration = mins ? `${hours}h ${mins}m` : `${hours}h`;
+  const link = `${process.env.CLIENT_URL}/worker/jobs/${job._id}`;
+  const firstName = worker.fullname.split(" ")[0];
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, you've been assigned a new shift. Open the app to accept or decline it.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime} (${duration})`)}
+      ${detailRow("Location", job.address ? `${job.location}, ${job.address}` : job.location)}
+    </table>
+
+    ${button(link, "Accept or decline")}
+
+    <p style="margin:0;font-size:13px;color:#94A3B8;">
+      Please respond as soon as you can so your manager knows whether the shift is covered.
+    </p>`;
+
+  await sendMail({
+    to: worker.email,
+    subject: `New shift: ${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `You've been assigned a new shift.\n\n` +
+      `Job: ${job.title}\n` +
+      `Date: ${when}\n` +
+      `Time: ${job.startTime} – ${job.endTime} (${duration})\n` +
+      `Location: ${job.location}\n\n` +
+      `Accept or decline: ${link}`,
+    html: layout({ heading: "You've got a new shift", body }),
+  });
+}
+
+/** Recurring schedules assign many occurrences at once — one summary
+ *  rather than an email per generated date. */
+export async function sendRecurringShiftAssigned({
+  worker,
+  job,
+  occurrenceCount,
+  firstDate,
+  lastDate,
+  daysLabel,
+}: {
+  worker: { email: string; fullname: string };
+  job: ShiftJob;
+  occurrenceCount: number;
+  firstDate: Date | string;
+  lastDate: Date | string;
+  daysLabel: string;
+}) {
+  const link = `${process.env.CLIENT_URL}/worker/jobs`;
+  const firstName = worker.fullname.split(" ")[0];
+  const range = `${dayjs(firstDate).tz(TZ).format("D MMM")} – ${dayjs(lastDate).tz(TZ).format("D MMM")}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, you've been added to a recurring shift. That's
+      <strong>${occurrenceCount} shifts</strong> in your schedule — open the app to review them.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Repeats", daysLabel)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime}`)}
+      ${detailRow("Between", range)}
+      ${detailRow("Location", job.location)}
+    </table>
+
+    ${button(link, "View my shifts")}`;
+
+  await sendMail({
+    to: worker.email,
+    subject: `You've been added to ${job.title} (${occurrenceCount} shifts)`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `You've been added to a recurring shift — ${occurrenceCount} shifts in total.\n\n` +
+      `Job: ${job.title}\n` +
+      `Repeats: ${daysLabel}\n` +
+      `Time: ${job.startTime} – ${job.endTime}\n` +
+      `Between: ${range}\n` +
+      `Location: ${job.location}\n\n` +
+      `View your shifts: ${link}`,
+    html: layout({ heading: "You've been added to a recurring shift", body }),
+  });
+}
+export const sendWorkerInvite = async ({
+  email, fullname, companyName, inviteToken,
+}: { email: string; fullname: string; companyName: string; inviteToken: string }) => {
+  const link = `${process.env.CLIENT_URL}/auth/set-password?token=${inviteToken}`;
+
+  await sendMail({
+    to: email,
+    subject: `You've been added to ${companyName} on work.wrk`,
+    text: `Hi ${fullname}, ${companyName} has added you to work.wrk. Set your password: ${link}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #0F172A;">
+        <h2 style="color: #1E3A5F;">Welcome to work.wrk</h2>
+        <p>Hi ${fullname},</p>
+        <p><strong>${companyName}</strong> has added you to work.wrk, where you'll see your shifts, accept or decline jobs, and clock in and out.</p>
+        <a href="${link}" style="display: inline-block; background: #1E3A5F; color: #fff; padding: 12px 24px; border-radius: 12px; text-decoration: none; font-weight: bold; margin: 20px 0;">Set your password</a>
+        <p style="font-size: 13px; color: #64748B;">This link expires in 7 days.</p>
+      </div>
+    `,
+  });
+};

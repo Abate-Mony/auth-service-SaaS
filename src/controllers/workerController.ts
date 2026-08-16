@@ -10,6 +10,7 @@ import { logActivity } from "../utils/logActivity.js";
 import recurringJobModel from "../models/recurringJobModel.js";
 import dayjs from "dayjs";
 import Company from "../models/company.js";
+import { scheduledEndOf, scheduledStartOf, TZ } from "../utils/dates.js";
 
 export const createWorker: MiddlewareFn = async (req, res) => {
     const { fullname, email, password, role } = req.body;
@@ -246,13 +247,14 @@ export const getJob: MiddlewareFn = async (req, res) => {
     if (!job) {
         throw new BadRequestError("Job not found.");
     }
+    if (!jobAssignment) {
+        throw new NotFoundError("You are not assigned to this job.");
+    }
 
     const job_ = {
         ...job.toObject(),
-        // Fall back to the job's own status when there's no assignment,
-        // instead of misleadingly claiming "in-progress"
-        status: jobAssignment?.status ?? job.status,
-        workerJobDetails: jobAssignment || null,
+        status: jobAssignment.status,
+        workerJobDetails: jobAssignment,
     };
 
     res.status(StatusCodes.OK).json({
@@ -287,81 +289,133 @@ export const getActiveJob: MiddlewareFn = async (req, res) => {
 // checkInJob below now just calls this instead of duplicating the logic.
 export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, reason } = req.body;
 
     const allowedStatuses = ["accepted", "declined", "in-progress", "completed"];
     if (!allowedStatuses.includes(status)) {
         throw new BadRequestError("Invalid status");
     }
-    //PREVENT USER FROM STARTING A JOB IF THERE ARE ALREADY IN AN ACTIVE JOB 
 
-    let assignment = await JobAssignment.findOne({
-        worker: req.user.user_id,
-        job: id,
+    const workerId = getReqUser(req).user_id;
 
-    });
-
+    const assignment = await JobAssignment.findOne({ worker: workerId, job: id });
     if (!assignment) {
         throw new NotFoundError("You are not assigned to this job.");
     }
-    if (status == "in-progress") {
-        const hasActiveJob = await JobAssignment.exists({
-            worker: req.user.user_id,
-            status: "in-progress",
-        });
-        if (hasActiveJob) {
-            throw new BadRequestError("You already have an active Job please complete the job to start another one ")
-        }
-    }
-    // if(!assignment.ma)
+
+    const job = await jobModel.findById(assignment.job).lean();
+    if (!job) throw new NotFoundError("Job not found.");
+
+    const now = new Date();
+    const scheduledStart = scheduledStartOf(job);
+    const scheduledEnd = scheduledEndOf(job);
+
     switch (status) {
-        case "accepted":
+        case "accepted": {
             if (assignment.status !== "pending") {
                 throw new BadRequestError(`You cannot accept a job that is ${assignment.status}.`);
             }
+
             assignment.status = "accepted";
-            assignment.acceptedAt = new Date();
+            assignment.acceptedAt = now;
+
             await logActivity({
                 job: assignment.job,
+                jobDate: job.date,
                 assignment: assignment._id,
+                worker: assignment.worker,
                 type: "assignment_accepted",
-                actor: req.user.user_id,
+                actor: workerId,
+                metadata: {
+                    // How long they took to respond after being assigned
+                    responseMinutes: Math.round(
+                        (now.getTime() - new Date(assignment.createdAt).getTime()) / 60_000
+                    ),
+                },
             });
             break;
+        }
 
-        case "declined":
+        case "declined": {
             if (assignment.status !== "pending") {
                 throw new BadRequestError(`You cannot decline a job that is ${assignment.status}.`);
             }
+
             assignment.status = "declined";
-            assignment.declinedAt = new Date();
-            //todo add decline note later
+            assignment.declinedAt = now;
+            assignment.cancellationReason = (reason ?? "").trim();
+
             await logActivity({
                 job: assignment.job,
+                jobDate: job.date,
                 assignment: assignment._id,
+                worker: assignment.worker,
                 type: "assignment_declined",
-                actor: req.user.user_id,
+                actor: workerId,
+                metadata: {
+                    reason: assignment.cancellationReason || null,
+                    responseMinutes: Math.round(
+                        (now.getTime() - new Date(assignment.createdAt).getTime()) / 60_000
+                    ),
+                    // How much notice the manager has to backfill
+                    hoursNotice: Math.round((scheduledStart.getTime() - now.getTime()) / 3_600_000),
+                },
             });
             break;
+        }
 
-        case "in-progress":
+        case "in-progress": {
             if (assignment.status !== "accepted") {
                 throw new BadRequestError("You must accept the job before starting it.");
             }
             if (assignment.checkedInAt) {
                 throw new BadRequestError("You have already checked in.");
             }
-            assignment.checkedInAt = new Date();
+
+            // Guards run BEFORE any mutation
+            const hasActiveJob = await JobAssignment.exists({
+                worker: workerId,
+                status: "in-progress",
+            });
+            if (hasActiveJob) {
+                throw new BadRequestError(
+                    "You already have an active job — complete it before starting another."
+                );
+            }
+
+            const EARLY_GRACE_MINUTES = 30;
+            const earliest = new Date(scheduledStart.getTime() - EARLY_GRACE_MINUTES * 60_000);
+
+            if (now < earliest) {
+                throw new BadRequestError(
+                    `This shift starts at ${job.startTime} on ${dayjs(job.date).tz(TZ).format("D MMM")}. You can clock in from ${dayjs(earliest).tz(TZ).format("HH:mm")}.`
+                );
+            }
+            if (now > scheduledEnd) {
+                throw new BadRequestError("This shift has already ended. Contact your manager.");
+            }
+
+            assignment.checkedInAt = now;
             assignment.status = "in-progress";
 
-            //todo overtime hours later
+            // Positive = late, negative = early
+            const minutesLate = Math.round((now.getTime() - scheduledStart.getTime()) / 60_000);
+
             await logActivity({
                 job: assignment.job,
+                jobDate: job.date,
                 assignment: assignment._id,
+                worker: assignment.worker,
                 type: "assignment_checked_in",
-                actor: req.user.user_id,
+                actor: workerId,
+                metadata: {
+                    minutesLate,
+                    location: job.location,
+                    scheduledStart,
+                },
             });
             break;
+        }
 
         case "completed": {
             if (assignment.status !== "in-progress") {
@@ -371,20 +425,39 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 throw new BadRequestError("No check-in recorded for this shift.");
             }
 
-            // Close any break left open, so it doesn't count as worked time
             const openBreak = assignment.breaks?.find(b => !b.endedAt);
-            if (openBreak) openBreak.endedAt = new Date();
+            if (openBreak) openBreak.endedAt = now;
 
-            assignment.checkedOutAt = new Date();
-            assignment.completedAt = new Date();
+            assignment.checkedOutAt = now;
+            assignment.completedAt = now;
             assignment.status = "completed";
+
+            const grossMinutes = Math.round(
+                (now.getTime() - new Date(assignment.checkedInAt).getTime()) / 60_000
+            );
+            const breakMinutes = (assignment.breaks ?? []).reduce(
+                (sum, b) =>
+                    b.endedAt
+                        ? sum + Math.round((new Date(b.endedAt).getTime() - new Date(b.startedAt!).getTime()) / 60_000)
+                        : sum,
+                0
+            );
 
             await logActivity({
                 job: assignment.job,
+                jobDate: job.date,
                 assignment: assignment._id,
                 worker: assignment.worker,
                 type: "assignment_checked_out",
-                actor: req.user.user_id,
+                actor: workerId,
+                metadata: {
+                    workedMinutes: Math.max(0, grossMinutes - breakMinutes),
+                    breakMinutes,
+                    breakCount: (assignment.breaks ?? []).length,
+                    scheduledMinutes: job.minutes,
+                    // Positive = left early, negative = stayed late
+                    minutesEarly: Math.round((scheduledEnd.getTime() - now.getTime()) / 60_000),
+                },
             });
             break;
         }
@@ -398,6 +471,77 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
         assignment,
     });
 };
+export const startWorkerBreak: MiddlewareFn = async (req, res) => {
+    const { id } = req.params;
+
+    const assignment = await JobAssignment.findOne({
+        worker: req.user.user_id,
+        job: id,
+    });
+
+    if (!assignment) {
+        throw new NotFoundError("You are not assigned to this job.");
+    }
+    if (assignment.status !== "in-progress") {
+        throw new BadRequestError("You can only take a break while the job is in progress.");
+    }
+    const openBreak = assignment.breaks?.find(b => !b.endedAt);
+    if (openBreak) {
+        throw new BadRequestError("You are already on a break.");
+    }
+
+    assignment.breaks?.push({ startedAt: new Date() });
+    await assignment.save();
+
+    await logActivity({
+        job: assignment.job,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_break_started",
+        actor: req.user.user_id,
+    });
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        message: "Break started.",
+        assignment,
+    });
+};
+
+export const endWorkerBreak: MiddlewareFn = async (req, res) => {
+    const { id } = req.params;
+
+    const assignment = await JobAssignment.findOne({
+        worker: req.user.user_id,
+        job: id,
+    });
+
+    if (!assignment) {
+        throw new NotFoundError("You are not assigned to this job.");
+    }
+
+    const openBreak = assignment.breaks?.find(b => !b.endedAt);
+    if (!openBreak) {
+        throw new BadRequestError("You are not currently on a break.");
+    }
+    openBreak.endedAt = new Date();
+    await assignment.save();
+
+    await logActivity({
+        job: assignment.job,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_break_ended",
+        actor: req.user.user_id,
+    });
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        message: "Break ended.",
+        assignment,
+    });
+};
+
 export const declineRecurringSeries: MiddlewareFn = async (req, res) => {
     const { id: recurringJobId } = req.params;
     const workerId = getReqUser(req).user_id;

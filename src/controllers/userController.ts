@@ -1,20 +1,20 @@
 // @ts-ignore
 import { StatusCodes } from "http-status-codes";
+import mongoose from "mongoose";
 import { NotFoundError, UnauthenticatedError, UnauthorizedError } from "../errors/customErrors.js";
 import { getReqUser, MiddlewareFn } from "../interfaces/expresstype.js";
-import userModel from "../models/userModel.js";
-import { sanitizeUser } from "../utils/tokenUtils.js";
 import JobAssignment from "../models/JobAssignment.js";
-import mongoose from "mongoose";
+import userModel from "../models/userModel.js";
 import { toUtcDay } from "../utils/dates.js";
 import dayjs from "../utils/dayjsSetup.js";
+import { sanitizeUser } from "../utils/tokenUtils.js";
 export const currentUser: MiddlewareFn = async (req, res) => {
   // const { user_id } = getReqUser(req);
   const { user_id } = req.user
   const user = await userModel.findOne({ _id: user_id }).populate("company", "name plan maxWorkers")
-console.log("user : ",user)  
+
   if (!user) throw new UnauthenticatedError(`login again `);
-// adding c
+  // adding c
   let Iuser = sanitizeUser(user);
   Iuser = {
     ...Iuser,
@@ -63,48 +63,48 @@ export const getAllUser: MiddlewareFn = async (
   const skip = (page - 1) * limit;
   // testing
   const totalUsers = await userModel.countDocuments(queryObject);
-// in getAllUser — one aggregation, no extra requests
-const weekStart = dayjs.utc().startOf("isoWeek").toDate();
-const users = await userModel.aggregate([
-  { $match: queryObject },
-  { $sort: { createdAt: -1 } },
-  { $skip: skip },
-  { $limit: limit },
-  {
-    $lookup: {
-      from: "jobassignments",
-      let: { workerId: "$_id" },
-      pipeline: [
-        { $match: { $expr: { $eq: ["$worker", "$$workerId"] } } },
-        {
-          $group: {
-            _id: null,
-            jobsCompleted: { $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] } },
-            minutesThisWeek: {
-              $sum: {
-                $cond: [
-                  { $and: [{ $gte: ["$checkedInAt", weekStart] }, "$checkedOutAt"] },
-                  { $dateDiff: { startDate: "$checkedInAt", endDate: "$checkedOutAt", unit: "minute" } },
-                  0,
-                ],
+  // in getAllUser — one aggregation, no extra requests
+  const weekStart = dayjs.utc().startOf("isoWeek").toDate();
+  const users = await userModel.aggregate([
+    { $match: queryObject },
+    { $sort: { createdAt: -1 } },
+    { $skip: skip },
+    { $limit: limit },
+    {
+      $lookup: {
+        from: "jobassignments",
+        let: { workerId: "$_id" },
+        pipeline: [
+          { $match: { $expr: { $eq: ["$worker", "$$workerId"] } } },
+          {
+            $group: {
+              _id: null,
+              jobsCompleted: { $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] } },
+              minutesThisWeek: {
+                $sum: {
+                  $cond: [
+                    { $and: [{ $gte: ["$checkedInAt", weekStart] }, "$checkedOutAt"] },
+                    { $dateDiff: { startDate: "$checkedInAt", endDate: "$checkedOutAt", unit: "minute" } },
+                    0,
+                  ],
+                },
               },
             },
           },
-        },
-      ],
-      as: "stats",
-    },
-  },
-  {
-    $addFields: {
-      jobsCompleted: { $ifNull: [{ $first: "$stats.jobsCompleted" }, 0] },
-      hoursThisWeek: {
-        $round: [{ $divide: [{ $ifNull: [{ $first: "$stats.minutesThisWeek" }, 0] }, 60] }, 1],
+        ],
+        as: "stats",
       },
     },
-  },
-  { $project: { password: 0, refreshToken: 0, stats: 0 } },
-]);
+    {
+      $addFields: {
+        jobsCompleted: { $ifNull: [{ $first: "$stats.jobsCompleted" }, 0] },
+        hoursThisWeek: {
+          $round: [{ $divide: [{ $ifNull: [{ $first: "$stats.minutesThisWeek" }, 0] }, 60] }, 1],
+        },
+      },
+    },
+    { $project: { password: 0, refreshToken: 0, stats: 0 } },
+  ]);
   const numberOfPage = Math.ceil(totalUsers / limit);
 
   res.status(200).json({ users, numberOfPage, limit, currentPage: page, nHits: totalUsers });

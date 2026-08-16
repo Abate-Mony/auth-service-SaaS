@@ -1,4 +1,3 @@
-import dayjs from "dayjs";
 import { StatusCodes } from "http-status-codes";
 import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
 import { MiddlewareFn, getReqUser } from "../interfaces/expresstype.js";
@@ -10,6 +9,7 @@ import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity } from "../utils/logActivity.js";
 import { toUtcDay } from "../utils/dates.js";
 import company from "../models/company.js";
+import { sendShiftAssigned } from "../utils/mailTemplates.js";
 
 export const jobDurationMinutes = (startTime: string, endTime: string): number => {
     const [sh, sm] = startTime.split(":").map(Number);
@@ -254,7 +254,23 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             workers: workerIds,
         });
     }
-
+    await Promise.all(
+        realWorkers.map(w =>
+            sendShiftAssigned({
+                worker: { email: w.email, fullname: w.fullname },
+                job: {
+                    _id: job._id.toString(),
+                    title: job.title,
+                    location: job.location,
+                    address: job.address,
+                    date: job.date,
+                    startTime: job.startTime,
+                    endTime: job.endTime,
+                    minutes: job.minutes,
+                },
+            })
+        )
+    );
     res.status(StatusCodes.CREATED).json({ success: true, job });
 };
 export const getAllJobs: MiddlewareFn = async (

@@ -1,7 +1,7 @@
 // @ts-ignore
-import "express-async-errors";
 import * as dotenv from "dotenv";
 dotenv.config({ path: "./.env" });
+import "express-async-errors";
 import express from "express";
 import path, { dirname } from "path";
 import { fileURLToPath } from "url";
