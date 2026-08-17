@@ -37,6 +37,8 @@ const JobAssignmentSchema = new Schema(
     managerNotes: { type: String, default: "", trim: true },
 
     payRate: { type: Number, default: 0, min: 0 },
+
+    isDeleted: { type: Boolean, default: false },
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );

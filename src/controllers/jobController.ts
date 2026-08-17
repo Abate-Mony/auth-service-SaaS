@@ -5,10 +5,9 @@ import JobAssignment from "../models/JobAssignment.js";
 import Job from "../models/jobModel.js";
 import recurringJobModel from "../models/recurringJobModel.js";
 import userModel from "../models/userModel.js";
+import { toUtcDay } from "../utils/dates.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity } from "../utils/logActivity.js";
-import { toUtcDay } from "../utils/dates.js";
-import company from "../models/company.js";
 import { sendShiftAssigned } from "../utils/mailTemplates.js";
 
 export const jobDurationMinutes = (startTime: string, endTime: string): number => {
@@ -501,6 +500,8 @@ export const deleteJob: MiddlewareFn = async (req, res): Promise<void> => {
     if (!job) {
         throw new BadRequestError(`Could not find job with id ${req.params.id}`);
     }
+
+    await JobAssignment.updateMany({ job: job._id }, { isDeleted: true });
     // await logActivity("")
     res.status(StatusCodes.OK).json({
         success: true,

@@ -241,8 +241,8 @@ export const getJob: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
 
     const [job, jobAssignment] = await Promise.all([
-        jobModel.findOne({ _id: id }),
-        JobAssignment.findOne({ job: id, worker: req.user.user_id }),
+        jobModel.findOne({ _id: id, isDeleted: false }),
+        JobAssignment.findOne({ job: id, worker: req.user.user_id, isDeleted: false }),
     ]);
     if (!job) {
         throw new BadRequestError("Job not found.");
