@@ -61,8 +61,10 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
     const lookupJob: mongoose.PipelineStage.Lookup = {
         $lookup: {
             from: "jobs", // Mongoose lowercases + pluralizes "Job" -> "jobs" by default; adjust if you overrode the collection name
-            localField: "job",
-            foreignField: "_id",
+            let: { jobId: "$job" },
+            pipeline: [
+                { $match: { $expr: { $eq: ["$_id", "$$jobId"] }, isDeleted: false } },
+            ],
             as: "job",
         },
     };
@@ -267,7 +269,7 @@ export const getActiveJob: MiddlewareFn = async (req, res) => {
         status: "in-progress",
         worker: req.user.user_id,
     })
-        .populate("job")
+        .populate({ path: "job", match: { isDeleted: false } })
         .lean();
 
     if (!assignment || !assignment.job) {
@@ -303,7 +305,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
         throw new NotFoundError("You are not assigned to this job.");
     }
 
-    const job = await jobModel.findById(assignment.job).lean();
+    const job = await jobModel.findOne({ _id: assignment.job, isDeleted: false }).lean();
     if (!job) throw new NotFoundError("Job not found.");
 
     const now = new Date();
@@ -554,6 +556,7 @@ export const declineRecurringSeries: MiddlewareFn = async (req, res) => {
     const futureJobIds = await jobModel.find({
         recurringJob: recurringJobId,
         date: { $gte: new Date() },
+        isDeleted: false,
     }).distinct("_id");
 
     await JobAssignment.updateMany(

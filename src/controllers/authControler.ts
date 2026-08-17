@@ -5,13 +5,36 @@ import {
   BadRequestError,
   UnauthenticatedError,
 } from "../errors/customErrors.js";
-import { createJWT, sanitizeUser } from "../utils/tokenUtils.js";
+import { createAccessToken, createRefreshToken, hashRefreshToken, sanitizeUser } from "../utils/tokenUtils.js";
 import { StatusCodes } from "http-status-codes";
 import { USER_ROLES, UserroleTypes } from "../utils/constant.js";
 import { setCookies } from "../utils/cookieUtils.js";
 import { OAuth2Client } from "google-auth-library";
 import Company from "../models/company.js";
 import mongoose from "mongoose";
+
+const ACCESS_TOKEN_COOKIE_MS = 15 * 60 * 1000;
+const REFRESH_TOKEN_COOKIE_MS = (Number(process.env.REFRESH_TOKEN_EXPIRES_IN_DAYS) || 30) * 24 * 60 * 60 * 1000;
+
+// Issues an access + refresh token pair for `user`, persists the refresh
+// token's hash on the user doc (so it can be looked up/revoked later), and
+// sets both as httpOnly cookies on `res`.
+const issueTokens = async (user: mongoose.Document & { _id: any; role: string; company?: any }, res: import("express").Response) => {
+  const accessToken = createAccessToken({
+    user_id: user._id.toString(),
+    role: user.role,
+    company_id: user.company as unknown as string,
+  });
+  const { token: refreshToken, hash, expiresAt } = createRefreshToken();
+
+  await User.updateOne(
+    { _id: user._id },
+    { refreshToken: hash, refreshTokenExpiresAt: expiresAt }
+  );
+
+  res.cookie("token", accessToken, setCookies(ACCESS_TOKEN_COOKIE_MS));
+  res.cookie("refreshToken", refreshToken, setCookies(REFRESH_TOKEN_COOKIE_MS));
+};
 
 
 
@@ -57,15 +80,7 @@ export const loginWithGoogle: MiddlewareFn = async (req, res) => {
       "No account exists with this Google email address."
     );
   }
-  console.log("user _id to string : ", user._id.toString())
-
-  const token = createJWT({
-    user_id: user._id.toString(),
-    role: user.role,
-    company_id: user.company as unknown as string
-  });
-  const oneDay: number = 1000 * 60 * 60 * 24;
-  res.cookie("token", token, setCookies(oneDay));
+  await issueTokens(user, res);
 
   res.status(StatusCodes.OK).json({
     success: true,
@@ -83,21 +98,13 @@ export const login: MiddlewareFn = async (req, res) => {
     email: string;
     password: string;
   } = req.body;
-  console.log("this is body request :", req.body)
   const user = await User.findOne({ email: email }).select("+password");
-  console.log("this is the user : ", user)
   const isValidUser = user && (await comparePassword(password, user.password));
   if (!isValidUser) throw new UnauthenticatedError("invalid credentials");
 
-  const token = createJWT({
-    user_id: user._id.toString(), role: user.role,
-    company_id: user.company as unknown as string
+  await issueTokens(user, res);
 
-  });
-  const oneDay: number = 1000 * 60 * 60 * 24;
-  res.cookie("token", token, setCookies(oneDay));
-  console.log("token", token)
-  res.status(StatusCodes.OK).json({ msg: "user logged in", token, user: sanitizeUser(user) });
+  res.status(StatusCodes.OK).json({ msg: "user logged in", user: sanitizeUser(user) });
 };
 
 
@@ -157,15 +164,7 @@ export const register: MiddlewareFn = async (req, res) => {
   await user.save();
 
   // 5. Issue Token & Cookie
-  const token = createJWT({
-    user_id: user._id,
-    role: user.role,
-    company_id: user.company as unknown as string
-
-  });
-
-  const oneDay = 1000 * 60 * 60 * 24;
-  res.cookie("token", token, setCookies(oneDay));
+  await issueTokens(user, res);
 
   res.status(StatusCodes.CREATED).json({
     msg: "User and company created successfully",
@@ -175,7 +174,37 @@ export const register: MiddlewareFn = async (req, res) => {
     },
   });
 };
-export const logout: MiddlewareFn = (_, res) => {
+// Exchanges a still-valid refresh token cookie for a new access token
+// (rotating the refresh token too, so a stolen-and-replayed old refresh
+// token stops working the moment the legitimate client refreshes).
+export const refresh: MiddlewareFn = async (req, res) => {
+  const { refreshToken } = req.cookies;
+  if (!refreshToken) throw new UnauthenticatedError("authentication invalid");
+
+  const hash = hashRefreshToken(refreshToken);
+  const user = await User.findOne({ refreshToken: hash }).select("+refreshToken +refreshTokenExpiresAt");
+
+  if (!user || !user.refreshTokenExpiresAt || user.refreshTokenExpiresAt < new Date()) {
+    res.cookie("token", "logout", setCookies());
+    res.cookie("refreshToken", "logout", setCookies());
+    throw new UnauthenticatedError("authentication invalid");
+  }
+
+  await issueTokens(user, res);
+
+  res.status(StatusCodes.OK).json({ success: true, msg: "token refreshed" });
+};
+
+export const logout: MiddlewareFn = async (req, res) => {
+  const { refreshToken } = req.cookies;
+  if (refreshToken) {
+    await User.updateOne(
+      { refreshToken: hashRefreshToken(refreshToken) },
+      { $unset: { refreshToken: "", refreshTokenExpiresAt: "" } }
+    );
+  }
+
   res.cookie("token", "logout", setCookies());
+  res.cookie("refreshToken", "logout", setCookies());
   res.status(StatusCodes.OK).json({ msg: "user logged out!" });
 };

@@ -4,7 +4,7 @@ import {
   UnauthorizedError
 } from "../errors/customErrors.js";
 import { MiddlewareFn } from "../interfaces/expresstype.js";
-import { verifyJWT } from "../utils/tokenUtils.js";
+import { verifyAccessToken } from "../utils/tokenUtils.js";
 import { USER_ROLES } from "../utils/types.js";
 // Verifies the JWT stored in the "token" cookie and attaches the decoded
 // { user_id, role } payload to req.user for downstream handlers/middleware.
@@ -15,7 +15,7 @@ export const authenticateUser: MiddlewareFn = (req, _res, next) => {
   if (!token) throw new UnauthenticatedError("authentication invalid");
 
   try {
-    const payload = verifyJWT(token);
+    const payload = verifyAccessToken(token);
     const { user_id, role ,company_id} = payload;
     req.user = { user_id, role ,company_id};
     // console.log("payload : ", payload)

@@ -7,11 +7,11 @@ export interface cookieObject {
 }
 export const setCookies = (time: number | null = 0): cookieObject => {
   const obj: cookieObject = {
-    httpOnly: isProduction,
+    httpOnly: true,
     expires: time ? new Date(Date.now() + time) : new Date(Date.now()),
     secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
   };
-  if (isProduction) obj.sameSite = "none";
   return {
     ...obj,
   };
