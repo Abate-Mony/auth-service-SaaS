@@ -85,45 +85,28 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
         },
     };
 
-    // createdAt lives on the assignment doc, so sorting doesn't need the job
-    // join. Without a search term we skip/limit BEFORE joining, so $lookup
-    // only runs for the page (e.g. 20 docs) instead of every assignment the
-    // worker has ever had. With a search term we still need the join first
-    // since the filter depends on the joined job's title.
-    const pipeline: mongoose.PipelineStage[] = search
-        ? [
-            { $match: assignmentMatch },
-            { $sort: { createdAt: -1 as const } },
-            lookupJob,
-            unwindJob,
-            { $match: { "job.title": { $regex: search, $options: "i" } } },
-            {
-                $facet: {
-                    data: [
-                        { $skip: (pageNum - 1) * limitNum },
-                        { $limit: limitNum },
-                        projectRow,
-                    ],
-                    totalCount: [{ $count: "count" }],
-                },
+    // The job join has to happen BEFORE the facet (not just inside the data
+    // branch) because it also drops assignments whose job was soft-deleted.
+    // If skip/limit ran first, a deleted job in the current page would leave
+    // that page short instead of backfilling from the next one, and
+    // totalCount would count assignments that can never appear in any page.
+    const pipeline: mongoose.PipelineStage[] = [
+        { $match: assignmentMatch },
+        { $sort: { createdAt: -1 as const } },
+        lookupJob,
+        unwindJob,
+        ...(search ? [{ $match: { "job.title": { $regex: search as string, $options: "i" } } }] : []),
+        {
+            $facet: {
+                data: [
+                    { $skip: (pageNum - 1) * limitNum },
+                    { $limit: limitNum },
+                    projectRow,
+                ],
+                totalCount: [{ $count: "count" }],
             },
-        ]
-        : [
-            { $match: assignmentMatch },
-            { $sort: { createdAt: -1 as const } },
-            {
-                $facet: {
-                    data: [
-                        { $skip: (pageNum - 1) * limitNum },
-                        { $limit: limitNum },
-                        lookupJob,
-                        unwindJob,
-                        projectRow,
-                    ],
-                    totalCount: [{ $count: "count" }],
-                },
-            },
-        ];
+        },
+    ];
 
     const [result] = await JobAssignment.aggregate(pipeline);
     const total = result.totalCount[0]?.count ?? 0;
