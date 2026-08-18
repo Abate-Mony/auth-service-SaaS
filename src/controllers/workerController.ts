@@ -90,12 +90,14 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
     // If skip/limit ran first, a deleted job in the current page would leave
     // that page short instead of backfilling from the next one, and
     // totalCount would count assignments that can never appear in any page.
+    // Sorting by job.date also has to happen after the join, since that
+    // field lives on the job doc, not the assignment.
     const pipeline: mongoose.PipelineStage[] = [
         { $match: assignmentMatch },
-        { $sort: { createdAt: -1 as const } },
         lookupJob,
         unwindJob,
         ...(search ? [{ $match: { "job.title": { $regex: search as string, $options: "i" } } }] : []),
+        { $sort: { "job.date": 1 as const } },
         {
             $facet: {
                 data: [

@@ -39,6 +39,10 @@ const JobAssignmentSchema = new Schema(
     payRate: { type: Number, default: 0, min: 0 },
 
     isDeleted: { type: Boolean, default: false },
+
+    // Set once the "shift starts in 30 minutes" email goes out, so the
+    // reminder cron never emails the same worker twice for the same shift.
+    reminderSentAt: { type: Date, default: null },
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );

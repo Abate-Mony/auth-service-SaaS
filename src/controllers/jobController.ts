@@ -253,7 +253,9 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             workers: workerIds,
         });
     }
-    await Promise.all(
+    // Fire-and-forget: the client doesn't need to wait on outbound mail, and
+    // a failed send shouldn't fail job creation.
+    Promise.all(
         realWorkers.map(w =>
             sendShiftAssigned({
                 worker: { email: w.email, fullname: w.fullname },
@@ -269,7 +271,8 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                 },
             })
         )
-    );
+    ).catch(err => console.error(`Failed to send shift-assigned email(s) for job ${job._id}:`, err));
+
     res.status(StatusCodes.CREATED).json({ success: true, job });
 };
 export const getAllJobs: MiddlewareFn = async (

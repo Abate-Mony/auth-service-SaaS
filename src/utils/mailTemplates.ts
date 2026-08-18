@@ -155,6 +155,46 @@ export async function sendRecurringShiftAssigned({
     html: layout({ heading: "You've been added to a recurring shift", body }),
   });
 }
+export async function sendShiftReminder({
+  worker,
+  job,
+}: {
+  worker: { email: string; fullname: string };
+  job: ShiftJob;
+}) {
+  const firstName = worker.fullname.split(" ")[0];
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const link = `${process.env.CLIENT_URL}/worker/jobs/${job._id}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, your shift starts in about 30 minutes.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime}`)}
+      ${detailRow("Location", job.address ? `${job.location}, ${job.address}` : job.location)}
+    </table>
+
+    ${button(link, "View shift")}`;
+
+  await sendMail({
+    to: worker.email,
+    subject: `Starting soon: ${job.title} at ${job.startTime}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `Your shift starts in about 30 minutes.\n\n` +
+      `Job: ${job.title}\n` +
+      `Date: ${when}\n` +
+      `Time: ${job.startTime} – ${job.endTime}\n` +
+      `Location: ${job.location}\n\n` +
+      `View shift: ${link}`,
+    html: layout({ heading: "Your shift starts soon", body }),
+  });
+}
+
 export const sendWorkerInvite = async ({
   email, fullname, companyName, inviteToken,
 }: { email: string; fullname: string; companyName: string; inviteToken: string }) => {

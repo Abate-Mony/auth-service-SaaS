@@ -19,6 +19,7 @@ import workerRouter from "./routes/workerRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
 import cron from "node-cron";
 import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGeneration.js";
+import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
 
 const app = express();
 app.use(express.json());
@@ -92,6 +93,9 @@ const start = async (): Promise<void> => {
     await db.connect();
     cron.schedule("0 1 * * *", () => {
       runDailyOccurrenceGeneration();
+    });
+    cron.schedule("* * * * *", () => {
+      sendUpcomingShiftReminders();
     });
   } catch (err) {
     console.log(err);
