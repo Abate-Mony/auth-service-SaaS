@@ -9,11 +9,17 @@ function getTransporter() {
   if (!_transporter) {
     _transporter = nodemailer.createTransport({
       service: "gmail",
+      // The host may lack an outbound IPv6 route (common on DigitalOcean
+      // droplets) — force IPv4 so DNS returning smtp.gmail.com's AAAA
+      // record first doesn't produce an ENETUNREACH on connect.
+      // `family` isn't in nodemailer's TS types but is forwarded straight
+      // through to net/tls.connect, which both support it.
+      family: 4,
       auth: {
         user: process.env.user,
         pass: process.env.pass,
       },
-    });
+    } as nodemailer.TransportOptions);
   }
   return _transporter;
 }

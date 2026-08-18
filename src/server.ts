@@ -1,6 +1,12 @@
 // @ts-ignore
 import * as dotenv from "dotenv";
 dotenv.config({ path: "./.env" });
+import dns from "node:dns";
+// Some hosts (e.g. DigitalOcean droplets) have no outbound IPv6 route.
+// Without this, any outbound call to a host whose DNS returns an IPv6
+// address first (Gmail SMTP, Google OAuth, Cloudinary, ...) fails with
+// ENETUNREACH instead of falling back to IPv4.
+dns.setDefaultResultOrder("ipv4first");
 import "express-async-errors";
 import express from "express";
 import path, { dirname } from "path";
