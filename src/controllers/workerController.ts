@@ -366,6 +366,8 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             const hasActiveJob = await JobAssignment.exists({
                 worker: workerId,
                 status: "in-progress",
+                isDeleted: false
+                //user should be able to get job even after being deleted by the manager or admin 
             });
             if (hasActiveJob) {
                 throw new BadRequestError(
