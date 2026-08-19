@@ -283,9 +283,12 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
         throw new BadRequestError("Invalid status");
     }
 
-    const workerId = getReqUser(req).user_id;
+    const workerId = req.user.user_id;
 
-    const assignment = await JobAssignment.findOne({ worker: workerId, job: id });
+    const assignment = await JobAssignment.findOne({
+        worker: workerId,
+        job: id, isDeleted: false
+    });
     if (!assignment) {
         throw new NotFoundError("You are not assigned to this job.");
     }
