@@ -73,6 +73,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     if (req.body.workers) {
         try {
             workers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
+            console.log("this is the workers : ", workers)
         } catch {
             throw new BadRequestError("Invalid workers payload");
         }
@@ -358,6 +359,66 @@ export const getAllJobs: MiddlewareFn = async (
         totalJobs,
         totalPages: Math.ceil(totalJobs / limit),
         currentPage,
+    });
+};
+export const duplicateJob: MiddlewareFn = async (req, res) => {
+    const { id } = req.params;
+
+    const job = await Job.findOne({ _id: id, isDeleted: false });
+
+    if (!job) {
+        throw new BadRequestError("Cannot find job with this id");
+    }
+
+    const jobData = job.toObject() as Record<string, any>;
+
+    delete jobData._id;
+    delete jobData.createdAt;
+    delete jobData.updatedAt;
+    delete jobData.__v;
+
+    const duplicatedJob = await Job.create({
+        ...jobData,
+
+        // Optional: make it obvious this is a duplicate
+        title: `${jobData.title} (Copy)`,
+
+        // Usually safer to reset these
+        status: "draft",
+        isPublished: false,
+
+        // A duplicate stands alone — it isn't an occurrence of the source
+        // job's recurring series. Keeping recurringJob would also collide
+        // with the unique (recurringJob, date) index since the date matches.
+        recurringJob: null,
+        isTemplate: false,
+
+        // Current user becomes creator
+        createdBy: req.user.user_id,
+    });
+
+    const jobAssignments = await JobAssignment.find({ job: job._id, isDeleted: false });
+
+    if (jobAssignments.length) {
+        await JobAssignment.insertMany(
+            jobAssignments.map((ja) => ({
+                // New assignment for a fresh draft job — none of the
+                // source's accept/decline/check-in history applies here.
+                job: duplicatedJob._id,
+                worker: ja.worker,
+                createdBy: req.user.user_id,
+                payRate: ja.payRate,
+                company: ja.company,
+                fullname: ja.fullname,
+            })),
+            { ordered: false }
+        );
+    }
+
+    res.status(StatusCodes.CREATED).json({
+        success: true,
+        msg: "Job duplicated successfully",
+        job: duplicatedJob,
     });
 };
 export const getJob: MiddlewareFn = async (

@@ -253,6 +253,7 @@ export const getActiveJob: MiddlewareFn = async (req, res) => {
     const assignment = await JobAssignment.findOne({
         status: "in-progress",
         worker: req.user.user_id,
+        isDeleted: false
     })
         .populate({ path: "job", match: { isDeleted: false } })
         .lean();
@@ -367,7 +368,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 worker: workerId,
                 status: "in-progress",
                 isDeleted: false
-                //user should be able to get job even after being deleted by the manager or admin 
+                //user should be able to get job even after being deleted by the manager or admin
             });
             if (hasActiveJob) {
                 throw new BadRequestError(
