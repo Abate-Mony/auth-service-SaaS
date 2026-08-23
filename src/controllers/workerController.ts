@@ -10,7 +10,7 @@ import { logActivity } from "../utils/logActivity.js";
 import recurringJobModel from "../models/recurringJobModel.js";
 import dayjs from "dayjs";
 import Company from "../models/company.js";
-import { scheduledEndOf, scheduledStartOf, TZ } from "../utils/dates.js";
+import { scheduledEndOf, scheduledStartOf, toUtcDay, TZ } from "../utils/dates.js";
 
 export const createWorker: MiddlewareFn = async (req, res) => {
     const { fullname, email, password, role } = req.body;
@@ -48,14 +48,27 @@ export const createWorker: MiddlewareFn = async (req, res) => {
 export const getMyJobs: MiddlewareFn = async (req, res) => {
     const startTime = new Date()
     const workerId = new mongoose.Types.ObjectId(req.user.user_id);
-    const { search, status, page = "1", limit = "10" } = req.query;
+    const { search, status, page = "1", limit = "10", start, end } = req.query;
 
     const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
     const limitNum = Math.max(1, parseInt(limit as string, 10) || 20);
 
-    const assignmentMatch: Record<string, any> = { worker: workerId };
+    const assignmentMatch: Record<string, any> = { worker: workerId, isDeleted: false };
     if (status && status !== "all") {
         assignmentMatch.status = status;
+    }
+
+    // job.date is always normalised to UTC midnight (toUtcDay), so plain
+    // $gte/$lte bounds are exact — no need for an exclusive end-of-day.
+    let jobDateMatch: Record<string, Date> | undefined;
+    if (start || end) {
+        jobDateMatch = {};
+        try {
+            if (start) jobDateMatch.$gte = toUtcDay(start as string);
+            if (end) jobDateMatch.$lte = toUtcDay(end as string);
+        } catch {
+            throw new BadRequestError("Invalid start or end date");
+        }
     }
 
     const lookupJob: mongoose.PipelineStage.Lookup = {
@@ -97,6 +110,7 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
         lookupJob,
         unwindJob,
         ...(search ? [{ $match: { "job.title": { $regex: search as string, $options: "i" } } }] : []),
+        ...(jobDateMatch ? [{ $match: { "job.date": jobDateMatch } }] : []),
         { $sort: { "job.date": 1 as const } },
         {
             $facet: {

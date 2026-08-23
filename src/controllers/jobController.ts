@@ -445,6 +445,12 @@ export const getJob: MiddlewareFn = async (
         },
     });
 };
+const UPDATE_JOB_ALLOWED_FIELDS = [
+    "title", "description", "client", "location", "address", "coordinates",
+    "requiredWorkers", "priority", "supervisor", "payRate", "chargeRate",
+    "notes", "instructions", "status",
+] as const;
+
 export const updateJob: MiddlewareFn = async (req, res) => {
     const { startTime, endTime } = req.body;
 
@@ -452,106 +458,118 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         throw new BadRequestError("Start time and end time are required.");
     }
 
-    const workers = JSON.parse(req.body.workers ?? "[]");
+    const currentUserId = getReqUser(req).user_id;
+    const companyId = getReqUser(req).company_id;
 
-    const workerEmails = workers.map((w: any) => w.email);
-
-    /**
-     * Find all selected workers
-     */
-    const selectedUsers = await userModel.find({
-        email: {
-            $in: workerEmails,
-        },
-    });
-
-    /**
-     * Current assignments
-     */
-    const currentAssignments = await JobAssignment.find({
-        job: req.params.id,
-    });
-
-
-    const selectedWorkerIds = selectedUsers.map((u) => u._id.toString());
-
-    const currentWorkerIds = currentAssignments.map((a) =>
-        a.worker.toString()
-    );
-
-    /**
-     * Workers to remove
-     */
-    const assignmentsToRemove = currentAssignments.filter(
-        (assignment) =>
-            !selectedWorkerIds.includes(assignment.worker.toString())
-    );
-
-    if (assignmentsToRemove.length > 0) {
-        await JobAssignment.deleteMany({
-            _id: {
-                $in: assignmentsToRemove.map((a) => a._id),
-            },
-        });
-    }
-
-    /**
-     * Workers to add
-     */
-    const usersToAssign = selectedUsers.filter(
-        (user) => !currentWorkerIds.includes(user._id.toString())
-    );
-
-    if (usersToAssign.length > 0) {
-        await JobAssignment.insertMany(
-            usersToAssign.map((user) => ({
-                job: req.params.id,
-                worker: user._id,
-                createdBy: getReqUser(req).user_id,
-                fullname: user.fullname,
-                email: user.email,
-            }))
-        );
-    }
-
-
-    /**
-     * Update job
-     */
-    const job = await Job.findByIdAndUpdate(
-        req.params.id,
-        {
-            ...req.body,
-            client: "client",
-            minutes: jobDurationMinutes(startTime, endTime),
-        },
-        {
-            new: true,
-            runValidators: true,
-        }
-    );
-
+    const job = await Job.findOne({ _id: req.params.id, isDeleted: false });
     if (!job) {
         throw new BadRequestError("Job not found.");
     }
-    await logActivity({
-        job: job._id,
-        type: "workers_assigned",
-        actor: getReqUser(req).user_id,
-        workers: usersToAssign.map((u) => u._id),
-    });
-    /**
-     * Return updated job with assignments
-     */
-    const assignments = await JobAssignment.find({
-        job: job._id,
-    }).populate("worker", "fullname email");
 
-    res.status(StatusCodes.OK).json({
-        success: true,
-        job,
-        assignments,
+    // `workers` being entirely absent means "leave assignments alone" (e.g.
+    // the caller is only editing the title) — an explicit [] is what clears
+    // every assignment, never an omitted field.
+    let usersToAssign: any[] = [];
+
+    if (req.body.workers !== undefined) {
+        let workers: any[];
+        try {
+            workers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
+        } catch {
+            throw new BadRequestError("Invalid workers payload");
+        }
+        if (!Array.isArray(workers)) {
+            throw new BadRequestError("Invalid workers payload");
+        }
+
+        const workerEmails = workers.map((w: any) => w.email).filter(Boolean);
+
+        const selectedUsers = workerEmails.length
+            ? await userModel.find({ email: { $in: workerEmails }, isActive: true })
+            : [];
+
+        const foundEmails = new Set(selectedUsers.map(u => u.email));
+        const missingEmails = workerEmails.filter(e => !foundEmails.has(e));
+        if (missingEmails.length) {
+            throw new BadRequestError(`No active account found for: ${missingEmails.join(", ")}`);
+        }
+
+        const currentAssignments = await JobAssignment.find({ job: job._id });
+        const selectedWorkerIds = selectedUsers.map(u => u._id.toString());
+        const currentWorkerIds = currentAssignments.map(a => a.worker.toString());
+
+        const assignmentsToRemove = currentAssignments.filter(
+            a => !selectedWorkerIds.includes(a.worker.toString())
+        );
+        usersToAssign = selectedUsers.filter(
+            u => !currentWorkerIds.includes(u._id.toString())
+        );
+        // change it later to isdelted=true
+        if (assignmentsToRemove.length) {
+            await JobAssignment.updateMany(
+                { _id: { $in: assignmentsToRemove.map(a => a._id) } },
+                { isDeleted: true }
+            );
+        }
+
+        if (usersToAssign.length) {
+            await JobAssignment.insertMany(
+                usersToAssign.map(user => ({
+                    job: job._id,
+                    worker: user._id,
+                    createdBy: currentUserId,
+                    company: companyId,
+                    payRate: req.body.payRate ?? job.payRate,
+                    fullname: user.fullname,
+                }))
+            );
+        }
+    }
+
+    // Allowlisted — never spread req.body, or clients can set company/
+    // createdBy/isDeleted/isTemplate/recurringJob directly.
+    const updateFields: Record<string, any> = {
+    startTime,
+    endTime,
+    minutes: jobDurationMinutes(startTime, endTime),
+};
+for (const key of UPDATE_JOB_ALLOWED_FIELDS) {
+    if (req.body[key] !== undefined) updateFields[key] = req.body[key];
+}
+if (req.body.date !== undefined) {
+    updateFields.date = toUtcDay(req.body.date);
+}
+
+const updatedJob = await Job.findByIdAndUpdate(job._id, updateFields, {
+    new: true,
+    runValidators: true,
+});
+
+if (!updatedJob) {
+    throw new BadRequestError("Job not found.");
+}
+
+if (usersToAssign.length) {
+    await logActivity({
+        job: updatedJob._id,
+        type: "workers_assigned",
+        actor: currentUserId,
+        workers: usersToAssign.map(u => u._id),
     });
+}
+
+/**
+ * Return updated job with assignments
+ */
+const assignments = await JobAssignment.find({
+    job: updatedJob._id,
+}).populate("worker", "fullname email");
+
+res.status(StatusCodes.OK).json({
+    success: true,
+    job: updatedJob,
+    assignments,
+});
 };
 export const deleteJob: MiddlewareFn = async (req, res): Promise<void> => {
 
