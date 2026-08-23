@@ -8,9 +8,10 @@ import userModel from "../models/userModel.js";
 import { hashPassword } from "../utils/passwordUtils.js";
 import { logActivity } from "../utils/logActivity.js";
 import recurringJobModel from "../models/recurringJobModel.js";
-import dayjs from "dayjs";
+import dayjs from "../utils/dayjsSetup.js";
 import Company from "../models/company.js";
 import { scheduledEndOf, scheduledStartOf, toUtcDay, TZ } from "../utils/dates.js";
+import { checkGeofence } from "../utils/geo.js";
 
 export const createWorker: MiddlewareFn = async (req, res) => {
     const { fullname, email, password, role } = req.body;
@@ -311,9 +312,16 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     const job = await jobModel.findOne({ _id: assignment.job, isDeleted: false }).lean();
     if (!job) throw new NotFoundError("Job not found.");
 
+    // Loaded once and reused by whichever branch below needs it (only
+    // "in-progress" and "completed" do) rather than querying per case.
+    const company = await Company.findById(job.company)
+        .select("clockInGraceMinutes geofenceMode defaultGeofenceRadiusMeters timezone")
+        .lean();
+    const tz = company?.timezone ?? TZ;
+
     const now = new Date();
-    const scheduledStart = scheduledStartOf(job);
-    const scheduledEnd = scheduledEndOf(job);
+    const scheduledStart = scheduledStartOf(job, tz);
+    const scheduledEnd = scheduledEndOf(job, tz);
 
     switch (status) {
         case "accepted": {
@@ -377,12 +385,9 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 throw new BadRequestError("You have already checked in.");
             }
 
-            // Guards run BEFORE any mutation
             const hasActiveJob = await JobAssignment.exists({
                 worker: workerId,
                 status: "in-progress",
-                isDeleted: false
-                //user should be able to get job even after being deleted by the manager or admin
             });
             if (hasActiveJob) {
                 throw new BadRequestError(
@@ -390,22 +395,49 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 );
             }
 
-            const EARLY_GRACE_MINUTES = 30;
-            const earliest = new Date(scheduledStart.getTime() - EARLY_GRACE_MINUTES * 60_000);
-
+            // ── time window ────────────────────────────────────────────────
+            const graceMinutes = company?.clockInGraceMinutes ?? 30;
+            const earliest = new Date(scheduledStart.getTime() - graceMinutes * 60_000);
             if (now < earliest) {
                 throw new BadRequestError(
-                    `This shift starts at ${job.startTime} on ${dayjs(job.date).tz(TZ).format("D MMM")}. You can clock in from ${dayjs(earliest).tz(TZ).format("HH:mm")}.`
+                    `This shift starts at ${job.startTime} on ${dayjs(job.date).tz(tz).format("D MMM")}. You can clock in from ${dayjs(earliest).tz(tz).format("HH:mm")}.`
                 );
             }
             if (now > scheduledEnd) {
                 throw new BadRequestError("This shift has already ended. Contact your manager.");
             }
 
+            // ── geofence ─────────────────────────────────────────────────
+            const { lat, lng, accuracy } = req.body.location ?? {};
+            console.log("location obj", { lat, lng, accuracy })
+            const workerCoords =
+                typeof lat === "number" && typeof lng === "number"
+                    ? { lat, lng, accuracy }
+                    : null;
+
+            const mode = company?.geofenceMode ?? "warn";
+
+            const geo = checkGeofence({
+                jobCoords: job.coordinates,
+                workerCoords,
+                radiusMeters: job.geofenceRadiusMeters ?? company?.defaultGeofenceRadiusMeters ?? 150,
+            });
+
+            if (mode === "enforce" && geo.flagged && !geo.inconclusive) {
+                throw new BadRequestError(
+                    `You appear to be ${geo.distanceMeters}m from ${job.location}. Move closer to the site, or ask your manager to clock you in.`
+                );
+            }
+
+            if (workerCoords) {
+                assignment.checkInLocation = workerCoords;
+                assignment.checkInDistanceMeters = geo.distanceMeters ?? undefined;
+                assignment.checkInFlagged = mode !== "off" && geo.flagged;
+            }
+
             assignment.checkedInAt = now;
             assignment.status = "in-progress";
 
-            // Positive = late, negative = early
             const minutesLate = Math.round((now.getTime() - scheduledStart.getTime()) / 60_000);
 
             await logActivity({
@@ -418,12 +450,13 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 metadata: {
                     minutesLate,
                     location: job.location,
-                    scheduledStart,
+                    distanceMeters: geo.distanceMeters,
+                    flagged: assignment.checkInFlagged,
+                    accuracy: workerCoords?.accuracy ?? null,
                 },
             });
             break;
         }
-
         case "completed": {
             if (assignment.status !== "in-progress") {
                 throw new BadRequestError("You must start the job before completing it.");
@@ -435,6 +468,23 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             const openBreak = assignment.breaks?.find(b => !b.endedAt);
             if (openBreak) openBreak.endedAt = now;
 
+            // ── location ─────────────────────────────────────────────────
+            const { lat, lng, accuracy } = req.body.location ?? {};
+            const workerCoords =
+                typeof lat === "number" && typeof lng === "number"
+                    ? { lat, lng, accuracy }
+                    : null;
+
+            if (workerCoords) {
+                assignment.checkOutLocation = workerCoords;
+            }
+
+            const geo = checkGeofence({
+                jobCoords: job.coordinates,
+                workerCoords,
+                radiusMeters: job.geofenceRadiusMeters ?? company?.defaultGeofenceRadiusMeters ?? 150,
+            });
+
             assignment.checkedOutAt = now;
             assignment.completedAt = now;
             assignment.status = "completed";
@@ -445,10 +495,13 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             const breakMinutes = (assignment.breaks ?? []).reduce(
                 (sum, b) =>
                     b.endedAt
-                        ? sum + Math.round((new Date(b.endedAt).getTime() - new Date(b.startedAt!).getTime()) / 60_000)
+                        ? sum + Math.round(
+                            (new Date(b.endedAt).getTime() - new Date(b.startedAt!).getTime()) / 60_000
+                        )
                         : sum,
                 0
             );
+            const workedMinutes = Math.max(0, grossMinutes - breakMinutes);
 
             await logActivity({
                 job: assignment.job,
@@ -458,12 +511,15 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 type: "assignment_checked_out",
                 actor: workerId,
                 metadata: {
-                    workedMinutes: Math.max(0, grossMinutes - breakMinutes),
+                    workedMinutes,
                     breakMinutes,
                     breakCount: (assignment.breaks ?? []).length,
                     scheduledMinutes: job.minutes,
                     // Positive = left early, negative = stayed late
                     minutesEarly: Math.round((scheduledEnd.getTime() - now.getTime()) / 60_000),
+                    distanceMeters: geo.distanceMeters,
+                    flagged: geo.flagged,
+                    accuracy: workerCoords?.accuracy ?? null,
                 },
             });
             break;

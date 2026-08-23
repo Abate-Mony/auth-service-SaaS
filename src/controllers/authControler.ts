@@ -32,8 +32,8 @@ const issueTokens = async (user: mongoose.Document & { _id: any; role: string; c
     { refreshToken: hash, refreshTokenExpiresAt: expiresAt }
   );
 
-  res.cookie("token", accessToken, setCookies(ACCESS_TOKEN_COOKIE_MS));
   res.cookie("refreshToken", refreshToken, setCookies(REFRESH_TOKEN_COOKIE_MS));
+  res.cookie("token", accessToken, setCookies(ACCESS_TOKEN_COOKIE_MS));
 };
 
 

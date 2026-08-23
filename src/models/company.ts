@@ -42,9 +42,6 @@ const CompanySchema = new Schema(
       type: Boolean,
       default: true,
     },
-    weeklyHoursTarget: { type: Number, default: 0 },
-    overtimeThresholdHours: { type: Number, default: 8 },
-    overtimeMultiplier: { type: Number, default: 1.5 },
     plan: {
       type: String,
       enum: ["free", "starter", "professional", "enterprise"],
@@ -55,6 +52,35 @@ const CompanySchema = new Schema(
       type: Number,
       default: PLAN_LIMITS.free,
     },
+
+    // ── Time & attendance ──────────────────────────────────────────────
+    clockInGraceMinutes: { type: Number, default: 30 },
+    lateThresholdMinutes: { type: Number, default: 10 },
+    autoClockOutEnabled: { type: Boolean, default: true },
+    payFromScheduledStart: { type: Boolean, default: false },
+
+    // ── Location ────────────────────────────────────────────────────────
+    geofenceMode: { type: String, enum: ["off", "warn", "enforce"], default: "warn" },
+    defaultGeofenceRadiusMeters: { type: Number, default: 150 },
+
+    // ── Breaks ──────────────────────────────────────────────────────────
+    breaksArePaid: { type: Boolean, default: false },
+    autoDeductBreakMinutes: { type: Number, default: 0 }, // 0 = off
+    autoDeductAfterMinutes: { type: Number, default: 360 },
+
+    // ── Pay ─────────────────────────────────────────────────────────────
+    overtimeThresholdMinutes: { type: Number, default: 480 },
+    overtimeMultiplier: { type: Number, default: 1.5 },
+    weeklyHoursTarget: { type: Number, default: 0 },
+    currency: { type: String, enum: ["GBP", "USD", "EUR"], default: "GBP" },
+    defaultPayRate: { type: Number, default: 0 },
+
+    // ── Scheduling ──────────────────────────────────────────────────────
+    timezone: { type: String, default: "Europe/London" },
+    weekStartsOn: { type: String, enum: ["monday", "sunday"], default: "monday" },
+    generateAheadDays: { type: Number, default: 30 },
+    openShiftsEnabled: { type: Boolean, default: false },
+    openShiftsRequireApproval: { type: Boolean, default: true },
   },
   {
     timestamps: true,

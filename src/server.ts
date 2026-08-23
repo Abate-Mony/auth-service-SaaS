@@ -23,6 +23,7 @@ import { authenticateUser } from "./middleware/authMiddleware.js";
 import jobRouter from "./routes/jobRouter.js";
 import workerRouter from "./routes/workerRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
+import companyRouter from "./routes/companyRouter.js"
 import cron from "node-cron";
 import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGeneration.js";
 import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
@@ -70,6 +71,7 @@ app.use("/api/v1/workers",
   workerRouter
 )
 app.use("/api/v1/activity-logs", authenticateUser, activityLogRouter);
+app.use("/api/v1/companies", authenticateUser, companyRouter);
 app.use("/api/v1/calendar", calendarRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");

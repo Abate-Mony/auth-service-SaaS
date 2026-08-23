@@ -3,6 +3,7 @@ import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
 import { MiddlewareFn, getReqUser } from "../interfaces/expresstype.js";
 import JobAssignment from "../models/JobAssignment.js";
 import Job from "../models/jobModel.js";
+import Company from "../models/company.js";
 import recurringJobModel from "../models/recurringJobModel.js";
 import userModel from "../models/userModel.js";
 import { toUtcDay } from "../utils/dates.js";
@@ -55,7 +56,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         monthlyWeekDay,
         endDate,
         maxOccurrences,
-        generateAheadDays = 30,
+        generateAheadDays,
     } = req.body;
 
     if (!startTime || !endTime) throw new BadRequestError("start or end time required");
@@ -169,7 +170,12 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                 createdBy: currentUserId,
             });
 
-            const generatedUntil = new Date(Date.now() + generateAheadDays * 24 * 60 * 60 * 1000);
+            let effectiveGenerateAheadDays = generateAheadDays;
+            if (effectiveGenerateAheadDays === undefined) {
+                const company = await Company.findById(req.user.company_id).select("generateAheadDays").lean();
+                effectiveGenerateAheadDays = company?.generateAheadDays ?? 30;
+            }
+            const generatedUntil = new Date(Date.now() + effectiveGenerateAheadDays * 24 * 60 * 60 * 1000);
             generatedJobs = await generateOccurrences(recurringJob, generatedUntil);
 
             if (workerIds.length && generatedJobs.length) {

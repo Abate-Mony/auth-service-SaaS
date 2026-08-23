@@ -64,6 +64,7 @@ const JobSchema = new Schema(
             lat: Number,
             lng: Number,
         },
+        geofenceRadiusMeters: { type: Number, default: 150 },
     },
     { timestamps: true }
 );

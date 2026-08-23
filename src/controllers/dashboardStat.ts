@@ -1,9 +1,10 @@
 import { StatusCodes } from "http-status-codes";
-import { MiddlewareFn } from "../interfaces/expresstype.js";
+import { getReqUser, MiddlewareFn } from "../interfaces/expresstype.js";
 import userModel from "../models/userModel.js";
 import jobModel from "../models/jobModel.js";
 import JobAssignment from "../models/JobAssignment.js";
 import ActivityLog from "../models/ActivityLog.js";
+import Company from "../models/company.js";
 
 function startOfDay(d: Date) {
   const x = new Date(d);
@@ -50,6 +51,7 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
     todaysJobsList,
     recentActivity,
     unstaffedJob,
+    companySettings,
   ] = await Promise.all([
     jobModel.countDocuments({ date: { $gte: todayStart, $lte: todayEnd } }),
 
@@ -114,6 +116,8 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
       });
       return assignedCount === 0 ? job : null;
     }),
+
+    Company.findById(getReqUser(req).company_id).select("weeklyHoursTarget").lean(),
   ]);
 
   const hoursThisWeek = hoursThisWeekAgg[0]?.total ?? 0;
@@ -146,7 +150,9 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
       },
       hoursThisWeek: {
         total: Math.round(hoursThisWeek),
-        target: totalWorkersCount * 80,
+        // weeklyHoursTarget is a company-wide setting; falls back to the old
+        // "80 hours per worker" guess when a company hasn't configured one.
+        target: companySettings?.weeklyHoursTarget || totalWorkersCount * 80,
       },
       jobsCompleted: {
         thisMonth: jobsCompletedThisMonth,

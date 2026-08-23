@@ -2,8 +2,8 @@ import mongoose, { InferSchemaType, Schema } from "mongoose";
 
 const JobAssignmentSchema = new Schema(
   {
-    
-    fullname: { type: String,  required: [true,"please fullname is require for queries"] },
+
+    fullname: { type: String, required: [true, "please fullname is require for queries"] },
     job: { type: Schema.Types.ObjectId, ref: "Job", required: true, index: true },
     worker: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
@@ -43,6 +43,8 @@ const JobAssignmentSchema = new Schema(
     // Set once the "shift starts in 30 minutes" email goes out, so the
     // reminder cron never emails the same worker twice for the same shift.
     reminderSentAt: { type: Date, default: null },
+    checkInDistanceMeters: Number,
+    checkInFlagged: { type: Boolean, default: false, index: true },
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );
