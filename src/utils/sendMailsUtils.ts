@@ -1,52 +1,43 @@
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
-let _transporter: nodemailer.Transporter | null = null;
+let _resend: Resend | null = null;
 
-// Built on first send rather than at import time — otherwise the transporter
-// is constructed before dotenv loads and permanently captures undefined
-// credentials (which is why it fell back to localhost:587).
-function getTransporter() {
-  if (!_transporter) {
-    _transporter = nodemailer.createTransport({
-      service: "gmail",
-      // The host may lack an outbound IPv6 route (common on DigitalOcean
-      // droplets) — force IPv4 so DNS returning smtp.gmail.com's AAAA
-      // record first doesn't produce an ENETUNREACH on connect.
-      // `family` isn't in nodemailer's TS types but is forwarded straight
-      // through to net/tls.connect, which both support it.
-      family: 4,
-      auth: {
-        user: process.env.user,
-        pass: process.env.pass,
-      },
-    } as nodemailer.TransportOptions);
-  }
-  return _transporter;
+function getResend() {
+    if (!_resend) {
+        const apiKey = process.env.RESEND_API_KEY;
+
+        if (!apiKey) {
+            throw new Error("RESEND_API_KEY is not configured");
+        }
+
+        _resend = new Resend(apiKey);
+    }
+
+    return _resend;
 }
 
 export async function sendMail(opts: {
-  to: string;
-  subject: string;
-  text: string;
-  html: string;
+    to: string;
+    subject: string;
+    text: string;
+    html: string;
 }) {
-  const from = {
-    name: "work.wrk",
-    address: process.env.user as string,
-  };
+    const resend = getResend();
 
-  try {
-    await getTransporter().sendMail({ from, ...opts });
-  } catch (err) {
-    console.error("sendMail failed:", opts.subject, err);
-  }
-}
-export async function sendMailMany(
-  messages: { to: string; subject: string; text: string; html: string }[]
-) {
-  // allSettled so one bad address doesn't stop the rest
-  const results = await Promise.allSettled(messages.map(m => sendMail(m)));
+    const { data, error } = await resend.emails.send({
+        from: `work.wrk <${process.env.EMAIL_FROM}>`,
+        to: opts.to,
+        subject: opts.subject,
+        text: opts.text,
+        html: opts.html,
+    });
 
-  const failed = results.filter(r => r.status === "rejected").length;
-  if (failed) console.error(`sendMailMany: ${failed}/${messages.length} failed`);
+    if (error) {
+        console.error("sendMail failed:", opts.subject, error);
+        throw new Error(error.message);
+    }
+
+    console.log("Email sent:", data?.id);
+
+    return data;
 }
