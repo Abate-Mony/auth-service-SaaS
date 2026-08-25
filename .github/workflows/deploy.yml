@@ -13,10 +13,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Show Node and npm versions
         run: |
@@ -55,6 +55,9 @@ jobs:
           command_timeout: 10m
           script: |
             cd /var/www/auth-service-SaaS
+
+            node -v
+            npm -v
 
             npm ci --omit=dev
 
