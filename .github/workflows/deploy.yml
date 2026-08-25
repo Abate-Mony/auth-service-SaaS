@@ -6,23 +6,54 @@ on:
       - main
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy over SSH
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Prepare deployment package
+        run: |
+          mkdir deploy
+          cp -r dist deploy/dist
+          cp package.json deploy/package.json
+          cp package-lock.json deploy/package-lock.json
+
+      - name: Copy build to DigitalOcean
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DO_HOST }}
+          username: ${{ secrets.DO_USER }}
+          key: ${{ secrets.DO_SSH_KEY }}
+          source: "deploy/*"
+          target: "/var/www/auth-service-SaaS"
+          strip_components: 1
+
+      - name: Restart server
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DO_HOST }}
           username: ${{ secrets.DO_USER }}
           key: ${{ secrets.DO_SSH_KEY }}
+          command_timeout: 10m
           script: |
             cd /var/www/auth-service-SaaS
 
-            git fetch origin
-            git reset --hard origin/main
+            npm ci --omit=dev
 
-            npm ci
-            npm run build
+            pm2 restart auth-service --update-env
 
-            pm2 restart auth-service
+            pm2 status
