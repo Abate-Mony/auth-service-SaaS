@@ -408,17 +408,40 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             }
 
             // ── geofence ─────────────────────────────────────────────────
-            const { lat, lng, accuracy } = req.body.location ?? {};
-            console.log("location obj", { lat, lng, accuracy })
-            const workerCoords =
-                typeof lat === "number" && typeof lng === "number"
-                    ? { lat, lng, accuracy }
+            const location = req.body?.location ?? {};
+            const rawLat = location?.lat;
+            const rawLng = location?.lng;
+            const rawAccuracy = location?.accuracy;
+
+            const lat = typeof rawLat === "number" && Number.isFinite(rawLat) ? rawLat : undefined;
+            const lng = typeof rawLng === "number" && Number.isFinite(rawLng) ? rawLng : undefined;
+            const accuracy = typeof rawAccuracy === "number" && Number.isFinite(rawAccuracy) ? rawAccuracy : undefined;
+
+            const workerCoords: { lat: number; lng: number; accuracy?: number } | null =
+                lat != null && lng != null
+                    ? {
+                        lat,
+                        lng,
+                        ...(accuracy !== undefined ? { accuracy } : {}),
+                    }
+                    : null;
+
+            const jobCoords: { lat: number; lng: number } | null =
+                job.coordinates &&
+                typeof job.coordinates.lat === "number" &&
+                Number.isFinite(job.coordinates.lat) &&
+                typeof job.coordinates.lng === "number" &&
+                Number.isFinite(job.coordinates.lng)
+                    ? {
+                        lat: job.coordinates.lat,
+                        lng: job.coordinates.lng,
+                    }
                     : null;
 
             const mode = company?.geofenceMode ?? "warn";
 
             const geo = checkGeofence({
-                jobCoords: job.coordinates,
+                jobCoords,
                 workerCoords,
                 radiusMeters: job.geofenceRadiusMeters ?? company?.defaultGeofenceRadiusMeters ?? 150,
             });
@@ -469,18 +492,43 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             if (openBreak) openBreak.endedAt = now;
 
             // ── location ─────────────────────────────────────────────────
-            const { lat, lng, accuracy } = req.body.location ?? {};
-            const workerCoords =
-                typeof lat === "number" && typeof lng === "number"
-                    ? { lat, lng, accuracy }
+            const location = req.body?.location ?? {};
+            const rawLat = location?.lat;
+            const rawLng = location?.lng;
+            const rawAccuracy = location?.accuracy;
+
+            const lat = typeof rawLat === "number" && Number.isFinite(rawLat) ? rawLat : undefined;
+            const lng = typeof rawLng === "number" && Number.isFinite(rawLng) ? rawLng : undefined;
+            const accuracy =
+                typeof rawAccuracy === "number" && Number.isFinite(rawAccuracy) ? rawAccuracy : undefined;
+
+            const workerCoords: { lat: number; lng: number; accuracy?: number } | null =
+                lat != null && lng != null
+                    ? {
+                        lat,
+                        lng,
+                        ...(accuracy !== undefined ? { accuracy } : {}),
+                    }
                     : null;
 
             if (workerCoords) {
                 assignment.checkOutLocation = workerCoords;
             }
 
+            const jobCoords =
+                job.coordinates &&
+                typeof job.coordinates.lat === "number" &&
+                Number.isFinite(job.coordinates.lat) &&
+                typeof job.coordinates.lng === "number" &&
+                Number.isFinite(job.coordinates.lng)
+                    ? {
+                        lat: job.coordinates.lat,
+                        lng: job.coordinates.lng,
+                    }
+                    : null;
+
             const geo = checkGeofence({
-                jobCoords: job.coordinates,
+                jobCoords,
                 workerCoords,
                 radiusMeters: job.geofenceRadiusMeters ?? company?.defaultGeofenceRadiusMeters ?? 150,
             });
@@ -492,7 +540,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             const grossMinutes = Math.round(
                 (now.getTime() - new Date(assignment.checkedInAt).getTime()) / 60_000
             );
-            const breakMinutes = (assignment.breaks ?? []).reduce(
+            const breakMinutes = [...(assignment.breaks ?? [])].reduce(
                 (sum, b) =>
                     b.endedAt
                         ? sum + Math.round(

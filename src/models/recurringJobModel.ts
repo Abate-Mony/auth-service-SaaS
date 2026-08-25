@@ -34,14 +34,13 @@ const RecurringJobSchema = new Schema(
 
 RecurringJobSchema.index({ active: 1 });
 
-RecurringJobSchema.pre("validate", function (next) {
+RecurringJobSchema.pre("validate", function () {
   if (this.frequency === "weekly" && (!this.daysOfWeek || this.daysOfWeek.length === 0)) {
-    return next(new Error("daysOfWeek is required when frequency is weekly"));
+    throw new Error("daysOfWeek is required when frequency is weekly");
   }
   if (this.endDate && this.startDate && this.endDate < this.startDate) {
-    return next(new Error("endDate cannot be before startDate"));
+    throw new Error("endDate cannot be before startDate");
   }
-  next();
 });
 
 export type RecurringJob = InferSchemaType<typeof RecurringJobSchema>;

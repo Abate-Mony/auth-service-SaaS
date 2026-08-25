@@ -1,9 +1,9 @@
-import { Request } from "express-validator/src/base.js";
+import { NextFunction, Request, Response } from "express";
 
 export const paginationMiddleware = (
-  req: Request,
+  req: Request & { pagination?: any },
   res: Response,
-  next: any
+  next: NextFunction
 ) => {
   const page = Number(req.query.page) || 1;
   const limit = Number(req.query.limit) || 20;

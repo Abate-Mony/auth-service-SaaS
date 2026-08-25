@@ -98,7 +98,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     const baseJobFields = {
         title,
         description,
-        company: req.user.company_id,
+        company: req.user.company_id.toString(),
         client: client ?? "",
         location,
         address: address ?? "",
