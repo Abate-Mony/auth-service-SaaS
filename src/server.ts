@@ -81,14 +81,14 @@ app.use(errorHandlerMiddleware);
 const port = process.env.PORT || 5000;
 const db = new Database({
   options: {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
+    // useNewUrlParser/useUnifiedTopology were deprecated no-ops in earlier
+    // MongoDB driver versions; the driver bundled with Mongoose 9 rejects
+    // them outright as unrecognized options.
     autoIndex: false, // Don't build indexes
     maxPoolSize: 10, // Maintain up to 10 socket connections
     serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
     socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
     family: 4, // Use IPv4, skip trying IPv6
-    // useFindAndModify: false
   },
   uri: process.env.MONGO_URI as string,
 });
