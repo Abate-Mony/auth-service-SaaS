@@ -19,6 +19,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.11.17",
     "@types/nodemailer": "^8.0.1",
+    "@types/react": "^19.2.18",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^1.37.3",
     "concurrently": "^8.0.1",
