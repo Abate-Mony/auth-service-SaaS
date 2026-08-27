@@ -2,6 +2,7 @@ import Job from "../models/jobModel.js";
 import JobAssignment from "../models/JobAssignment.js";
 import { scheduledStartOf } from "./dates.js";
 import { sendShiftReminder } from "./mailTemplates.js";
+import { sendPushToUser } from "./webPush.js";
 
 const REMINDER_WINDOW_MINUTES = 30;
 
@@ -49,19 +50,29 @@ export async function sendUpcomingShiftReminders() {
       if (!job || !worker?.email) continue;
 
       try {
-        await sendShiftReminder({
-          worker: { email: worker.email, fullname: worker.fullname },
-          job: {
-            _id: job._id.toString(),
-            title: job.title,
-            location: job.location,
-            address: job.address,
-            date: job.date,
-            startTime: job.startTime,
-            endTime: job.endTime,
-            minutes: job.minutes,
-          },
-        });
+        await Promise.all([
+          sendShiftReminder({
+            worker: { email: worker.email, fullname: worker.fullname },
+            job: {
+              _id: job._id.toString(),
+              title: job.title,
+              location: job.location,
+              address: job.address,
+              date: job.date,
+              startTime: job.startTime,
+              endTime: job.endTime,
+              minutes: job.minutes,
+            },
+          }),
+          // Same trigger/window as the email above, just a second channel.
+          // Tagged per job so a retried tick can't stack duplicate
+          // notifications for the same shift on the worker's device.
+          sendPushToUser(worker._id.toString(), {
+            title: "Shift starting soon",
+            body: `${job.title} starts at ${job.startTime} — ${job.location}`,
+            tag: `shift-start-${job._id}`,
+          }),
+        ]);
         assignment.reminderSentAt = new Date();
         await assignment.save();
       } catch (err) {

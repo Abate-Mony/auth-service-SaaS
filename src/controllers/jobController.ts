@@ -9,7 +9,10 @@ import userModel from "../models/userModel.js";
 import { toUtcDay } from "../utils/dates.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity } from "../utils/logActivity.js";
-import { sendShiftAssigned } from "../utils/mailTemplates.js";
+import { sendShiftAssigned, sendRecurringShiftAssigned } from "../utils/mailTemplates.js";
+import { sendPushToUser } from "../utils/webPush.js";
+import dayjs from "../utils/dayjsSetup.js";
+import { TZ } from "../utils/dates.js";
 
 export const jobDurationMinutes = (startTime: string, endTime: string): number => {
     const [sh, sm] = startTime.split(":").map(Number);
@@ -25,6 +28,24 @@ export const jobDurationMinutes = (startTime: string, endTime: string): number =
     if (minutes <= 0) minutes += 24 * 60;
 
     return minutes;
+};
+
+// Plain-English recurrence description for the "added to a recurring shift"
+// notification — e.g. "Every week on Mon, Wed" or "Every 2 days".
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const describeRecurrence = (
+    frequency: string,
+    intervalNum: number,
+    daysOfWeek?: number[]
+): string => {
+    if (frequency === "daily") {
+        return intervalNum === 1 ? "Every day" : `Every ${intervalNum} days`;
+    }
+    if (frequency === "weekly") {
+        const days = [...(daysOfWeek ?? [])].sort().map(d => DAY_NAMES[d]).join(", ");
+        return intervalNum === 1 ? `Every week on ${days}` : `Every ${intervalNum} weeks on ${days}`;
+    }
+    return intervalNum === 1 ? "Every month" : `Every ${intervalNum} months`;
 };
 
 
@@ -221,6 +242,44 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                     })
                 )
             );
+
+            // One summary notification per worker, not one per occurrence —
+            // a weekly schedule can generate dozens of jobs in one request,
+            // and nobody wants that many pushes at once for a single action.
+            const occurrenceDates = generatedJobs.map(j => j.date.getTime()).sort((a, b) => a - b);
+            const firstDate = new Date(occurrenceDates[0]);
+            const lastDate = new Date(occurrenceDates[occurrenceDates.length - 1]);
+            const daysLabel = describeRecurrence(frequency, intervalNum, normalizedDaysOfWeek);
+
+            Promise.all(
+                realWorkers.map(w =>
+                    Promise.all([
+                        sendRecurringShiftAssigned({
+                            worker: { email: w.email, fullname: w.fullname },
+                            job: {
+                                _id: templateJob._id.toString(),
+                                title: templateJob.title,
+                                location: templateJob.location,
+                                address: templateJob.address,
+                                date: jobDate,
+                                startTime: templateJob.startTime,
+                                endTime: templateJob.endTime,
+                                minutes: templateJob.minutes,
+                            },
+                            occurrenceCount: generatedJobs.length,
+                            firstDate,
+                            lastDate,
+                            daysLabel,
+                        }),
+                        sendPushToUser(w._id.toString(), {
+                            title: "Added to a recurring shift",
+                            body: `${templateJob.title} — ${daysLabel}, ${generatedJobs.length} shifts scheduled`,
+                            tag: `recurring-assigned-${recurringJob._id}`,
+                            url: "/worker/jobs",
+                        }),
+                    ])
+                )
+            ).catch(err => console.error(`Failed to send recurring shift-assigned notification(s) for recurringJob ${recurringJob._id}:`, err));
         }
 
         res.status(StatusCodes.CREATED).json({
@@ -260,25 +319,35 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             workers: workerIds,
         });
     }
-    // Fire-and-forget: the client doesn't need to wait on outbound mail, and
-    // a failed send shouldn't fail job creation.
+    // Fire-and-forget: the client doesn't need to wait on outbound mail/push,
+    // and a failed send shouldn't fail job creation.
     Promise.all(
         realWorkers.map(w =>
-            sendShiftAssigned({
-                worker: { email: w.email, fullname: w.fullname },
-                job: {
-                    _id: job._id.toString(),
-                    title: job.title,
-                    location: job.location,
-                    address: job.address,
-                    date: job.date,
-                    startTime: job.startTime,
-                    endTime: job.endTime,
-                    minutes: job.minutes,
-                },
-            })
+            Promise.all([
+                sendShiftAssigned({
+                    worker: { email: w.email, fullname: w.fullname },
+                    job: {
+                        _id: job._id.toString(),
+                        title: job.title,
+                        location: job.location,
+                        address: job.address,
+                        date: job.date,
+                        startTime: job.startTime,
+                        endTime: job.endTime,
+                        minutes: job.minutes,
+                    },
+                }),
+                // Tagged per job (distinct from the shift-start-reminder tag
+                // namespace) so re-saving/updating doesn't stack duplicates.
+                sendPushToUser(w._id.toString(), {
+                    title: "New shift assigned",
+                    body: `${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}, ${job.startTime} at ${job.location}`,
+                    tag: `shift-assigned-${job._id}`,
+                    url: `/worker/jobs/${job._id}`,
+                }),
+            ])
         )
-    ).catch(err => console.error(`Failed to send shift-assigned email(s) for job ${job._id}:`, err));
+    ).catch(err => console.error(`Failed to send shift-assigned notification(s) for job ${job._id}:`, err));
 
     res.status(StatusCodes.CREATED).json({ success: true, job });
 };
@@ -562,6 +631,35 @@ if (usersToAssign.length) {
         actor: currentUserId,
         workers: usersToAssign.map(u => u._id),
     });
+
+    // Fire-and-forget, same as createJob — uses the just-updated job so a
+    // manager who changes the time/location and adds workers in the same
+    // request notifies with the final details, not the stale pre-update ones.
+    Promise.all(
+        usersToAssign.map(u =>
+            Promise.all([
+                sendShiftAssigned({
+                    worker: { email: u.email, fullname: u.fullname },
+                    job: {
+                        _id: updatedJob._id.toString(),
+                        title: updatedJob.title,
+                        location: updatedJob.location,
+                        address: updatedJob.address,
+                        date: updatedJob.date,
+                        startTime: updatedJob.startTime,
+                        endTime: updatedJob.endTime,
+                        minutes: updatedJob.minutes,
+                    },
+                }),
+                sendPushToUser(u._id.toString(), {
+                    title: "New shift assigned",
+                    body: `${updatedJob.title} — ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}, ${updatedJob.startTime} at ${updatedJob.location}`,
+                    tag: `shift-assigned-${updatedJob._id}`,
+                    url: `/worker/jobs/${updatedJob._id}`,
+                }),
+            ])
+        )
+    ).catch(err => console.error(`Failed to send shift-assigned notification(s) for job ${updatedJob._id}:`, err));
 }
 
 /**

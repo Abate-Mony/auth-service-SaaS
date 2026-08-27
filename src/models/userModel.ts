@@ -66,6 +66,20 @@ const UserSchema = new Schema(
       type: Date,
       select: false,
     },
+
+    // One entry per subscribed device/browser — a worker can have several.
+    pushSubscriptions: {
+      type: [
+        {
+          endpoint: { type: String, required: true },
+          keys: {
+            p256dh: { type: String, required: true },
+            auth: { type: String, required: true },
+          },
+        },
+      ],
+      default: [],
+    },
   },
   {
     timestamps: true,

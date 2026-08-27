@@ -675,6 +675,26 @@ export const declineRecurringSeries: MiddlewareFn = async (req, res) => {
 
     res.status(StatusCodes.OK).json({ success: true });
 };
+// Body is PushSubscription.toJSON() from the frontend's service worker
+// registration — endpoint identifies the device, keys are what web-push
+// needs to encrypt notifications for it.
+export const savePushSubscription: MiddlewareFn = async (req, res) => {
+    const { endpoint, keys } = req.body;
+
+    if (!endpoint || !keys?.p256dh || !keys?.auth) {
+        throw new BadRequestError("Invalid push subscription payload.");
+    }
+
+    // The $ne guard makes this idempotent — re-subscribing the same device
+    // (endpoint) won't create duplicate entries.
+    await userModel.updateOne(
+        { _id: req.user.user_id, "pushSubscriptions.endpoint": { $ne: endpoint } },
+        { $push: { pushSubscriptions: { endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } } } }
+    );
+
+    res.status(StatusCodes.OK).json({ success: true });
+};
+
 // Thin wrapper so there's one route for check-in but no duplicated business logic
 export const checkInJob: MiddlewareFn = async (req, res) => {
     req.body.status = "in-progress";
