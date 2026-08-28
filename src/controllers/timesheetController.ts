@@ -45,7 +45,8 @@ const getPeriodRange = (period: Period) => {
   }
 };
 export const getMyTimesheet: MiddlewareFn = async (req, res) => {
-  console.log("enter here")
+  console.log("enter here");
+
   const workerId = req.user.user_id;
 
   const period = (req.query.period ?? "weekly") as Period;
@@ -78,8 +79,11 @@ export const getMyTimesheet: MiddlewareFn = async (req, res) => {
     .sort({ checkedInAt: 1 });
 
   const totalMinutes = assignments.reduce(
-    (total, assignment) => {
-      if (!assignment.checkedInAt || !assignment.checkedOutAt) {
+    (total: number, assignment) => {
+      if (
+        !assignment.checkedInAt ||
+        !assignment.checkedOutAt
+      ) {
         return total;
       }
 
@@ -90,13 +94,23 @@ export const getMyTimesheet: MiddlewareFn = async (req, res) => {
         "minute"
       );
 
-      const breakMinutes = (assignment.breaks ?? []).reduce<number>(
-        (sum, breakItem) => {
-          if (!breakItem.startedAt || !breakItem.endedAt) {
+      // Convert Mongoose DocumentArray to normal JS array
+      const breaks = Array.from(
+        assignment.breaks ?? []
+      );
+
+      const breakMinutes = breaks.reduce(
+        (sum: number, breakItem) => {
+          if (
+            !breakItem.startedAt ||
+            !breakItem.endedAt
+          ) {
             return sum;
           }
 
-          const minutes = dayjs(breakItem.endedAt).diff(
+          const minutes = dayjs(
+            breakItem.endedAt
+          ).diff(
             dayjs(breakItem.startedAt),
             "minute"
           );
@@ -106,23 +120,24 @@ export const getMyTimesheet: MiddlewareFn = async (req, res) => {
         0
       );
 
-      return total + Math.max(
+      const workedMinutes = Math.max(
         0,
         grossMinutes - breakMinutes
       );
+
+      return total + workedMinutes;
     },
     0
   );
 
-  console.log("summary :", {
-    summary: {
-      totalJobs: assignments.length,
-      totalMinutes,
-      totalHours: Number(
-        (totalMinutes / 60).toFixed(2)
-      ),
-    }
-  },)
+  console.log("summary:", {
+    totalJobs: assignments.length,
+    totalMinutes,
+    totalHours: Number(
+      (totalMinutes / 60).toFixed(2)
+    ),
+  });
+
   res.status(StatusCodes.OK).json({
     success: true,
     period,
