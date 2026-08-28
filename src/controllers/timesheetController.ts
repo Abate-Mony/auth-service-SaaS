@@ -90,21 +90,21 @@ export const getMyTimesheet: MiddlewareFn = async (req, res) => {
         "minute"
       );
 
-      const breakMinutes = (
-        assignment.breaks ?? []
-      ).reduce((sum, breakItem) => {
-        if (!breakItem.startedAt || !breakItem.endedAt) {
-          return sum;
-        }
+      const breakMinutes = (assignment.breaks ?? []).reduce<number>(
+        (sum, breakItem) => {
+          if (!breakItem.startedAt || !breakItem.endedAt) {
+            return sum;
+          }
 
-        return (
-          sum +
-          dayjs(breakItem.endedAt).diff(
+          const minutes = dayjs(breakItem.endedAt).diff(
             dayjs(breakItem.startedAt),
             "minute"
-          )
-        );
-      }, 0);
+          );
+
+          return sum + minutes;
+        },
+        0
+      );
 
       return total + Math.max(
         0,
