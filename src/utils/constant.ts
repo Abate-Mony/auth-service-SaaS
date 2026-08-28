@@ -53,6 +53,7 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
   "reject-job",
   "late-start",
   "geofence-warning",
+  "overtime-review",
 ]);
   export const NOTIFICATION_EVENTS = [
       "job_assigned",

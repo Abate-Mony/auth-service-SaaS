@@ -80,6 +80,14 @@ export const getMyTimesheet: MiddlewareFn = async (req, res) => {
 
   const totalMinutes = assignments.reduce(
     (total: number, assignment) => {
+      // approvedMinutes is what actually counts for payroll — it's capped
+      // below the raw worked time whenever a shift ran over and hasn't been
+      // manager-approved yet. Older records predating this field fall back
+      // to the raw computation.
+      if (assignment.approvedMinutes != null) {
+        return total + assignment.approvedMinutes;
+      }
+
       if (
         !assignment.checkedInAt ||
         !assignment.checkedOutAt
@@ -293,23 +301,31 @@ export const downloadMyTimesheetPdf: MiddlewareFn =
               breakMinutes
             );
 
-          /*
-           * For now using assignment overtime
-           * if you already store it.
-           */
-          const assignmentOvertimeMinutes =
-            Math.round(
-              (assignment.overtimeHours ??
-                0) * 60
-            );
+          // approvedMinutes is what payroll actually pays for — capped
+          // below workedMinutes until a manager approves an over-running
+          // shift. Only approved overtime counts toward the overtime
+          // summary; pending/rejected extra time is left off entirely.
+          const approvedTotal =
+            assignment.approvedMinutes ??
+            workedMinutes;
+
+          const approvedOvertimeMinutes =
+            assignment.overtimeStatus === "approved"
+              ? (assignment.overtimeMinutes ?? 0)
+              : 0;
+
+          const pendingOvertimeMinutes =
+            assignment.overtimeStatus === "pending"
+              ? (assignment.overtimeMinutes ?? 0)
+              : 0;
 
           overtimeMinutes +=
-            assignmentOvertimeMinutes;
+            approvedOvertimeMinutes;
 
           regularMinutes += Math.max(
             0,
-            workedMinutes -
-            assignmentOvertimeMinutes
+            approvedTotal -
+            approvedOvertimeMinutes
           );
 
           return {
@@ -339,7 +355,9 @@ export const downloadMyTimesheetPdf: MiddlewareFn =
 
             breakMinutes,
 
-            workedMinutes,
+            workedMinutes: approvedTotal,
+
+            pendingOvertimeMinutes,
           };
         });
 

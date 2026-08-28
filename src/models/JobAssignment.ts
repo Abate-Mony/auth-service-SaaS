@@ -30,7 +30,33 @@ const JobAssignmentSchema = new Schema(
 
     breaks: [{ startedAt: Date, endedAt: Date }],
 
+    // Set when the shift is force-closed by the auto-clock-out cron instead
+    // of the worker tapping "clock out" themselves.
     autoCompleted: { type: Boolean, default: false },
+
+    // ── Overtime / late clock-out review ──────────────────────────────
+    // actualMinutes: raw checkedIn→checkedOut time, minus breaks — what
+    // really happened, for the record.
+    // approvedMinutes: what payroll should actually pay for. Equals
+    // actualMinutes unless the shift ran significantly past its scheduled
+    // end, in which case it's capped at the scheduled amount until a
+    // manager reviews and approves/adjusts the extra time.
+    actualMinutes: { type: Number, default: null },
+    approvedMinutes: { type: Number, default: null },
+    overtimeMinutes: { type: Number, default: 0 },
+    overtimeStatus: {
+      type: String,
+      enum: ["none", "pending", "approved", "rejected"],
+      default: "none",
+      index: true,
+    },
+    clockOutReason: {
+      type: String,
+      enum: ["on_time", "job_took_longer", "manager_asked_to_stay", "forgot_to_clock_out", "auto_closed", "other"],
+    },
+    clockOutNote: { type: String, default: "", trim: true },
+    overtimeReviewedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    overtimeReviewedAt: Date,
 
     cancellationReason: { type: String, default: "", trim: true },
     workerNotes: { type: String, default: "", trim: true },

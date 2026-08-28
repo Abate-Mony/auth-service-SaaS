@@ -57,6 +57,12 @@ const CompanySchema = new Schema(
     clockInGraceMinutes: { type: Number, default: 30 },
     lateThresholdMinutes: { type: Number, default: 10 },
     autoClockOutEnabled: { type: Boolean, default: true },
+    // How many hours past a shift's scheduled end an "in-progress"
+    // assignment with no clock-out is force-closed by the cron.
+    autoClockOutAfterHours: { type: Number, default: 2 },
+    // How many minutes past scheduled end a worker's own clock-out can run
+    // before the extra time needs a manager's approval.
+    lateClockOutThresholdMinutes: { type: Number, default: 15 },
     payFromScheduledStart: { type: Boolean, default: false },
 
     // ── Location ────────────────────────────────────────────────────────

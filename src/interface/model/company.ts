@@ -16,6 +16,8 @@ export interface ICompany {
   clockInGraceMinutes?: number;
   lateThresholdMinutes?: number;
   autoClockOutEnabled?: boolean;
+  autoClockOutAfterHours?: number;
+  lateClockOutThresholdMinutes?: number;
   payFromScheduledStart?: boolean;
 
   // Location

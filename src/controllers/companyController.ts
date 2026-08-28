@@ -10,6 +10,8 @@ const COMPANY_SETTINGS_FIELDS = [
     "clockInGraceMinutes",
     "lateThresholdMinutes",
     "autoClockOutEnabled",
+    "autoClockOutAfterHours",
+    "lateClockOutThresholdMinutes",
     "payFromScheduledStart",
 
     "geofenceMode",
@@ -48,6 +50,8 @@ const companySettingsSchema = z
         clockInGraceMinutes: z.number().int().min(0),
         lateThresholdMinutes: z.number().int().min(0),
         autoClockOutEnabled: z.boolean(),
+        autoClockOutAfterHours: z.number().min(0).max(24),
+        lateClockOutThresholdMinutes: z.number().int().min(0).max(240),
         payFromScheduledStart: z.boolean(),
 
         geofenceMode: z.enum(["off", "warn", "enforce"]),

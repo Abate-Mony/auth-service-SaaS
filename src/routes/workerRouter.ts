@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { createWorker, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getWorkerDashboardStats, savePushSubscription, startWorkerBreak, updateWorkerJobStatus } from "../controllers/workerController.js"
+import { createWorker, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getWorkerDashboardStats, reviewAssignmentOvertime, savePushSubscription, startWorkerBreak, updateWorkerJobStatus } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 const router = express.Router();
@@ -17,4 +17,6 @@ router.route("/:id/break/start").patch(authorizePermissions("worker"), startWork
 router.route("/:id/break/end").patch(authorizePermissions("worker"), endWorkerBreak);
 router.route("/:id").get(authorizePermissions("worker"), getJob)
 router.route("/push-subscription").post(authorizePermissions("worker"), savePushSubscription);
+router.route("/assignments/:assignmentId/overtime")
+    .patch(authorizePermissions("admin", "manager"), reviewAssignmentOvertime);
 export default router;

@@ -21,4 +21,5 @@ export interface WorkerJobEmailParams {
   reason?: string;
   minutesLate?: number;
   distanceMeters?: number;
+  overtimeMinutes?: number;
 }

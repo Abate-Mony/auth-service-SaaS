@@ -52,6 +52,7 @@ export async function sendWorkerJobStatusEmail({
   reason,
   minutesLate,
   distanceMeters,
+  overtimeMinutes,
 }: WorkerJobEmailParams) {
 
   // ─────────────────────────────────────────────
@@ -115,6 +116,18 @@ export async function sendWorkerJobStatusEmail({
       action: "Review check-in",
     },
 
+    "overtime-review": {
+      subject: `Overtime needs review: ${fullname}`,
+
+      heading: "A shift ran over and needs your approval",
+
+      message:
+        `${fullname} clocked out ${overtimeMinutes ?? 0} minutes past the scheduled ` +
+        `end time for "${job.title}". This extra time won't be paid until you approve it.`,
+
+      action: "Review overtime",
+    },
+
     // These don't send email because of EMAIL_WORTHY_EVENTS,
     // but keeping them here makes the type complete.
     "accept-job": null,
@@ -170,6 +183,21 @@ export async function sendWorkerJobStatusEmail({
 
           <td style="${valueStyle}">
             ${distanceMeters} metres
+          </td>
+        </tr>
+      `
+      : "";
+
+  const overtimeRow =
+    type === "overtime-review" && overtimeMinutes != null
+      ? `
+        <tr>
+          <td style="${labelStyle}">
+            Extra time
+          </td>
+
+          <td style="${valueStyle}">
+            ${overtimeMinutes} minutes
           </td>
         </tr>
       `
@@ -307,6 +335,8 @@ export async function sendWorkerJobStatusEmail({
 
             ${distanceRow}
 
+            ${overtimeRow}
+
           </table>
 
 
@@ -365,6 +395,7 @@ ${job.location ? `Location: ${job.location}` : ""}
 ${reason ? `Reason: ${reason}` : ""}
 ${minutesLate != null ? `Late by: ${minutesLate} minutes` : ""}
 ${distanceMeters != null ? `Distance from site: ${distanceMeters}m` : ""}
+${type === "overtime-review" && overtimeMinutes != null ? `Extra time: ${overtimeMinutes} minutes` : ""}
 
 View job:
 ${jobUrl}

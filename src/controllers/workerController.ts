@@ -323,7 +323,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     // Loaded once and reused by whichever branch below needs it (only
     // "in-progress" and "completed" do) rather than querying per case.
     const company = await Company.findById(job.company)
-        .select("clockInGraceMinutes geofenceMode defaultGeofenceRadiusMeters timezone")
+        .select("clockInGraceMinutes geofenceMode defaultGeofenceRadiusMeters timezone lateClockOutThresholdMinutes")
         .lean();
     const tz = company?.timezone ?? TZ;
 
@@ -374,6 +374,41 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                         ? `${worker!.fullname} accepted ${job!.title} — ${job!.startTime} on ${dayjs(job!.date).tz(tz).format("D MMM")}`
                         : `${worker!.fullname} declined ${job!.title}${reason ? `: ${reason}` : ""}`,
                     tag: `assignment-status-${assignment!._id}`,
+                    url: `/jobs/${job!._id}`,
+                })
+                : Promise.resolve(),
+        ]);
+    }
+
+    // Fire-and-forget: flags an over-running shift for the manager to
+    // approve/adjust/reject rather than silently paying (or silently
+    // dropping) the extra time. Gated the same way as the accept/decline
+    // notifications above.
+    async function notifyManagerOfOvertime(overtimeMinutes: number) {
+        const manager = await userModel.findOne({ _id: job!.createdBy! }).select("email");
+        if (!manager) return;
+
+        const managerId = manager._id.toString();
+        const [canEmail, canPush] = await Promise.all([
+            shouldNotify(managerId, "worker_checked_out", "email"),
+            shouldNotify(managerId, "worker_checked_out", "push"),
+        ]);
+
+        await Promise.all([
+            canEmail
+                ? sendWorkerJobStatusEmail({
+                    type: "overtime-review",
+                    adminEmail: manager.email,
+                    worker: { fullname: worker!.fullname },
+                    job: emailJobRequirement,
+                    overtimeMinutes,
+                })
+                : Promise.resolve(),
+            canPush
+                ? sendPushToUser(managerId, {
+                    title: "Overtime needs review",
+                    body: `${worker!.fullname} clocked out ${overtimeMinutes}m late on ${job!.title} — extra time needs approval`,
+                    tag: `assignment-overtime-${assignment!._id}`,
                     url: `/jobs/${job!._id}`,
                 })
                 : Promise.resolve(),
@@ -616,6 +651,36 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             );
             const workedMinutes = Math.max(0, grossMinutes - breakMinutes);
 
+            // ── overtime review ─────────────────────────────────────────
+            // actualMinutes is the record of what really happened.
+            // approvedMinutes is what payroll pays — capped at the scheduled
+            // amount whenever the overrun is big enough to need a manager's
+            // sign-off, so a forgotten clock-out (or a genuinely long shift)
+            // never bills the company automatically.
+            const rawReason = req.body?.clockOutReason;
+            const allowedReasons = ["on_time", "job_took_longer", "manager_asked_to_stay", "other"];
+            const clockOutReason = allowedReasons.includes(rawReason) ? rawReason : undefined;
+            const clockOutNote = typeof req.body?.clockOutNote === "string" ? req.body.clockOutNote.trim() : "";
+
+            const overtimeThreshold = company?.lateClockOutThresholdMinutes ?? 15;
+            const overtimeMinutes = Math.max(0, workedMinutes - job.minutes);
+            const requiresReview = overtimeMinutes > overtimeThreshold;
+
+            assignment.actualMinutes = workedMinutes;
+            assignment.overtimeMinutes = overtimeMinutes;
+            assignment.approvedMinutes = requiresReview
+                ? Math.max(0, workedMinutes - overtimeMinutes)
+                : workedMinutes;
+            assignment.overtimeStatus = requiresReview ? "pending" : "none";
+            if (clockOutReason) assignment.clockOutReason = clockOutReason as any;
+            if (clockOutNote) assignment.clockOutNote = clockOutNote;
+
+            if (requiresReview) {
+                notifyManagerOfOvertime(overtimeMinutes).catch(err =>
+                    console.error(`Failed to notify manager of overtime for assignment ${assignment._id}:`, err)
+                );
+            }
+
             await logActivity({
                 job: assignment.job,
                 jobDate: job.date,
@@ -633,8 +698,22 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                     distanceMeters: geo.distanceMeters,
                     flagged: geo.flagged,
                     accuracy: workerCoords?.accuracy ?? null,
+                    overtimeMinutes,
+                    overtimeStatus: assignment.overtimeStatus,
                 },
             });
+
+            if (requiresReview) {
+                await logActivity({
+                    job: assignment.job,
+                    jobDate: job.date,
+                    assignment: assignment._id,
+                    worker: assignment.worker,
+                    type: "assignment_overtime_flagged",
+                    actor: workerId,
+                    metadata: { overtimeMinutes, clockOutReason, clockOutNote },
+                });
+            }
             break;
         }
     }
@@ -647,6 +726,75 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
         assignment,
     });
 };
+
+// Manager-facing: approve, reject, or manually adjust a shift's flagged
+// overtime. Only assignments this manager's own company owns can be
+// reviewed, and only ones actually awaiting review.
+export const reviewAssignmentOvertime: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const { decision, approvedMinutes: overrideMinutes, managerNotes } = req.body;
+
+    const allowedDecisions = ["approve", "reject", "adjust"];
+    if (!allowedDecisions.includes(decision)) {
+        throw new BadRequestError("decision must be 'approve', 'reject', or 'adjust'.");
+    }
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        company: req.user.company_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+
+    if (assignment.overtimeStatus !== "pending") {
+        throw new BadRequestError(
+            `This assignment has no overtime awaiting review (status: ${assignment.overtimeStatus}).`
+        );
+    }
+
+    if (decision === "adjust") {
+        if (typeof overrideMinutes !== "number" || !Number.isFinite(overrideMinutes) || overrideMinutes < 0) {
+            throw new BadRequestError("approvedMinutes must be a non-negative number for 'adjust'.");
+        }
+        assignment.approvedMinutes = Math.round(overrideMinutes);
+        assignment.overtimeStatus = "approved";
+    } else if (decision === "approve") {
+        assignment.approvedMinutes = assignment.actualMinutes ?? assignment.approvedMinutes;
+        assignment.overtimeStatus = "approved";
+    } else {
+        assignment.approvedMinutes = Math.max(0, (assignment.actualMinutes ?? 0) - (assignment.overtimeMinutes ?? 0));
+        assignment.overtimeStatus = "rejected";
+    }
+
+    if (typeof managerNotes === "string") {
+        assignment.managerNotes = managerNotes.trim();
+    }
+
+    assignment.overtimeReviewedBy = new mongoose.Types.ObjectId(req.user.user_id);
+    assignment.overtimeReviewedAt = new Date();
+
+    await assignment.save();
+
+    await logActivity({
+        job: assignment.job,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_overtime_reviewed",
+        actor: req.user.user_id,
+        metadata: {
+            decision,
+            approvedMinutes: assignment.approvedMinutes,
+            overtimeMinutes: assignment.overtimeMinutes,
+        },
+    });
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        message: `Overtime ${decision}d.`,
+        assignment,
+    });
+};
+
 export const startWorkerBreak: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
 

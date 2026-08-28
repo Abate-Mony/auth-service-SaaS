@@ -9,6 +9,8 @@ export interface TimesheetPdfRow {
   endTime: string;
   breakMinutes: number;
   workedMinutes: number;
+  /** Extra time still awaiting manager approval — not included in workedMinutes' payable total. */
+  pendingOvertimeMinutes?: number;
 }
 
 interface GenerateTimesheetPdfOptions {
@@ -244,7 +246,9 @@ export const generateTimesheetPdf = ({
       row.breakMinutes
         ? formatMinutes(row.breakMinutes)
         : "—",
-      formatHoursDecimal(row.workedMinutes),
+      row.pendingOvertimeMinutes
+        ? `${formatHoursDecimal(row.workedMinutes)} (+${formatHoursDecimal(row.pendingOvertimeMinutes)} pending)`
+        : formatHoursDecimal(row.workedMinutes),
     ];
 
     let x = tableX;

@@ -7,7 +7,8 @@ export type JobStatusNotificationType =
   | "start-job"
   | "late-start"
   | "geofence-warning"
-  | "complete-job";
+  | "complete-job"
+  | "overtime-review";
   
 
   export type NotificationEvent =
