@@ -1,17 +1,17 @@
-import { MiddlewareFn } from "../interfaces/expresstype.js";
-import { comparePassword, hashPassword } from "../utils/passwordUtils.js";
-import User from "../models/userModel.js";
+import { OAuth2Client } from "google-auth-library";
+import { StatusCodes } from "http-status-codes";
+import mongoose from "mongoose";
 import {
   BadRequestError,
   UnauthenticatedError,
 } from "../errors/customErrors.js";
-import { createAccessToken, createRefreshToken, hashRefreshToken, sanitizeUser } from "../utils/tokenUtils.js";
-import { StatusCodes } from "http-status-codes";
-import { USER_ROLES, UserroleTypes } from "../utils/constant.js";
-import { setCookies } from "../utils/cookieUtils.js";
-import { OAuth2Client } from "google-auth-library";
+import { MiddlewareFn } from "../interfaces/expresstype.js";
 import Company from "../models/company.js";
-import mongoose from "mongoose";
+import User from "../models/userModel.js";
+import { setCookies } from "../utils/cookieUtils.js";
+import { comparePassword, hashPassword } from "../utils/passwordUtils.js";
+import { createAccessToken, createRefreshToken, hashRefreshToken, sanitizeUser } from "../utils/tokenUtils.js";
+import NotificationPreferenceModel from "../models/NotificationPreferenceModel.js";
 
 const ACCESS_TOKEN_COOKIE_MS = 15 * 60 * 1000;
 const REFRESH_TOKEN_COOKIE_MS = (Number(process.env.REFRESH_TOKEN_EXPIRES_IN_DAYS) || 30) * 24 * 60 * 60 * 1000;
@@ -162,7 +162,10 @@ export const register: MiddlewareFn = async (req, res) => {
   // 4. Attach company ID back to User
   user.company = company._id;
   await user.save();
-
+  await NotificationPreferenceModel.create({
+    company: user.company,
+    user: user._id
+  })
   // 5. Issue Token & Cookie
   await issueTokens(user, res);
 

@@ -27,7 +27,9 @@ import companyRouter from "./routes/companyRouter.js"
 import cron from "node-cron";
 import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGeneration.js";
 import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
-
+import notificationPreferenceRouter
+  from "./routes/notificationPreferenceRouter.js";
+  import timesheetRouter from "./routes/timesheetRouter.js";
 const app = express();
 app.use(express.json());
 // TEMP: every-second interval to stress-test generateOccurrences' race-condition fix. Revert to "0 1 * * *" before committing/deploying.
@@ -65,13 +67,22 @@ app.use(`/api/v1/users`,
 // DONE WITH USERS DOCUMENTATION ON POSTMAN
 app.use("/api/v1/jobs", authenticateUser, jobRouter);
 // DONE WITH WORKERS DOCUMENTATION ON POSTMAN
-
 app.use("/api/v1/workers",
   authenticateUser,
   workerRouter
 )
+app.use(
+  "/api/v1/notification-preferences",
+  authenticateUser,
+  notificationPreferenceRouter
+);
 app.use("/api/v1/activity-logs", authenticateUser, activityLogRouter);
 app.use("/api/v1/companies", authenticateUser, companyRouter);
+app.use(
+  "/api/v1/timesheets",
+  authenticateUser,
+  timesheetRouter
+);
 app.use("/api/v1/calendar", calendarRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");

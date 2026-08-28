@@ -12,6 +12,9 @@ import dayjs from "../utils/dayjsSetup.js";
 import Company from "../models/company.js";
 import { scheduledEndOf, scheduledStartOf, toUtcDay, TZ } from "../utils/dates.js";
 import { checkGeofence } from "../utils/geo.js";
+import { sendWorkerJobStatusEmail } from "../utils/sendMailsUtils.js";
+import { sendPushToUser } from "../utils/webPush.js";
+import { shouldNotify } from "../services/notificationPreferenceService.js";
 
 export const createWorker: MiddlewareFn = async (req, res) => {
     const { fullname, email, password, role } = req.body;
@@ -291,6 +294,11 @@ export const getActiveJob: MiddlewareFn = async (req, res) => {
 // Single source of truth for worker-driven status transitions.
 // checkInJob below now just calls this instead of duplicating the logic.
 export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
+    const worker = await userModel.findOne({
+        _id: req.user.user_id
+    }) 
+    if (!worker) throw new UnauthenticatedError("user not login ")
+
     const { id } = req.params;
     const { status, reason } = req.body;
 
@@ -322,6 +330,55 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     const now = new Date();
     const scheduledStart = scheduledStartOf(job, tz);
     const scheduledEnd = scheduledEndOf(job, tz);
+    const emailJobRequirement = {
+        _id: job._id.toString(),
+        date: job.date,
+        endTime: job.endTime,
+        startTime: job.startTime,
+        title: job.title
+    }
+
+    // Fire-and-forget: the worker's accept/decline response shouldn't wait
+    // on notifying the manager, and a failed send shouldn't fail the
+    // status change. Each channel is gated by the manager's own
+    // notification preferences (falls back to system defaults if they
+    // haven't set any — see notificationPreferenceService.shouldNotify).
+    async function notifyManagerOfStatusChange(
+        event: "job_accepted" | "job_declined",
+        emailType: "accept-job" | "reject-job",
+        reason?: string
+    ) {
+        const manager = await userModel.findOne({ _id: job!.createdBy! }).select("email");
+        if (!manager) return;
+
+        const managerId = manager._id.toString();
+        const [canEmail, canPush] = await Promise.all([
+            shouldNotify(managerId, event, "email"),
+            shouldNotify(managerId, event, "push"),
+        ]);
+
+        await Promise.all([
+            canEmail
+                ? sendWorkerJobStatusEmail({
+                    type: emailType,
+                    adminEmail: manager.email,
+                    worker: { fullname: worker!.fullname },
+                    job: emailJobRequirement,
+                    reason,
+                })
+                : Promise.resolve(),
+            canPush
+                ? sendPushToUser(managerId, {
+                    title: event === "job_accepted" ? "Shift accepted" : "Shift declined",
+                    body: event === "job_accepted"
+                        ? `${worker!.fullname} accepted ${job!.title} — ${job!.startTime} on ${dayjs(job!.date).tz(tz).format("D MMM")}`
+                        : `${worker!.fullname} declined ${job!.title}${reason ? `: ${reason}` : ""}`,
+                    tag: `assignment-status-${assignment!._id}`,
+                    url: `/jobs/${job!._id}`,
+                })
+                : Promise.resolve(),
+        ]);
+    }
 
     switch (status) {
         case "accepted": {
@@ -331,6 +388,10 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
 
             assignment.status = "accepted";
             assignment.acceptedAt = now;
+
+            notifyManagerOfStatusChange("job_accepted", "accept-job").catch(err =>
+                console.error(`Failed to notify manager of accepted assignment ${assignment._id}:`, err)
+            );
 
             await logActivity({
                 job: assignment.job,
@@ -357,6 +418,10 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             assignment.status = "declined";
             assignment.declinedAt = now;
             assignment.cancellationReason = (reason ?? "").trim();
+
+            notifyManagerOfStatusChange("job_declined", "reject-job", assignment.cancellationReason).catch(err =>
+                console.error(`Failed to notify manager of declined assignment ${assignment._id}:`, err)
+            );
 
             await logActivity({
                 job: assignment.job,
@@ -428,10 +493,10 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
 
             const jobCoords: { lat: number; lng: number } | null =
                 job.coordinates &&
-                typeof job.coordinates.lat === "number" &&
-                Number.isFinite(job.coordinates.lat) &&
-                typeof job.coordinates.lng === "number" &&
-                Number.isFinite(job.coordinates.lng)
+                    typeof job.coordinates.lat === "number" &&
+                    Number.isFinite(job.coordinates.lat) &&
+                    typeof job.coordinates.lng === "number" &&
+                    Number.isFinite(job.coordinates.lng)
                     ? {
                         lat: job.coordinates.lat,
                         lng: job.coordinates.lng,
@@ -517,10 +582,10 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
 
             const jobCoords =
                 job.coordinates &&
-                typeof job.coordinates.lat === "number" &&
-                Number.isFinite(job.coordinates.lat) &&
-                typeof job.coordinates.lng === "number" &&
-                Number.isFinite(job.coordinates.lng)
+                    typeof job.coordinates.lat === "number" &&
+                    Number.isFinite(job.coordinates.lat) &&
+                    typeof job.coordinates.lng === "number" &&
+                    Number.isFinite(job.coordinates.lng)
                     ? {
                         lat: job.coordinates.lat,
                         lng: job.coordinates.lng,
