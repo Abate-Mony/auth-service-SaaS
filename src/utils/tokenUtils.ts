@@ -38,6 +38,35 @@ export const createRefreshToken = (): { token: string; hash: string; expiresAt: 
 export const hashRefreshToken = (token: string): string =>
   crypto.createHash("sha256").update(token).digest("hex");
 
+const EMAIL_VERIFICATION_EXPIRES_HOURS = 24;
+
+// Same opaque-token-plus-hash shape as the refresh token, for the same
+// reason: only the hash lives in the database, so a leaked DB row can't be
+// replayed as a working verification link.
+export const createEmailVerificationToken = (): { token: string; hash: string; expiresAt: Date } => {
+  const token = crypto.randomBytes(32).toString("hex");
+  const hash = crypto.createHash("sha256").update(token).digest("hex");
+  const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_EXPIRES_HOURS * 60 * 60 * 1000);
+  return { token, hash, expiresAt };
+};
+
+export const hashEmailVerificationToken = (token: string): string =>
+  crypto.createHash("sha256").update(token).digest("hex");
+
+const PASSWORD_RESET_EXPIRES_MINUTES = 30;
+
+// Deliberately short-lived compared to the 24h email-verification link — a
+// leaked reset link is a much more sensitive thing to have sitting around.
+export const createPasswordResetToken = (): { token: string; hash: string; expiresAt: Date } => {
+  const token = crypto.randomBytes(32).toString("hex");
+  const hash = crypto.createHash("sha256").update(token).digest("hex");
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_EXPIRES_MINUTES * 60 * 1000);
+  return { token, hash, expiresAt };
+};
+
+export const hashPasswordResetToken = (token: string): string =>
+  crypto.createHash("sha256").update(token).digest("hex");
+
 export const sanitizeUser = (user: mongoose.Document): any => {
   const _user = user.toJSON();
   delete _user.password;

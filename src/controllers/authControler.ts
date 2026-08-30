@@ -3,6 +3,7 @@ import { StatusCodes } from "http-status-codes";
 import mongoose from "mongoose";
 import {
   BadRequestError,
+  NotFoundError,
   UnauthenticatedError,
 } from "../errors/customErrors.js";
 import { MiddlewareFn } from "../interfaces/expresstype.js";
@@ -10,7 +11,17 @@ import Company from "../models/company.js";
 import User from "../models/userModel.js";
 import { setCookies } from "../utils/cookieUtils.js";
 import { comparePassword, hashPassword } from "../utils/passwordUtils.js";
-import { createAccessToken, createRefreshToken, hashRefreshToken, sanitizeUser } from "../utils/tokenUtils.js";
+import {
+  createAccessToken,
+  createEmailVerificationToken,
+  createPasswordResetToken,
+  createRefreshToken,
+  hashEmailVerificationToken,
+  hashPasswordResetToken,
+  hashRefreshToken,
+  sanitizeUser,
+} from "../utils/tokenUtils.js";
+import { sendPasswordResetEmail, sendVerificationEmail } from "../utils/mailTemplates.js";
 import NotificationPreferenceModel from "../models/NotificationPreferenceModel.js";
 
 const ACCESS_TOKEN_COOKIE_MS = 15 * 60 * 1000;
@@ -159,8 +170,11 @@ export const register: MiddlewareFn = async (req, res) => {
     throw error;
   }
 
-  // 4. Attach company ID back to User
+  // 4. Attach company ID back to User + a fresh email-verification token
+  const { token: verificationToken, hash, expiresAt } = createEmailVerificationToken();
   user.company = company._id;
+  user.emailVerificationToken = hash;
+  user.emailVerificationExpiresAt = expiresAt;
   await user.save();
   await NotificationPreferenceModel.create({
     company: user.company,
@@ -168,6 +182,11 @@ export const register: MiddlewareFn = async (req, res) => {
   })
   // 5. Issue Token & Cookie
   await issueTokens(user, res);
+
+  // Fire-and-forget — verification shouldn't block signup from completing.
+  sendVerificationEmail({ email: user.email, fullname: user.fullname, verificationToken }).catch(err =>
+    console.error(`Failed to send verification email to ${user.email}:`, err)
+  );
 
   res.status(StatusCodes.CREATED).json({
     msg: "User and company created successfully",
@@ -196,6 +215,107 @@ export const refresh: MiddlewareFn = async (req, res) => {
   await issueTokens(user, res);
 
   res.status(StatusCodes.OK).json({ success: true, msg: "token refreshed" });
+};
+
+// Public — the link in the verification email is opened outside any
+// authenticated session, so this can't rely on req.user.
+export const verifyEmail: MiddlewareFn = async (req, res) => {
+  const token = (req.body?.token ?? req.query?.token) as string | undefined;
+  if (!token) throw new BadRequestError("Verification token is required.");
+
+  const hash = hashEmailVerificationToken(token);
+  const user = await User.findOne({ emailVerificationToken: hash }).select(
+    "+emailVerificationToken +emailVerificationExpiresAt"
+  );
+
+  if (!user || !user.emailVerificationExpiresAt || user.emailVerificationExpiresAt < new Date()) {
+    throw new BadRequestError("This verification link is invalid or has expired.");
+  }
+
+  user.isVerified = true;
+  user.emailVerificationToken = undefined;
+  user.emailVerificationExpiresAt = undefined;
+  await user.save();
+
+  res.status(StatusCodes.OK).json({ success: true, msg: "Email verified successfully." });
+};
+
+// Authenticated — lets an already-logged-in-but-unverified user request a
+// fresh link once the first one expires or gets lost.
+export const resendVerificationEmail: MiddlewareFn = async (req, res) => {
+  const user = await User.findById(req.user.user_id);
+  if (!user) throw new NotFoundError("User not found.");
+
+  if (user.isVerified) {
+    res.status(StatusCodes.OK).json({ success: true, msg: "Email is already verified." });
+    return;
+  }
+
+  const { token: verificationToken, hash, expiresAt } = createEmailVerificationToken();
+  user.emailVerificationToken = hash;
+  user.emailVerificationExpiresAt = expiresAt;
+  await user.save();
+
+  sendVerificationEmail({ email: user.email, fullname: user.fullname, verificationToken }).catch(err =>
+    console.error(`Failed to send verification email to ${user.email}:`, err)
+  );
+
+  res.status(StatusCodes.OK).json({ success: true, msg: "Verification email sent." });
+};
+
+// Public — a forgotten password means the user can't log in, so this can't
+// require authentication. Always returns the same message whether or not the
+// email is registered, so it can't be used to enumerate accounts.
+export const forgotPassword: MiddlewareFn = async (req, res) => {
+  const { email } = req.body;
+  if (!email) throw new BadRequestError("Email is required.");
+
+  const user = await User.findOne({ email: email.toLowerCase() });
+
+  if (user) {
+    const { token: resetToken, hash, expiresAt } = createPasswordResetToken();
+    user.passwordResetToken = hash;
+    user.passwordResetExpiresAt = expiresAt;
+    await user.save();
+
+    sendPasswordResetEmail({ email: user.email, fullname: user.fullname, resetToken }).catch(err =>
+      console.error(`Failed to send password reset email to ${user.email}:`, err)
+    );
+  }
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    msg: "If an account exists with that email, a reset link has been sent.",
+  });
+};
+
+export const resetPassword: MiddlewareFn = async (req, res) => {
+  const { token, password } = req.body;
+  if (!token || !password) throw new BadRequestError("Token and new password are required.");
+  if (password.length < 8) throw new BadRequestError("Password must be at least 8 characters long.");
+
+  const hash = hashPasswordResetToken(token);
+  const user = await User.findOne({ passwordResetToken: hash }).select(
+    "+passwordResetToken +passwordResetExpiresAt"
+  );
+
+  if (!user || !user.passwordResetExpiresAt || user.passwordResetExpiresAt < new Date()) {
+    throw new BadRequestError("This reset link is invalid or has expired.");
+  }
+
+  user.password = await hashPassword(password);
+  user.passwordResetToken = undefined;
+  user.passwordResetExpiresAt = undefined;
+  // A password reset invalidates any existing session — force re-login
+  // everywhere rather than leaving a stolen account's refresh token valid.
+  user.refreshToken = undefined;
+  user.refreshTokenExpiresAt = undefined;
+  await user.save();
+
+  res.cookie("token", "logout", setCookies());
+  res.cookie("refreshToken", "logout", setCookies());
+
+  res.status(StatusCodes.OK).json({ success: true, msg: "Password reset successfully. Please log in." });
 };
 
 export const logout: MiddlewareFn = async (req, res) => {

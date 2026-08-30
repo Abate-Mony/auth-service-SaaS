@@ -195,6 +195,77 @@ export async function sendShiftReminder({
   });
 }
 
+export async function sendVerificationEmail({
+  email,
+  fullname,
+  verificationToken,
+}: {
+  email: string;
+  fullname: string;
+  verificationToken: string;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const link = `${process.env.CLIENT_URL}/auth/verify-email?token=${verificationToken}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, confirm your email address to finish setting up your work.wrk account.
+    </p>
+
+    ${button(link, "Verify email")}
+
+    <p style="margin:0;font-size:13px;color:#94A3B8;">
+      This link expires in 24 hours. If you didn't create this account, you can ignore this email.
+    </p>`;
+
+  await sendMail({
+    to: email,
+    subject: "Verify your email address",
+    text:
+      `Hi ${firstName},\n\n` +
+      `Confirm your email address to finish setting up your work.wrk account.\n\n` +
+      `Verify email: ${link}\n\n` +
+      `This link expires in 24 hours. If you didn't create this account, you can ignore this email.`,
+    html: layout({ heading: "Verify your email address", body }),
+  });
+}
+
+export async function sendPasswordResetEmail({
+  email,
+  fullname,
+  resetToken,
+}: {
+  email: string;
+  fullname: string;
+  resetToken: string;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const link = `${process.env.CLIENT_URL}/auth/reset-password?token=${resetToken}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, we got a request to reset your work.wrk password.
+    </p>
+
+    ${button(link, "Reset password")}
+
+    <p style="margin:0;font-size:13px;color:#94A3B8;">
+      This link expires in 30 minutes. If you didn't request this, you can ignore this email —
+      your password won't change.
+    </p>`;
+
+  await sendMail({
+    to: email,
+    subject: "Reset your password",
+    text:
+      `Hi ${firstName},\n\n` +
+      `We got a request to reset your work.wrk password.\n\n` +
+      `Reset password: ${link}\n\n` +
+      `This link expires in 30 minutes. If you didn't request this, you can ignore this email.`,
+    html: layout({ heading: "Reset your password", body }),
+  });
+}
+
 export const sendWorkerInvite = async ({
   email, fullname, companyName, inviteToken,
 }: { email: string; fullname: string; companyName: string; inviteToken: string }) => {

@@ -32,6 +32,11 @@ export const getAllUser: MiddlewareFn = async (
   const queryObject: any = {
     _id: { $ne: currentUser.user_id },
     // isActive: true,
+    // Cast explicitly: aggregate()'s $match below sends this straight to
+    // MongoDB with no Mongoose auto-casting, so a raw string here (as
+    // req.user.company_id is, straight off the JWT) silently matches
+    // nothing against the ObjectId-typed `company` field.
+    company: new mongoose.Types.ObjectId(req.user.company_id.toString()),
   };
 
   if (currentUser.role === "admin") {
@@ -117,7 +122,7 @@ export const getWorkerStats: MiddlewareFn = async (req, res) => {
     throw new UnauthorizedError("Not allowed to view worker stats");
   }
 
-  const worker = await userModel.findById(id).lean();
+  const worker = await userModel.findOne({ _id: id, company: currentUser.company_id }).lean();
   if (!worker) throw new NotFoundError("Worker not found");
 
   const weekStart = dayjs.utc().startOf("week").toDate();
@@ -229,7 +234,7 @@ export const getWorkerStats: MiddlewareFn = async (req, res) => {
 };
 export const getStaticUser: MiddlewareFn = async (req, res) => {
   const user_id = req.params.userId;
-  const user = await userModel.findOne({ _id: user_id });
+  const user = await userModel.findOne({ _id: user_id, company: req.user.company_id });
   if (!user)
     throw new UnauthenticatedError(`
   couldnot found user with id ${user_id}

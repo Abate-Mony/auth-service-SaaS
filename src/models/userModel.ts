@@ -67,6 +67,24 @@ const UserSchema = new Schema(
       select: false,
     },
 
+    emailVerificationToken: {
+      type: String,
+      select: false,
+    },
+    emailVerificationExpiresAt: {
+      type: Date,
+      select: false,
+    },
+
+    passwordResetToken: {
+      type: String,
+      select: false,
+    },
+    passwordResetExpiresAt: {
+      type: Date,
+      select: false,
+    },
+
     // One entry per subscribed device/browser — a worker can have several.
     pushSubscriptions: {
       type: [

@@ -84,7 +84,7 @@ app.use(
   authenticateUser,
   timesheetRouter
 );
-app.use("/api/v1/calendar", calendarRouter)
+app.use("/api/v1/calendar", authenticateUser, calendarRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });

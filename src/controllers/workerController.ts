@@ -296,7 +296,7 @@ export const getActiveJob: MiddlewareFn = async (req, res) => {
 export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     const worker = await userModel.findOne({
         _id: req.user.user_id
-    }) 
+    })
     if (!worker) throw new UnauthenticatedError("user not login ")
 
     const { id } = req.params;
@@ -538,8 +538,8 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                     }
                     : null;
 
-            const mode = company?.geofenceMode ?? "warn";
-
+            // const mode = company?.geofenceMode ?? "warn";
+            const mode = job.geofenceMode ?? company?.geofenceMode ?? "warn";
             const geo = checkGeofence({
                 jobCoords,
                 workerCoords,

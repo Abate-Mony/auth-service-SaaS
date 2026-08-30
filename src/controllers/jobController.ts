@@ -406,11 +406,19 @@ export const getAllJobs: MiddlewareFn = async (
         job: {
             $in: jobs.map(job => job._id),
         },
-    });
+        isDeleted: false,
+    }).populate("worker", "fullname email worker").lean();
 
+    // Flatten the populated worker onto the assignment — same shape as
+    // getJob returns: { fullname, email, ... } directly, no nested `worker`.
+    const flatAssignments = assignments.map(({ worker, ...rest }) => ({
+        ...rest,
+        email: (worker as any)?.email,
+        worker:(worker as any)?._id,
+    }));
 
-    const assignmentMap = assignments.reduce((acc, assignment) => {
-        // console.log("assignment :", assignment,)
+    console.log("flat-worker",assignments)
+    const assignmentMap = flatAssignments.reduce((acc, assignment) => {
         const key = assignment.job.toString();
 
         if (!acc[key]) {
@@ -420,7 +428,7 @@ export const getAllJobs: MiddlewareFn = async (
         acc[key].push(assignment);
 
         return acc;
-    }, {} as Record<string, typeof assignments>);
+    }, {} as Record<string, typeof flatAssignments>);
     const result = jobs.map(job => ({
         ...job.toObject(),
         workers: assignmentMap[job._id.toString()] ?? [],
@@ -460,7 +468,7 @@ export const duplicateJob: MiddlewareFn = async (req, res) => {
 
         // Usually safer to reset these
         status: "draft",
-        isPublished: false,
+        // isPublished: false,
 
         // A duplicate stands alone — it isn't an occurrence of the source
         // job's recurring series. Keeping recurringJob would also collide
@@ -502,21 +510,32 @@ export const getJob: MiddlewareFn = async (
 ): Promise<void> => {
     const job = await Job.findOne({
         _id: req.params.id,
-        isDeleted: false
+        isDeleted: false,
+
         // companyId: getReqUser(req).companyId,
     })
-    const assignment = await JobAssignment.find({
+    const assignments = await JobAssignment.find({
         job: req.params.id,
-    }).populate("worker", "fullname email");
-
+        isDeleted: false,
+    }).populate("worker", "fullname email").lean();
 
     if (!job) throw new NotFoundError("job not found ")
+
+    // Flatten the populated worker onto the assignment itself — the caller
+    // wants { fullname, email, ... } directly, not nested under `worker`.
+    // `fullname` is already denormalised on the assignment; only `email`
+    // actually needs pulling out of the populated doc.
+    const workers = assignments.map(({ worker, ...rest }) => ({
+        ...rest,
+        email: (worker as any)?.email,
+    }));
+    console.log("this is workers : ", workers)
 
     res.status(StatusCodes.OK).json({
         success: true,
         job: {
             ...job.toObject(),
-            workers: assignment
+            workers,
         },
     });
 };
@@ -527,12 +546,6 @@ const UPDATE_JOB_ALLOWED_FIELDS = [
 ] as const;
 
 export const updateJob: MiddlewareFn = async (req, res) => {
-    const { startTime, endTime } = req.body;
-
-    if (!startTime || !endTime) {
-        throw new BadRequestError("Start time and end time are required.");
-    }
-
     const currentUserId = getReqUser(req).user_id;
     const companyId = getReqUser(req).company_id;
 
@@ -541,12 +554,24 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         throw new BadRequestError("Job not found.");
     }
 
+    // Both are optional on the request — a caller editing only e.g. workers
+    // or notes shouldn't have to resend the existing shift time. Only a
+    // request that actually tries to change one of them needs both present.
+    const startTime = req.body.startTime ?? job.startTime;
+    const endTime = req.body.endTime ?? job.endTime;
+
+    if (!startTime || !endTime) {
+        throw new BadRequestError("Start time and end time are required.");
+    }
+
     // `workers` being entirely absent means "leave assignments alone" (e.g.
     // the caller is only editing the title) — an explicit [] is what clears
     // every assignment, never an omitted field.
     let usersToAssign: any[] = [];
+    console.log("enter here .... update-job", req.body.workers)
 
     if (req.body.workers !== undefined) {
+        console.log("this is the workers ", req.body.workers)
         let workers: any[];
         try {
             workers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
@@ -557,7 +582,19 @@ export const updateJob: MiddlewareFn = async (req, res) => {
             throw new BadRequestError("Invalid workers payload");
         }
 
-        const workerEmails = workers.map((w: any) => w.email).filter(Boolean);
+        // Accept either shape: a flat { email } (what createJob expects) or a
+        // populated assignment's nested { worker: { email } } — the frontend
+        // sends whichever it currently has on hand for each worker row.
+        const workerEmails = workers
+            .map((w: any) => w?.email ?? w?.worker?.email)
+            .filter(Boolean);
+
+        // A non-empty workers array that resolves to zero emails means the
+        // payload shape wasn't recognised — never treat that as "unassign
+        // everyone", which is what silently happened before this guard.
+        if (workers.length > 0 && workerEmails.length === 0) {
+            throw new BadRequestError("Invalid workers payload — each worker must include an email.");
+        }
 
         const selectedUsers = workerEmails.length
             ? await userModel.find({ email: { $in: workerEmails }, isActive: true })
@@ -604,76 +641,76 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     // Allowlisted — never spread req.body, or clients can set company/
     // createdBy/isDeleted/isTemplate/recurringJob directly.
     const updateFields: Record<string, any> = {
-    startTime,
-    endTime,
-    minutes: jobDurationMinutes(startTime, endTime),
-};
-for (const key of UPDATE_JOB_ALLOWED_FIELDS) {
-    if (req.body[key] !== undefined) updateFields[key] = req.body[key];
-}
-if (req.body.date !== undefined) {
-    updateFields.date = toUtcDay(req.body.date);
-}
+        startTime,
+        endTime,
+        minutes: jobDurationMinutes(startTime, endTime),
+    };
+    for (const key of UPDATE_JOB_ALLOWED_FIELDS) {
+        if (req.body[key] !== undefined) updateFields[key] = req.body[key];
+    }
+    if (req.body.date !== undefined) {
+        updateFields.date = toUtcDay(req.body.date);
+    }
 
-const updatedJob = await Job.findByIdAndUpdate(job._id, updateFields, {
-    new: true,
-    runValidators: true,
-});
-
-if (!updatedJob) {
-    throw new BadRequestError("Job not found.");
-}
-
-if (usersToAssign.length) {
-    await logActivity({
-        job: updatedJob._id,
-        type: "workers_assigned",
-        actor: currentUserId,
-        workers: usersToAssign.map(u => u._id),
+    const updatedJob = await Job.findByIdAndUpdate(job._id, updateFields, {
+        new: true,
+        runValidators: true,
     });
 
-    // Fire-and-forget, same as createJob — uses the just-updated job so a
-    // manager who changes the time/location and adds workers in the same
-    // request notifies with the final details, not the stale pre-update ones.
-    Promise.all(
-        usersToAssign.map(u =>
-            Promise.all([
-                sendShiftAssigned({
-                    worker: { email: u.email, fullname: u.fullname },
-                    job: {
-                        _id: updatedJob._id.toString(),
-                        title: updatedJob.title,
-                        location: updatedJob.location,
-                        address: updatedJob.address,
-                        date: updatedJob.date,
-                        startTime: updatedJob.startTime,
-                        endTime: updatedJob.endTime,
-                        minutes: updatedJob.minutes,
-                    },
-                }),
-                sendPushToUser(u._id.toString(), {
-                    title: "New shift assigned",
-                    body: `${updatedJob.title} — ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}, ${updatedJob.startTime} at ${updatedJob.location}`,
-                    tag: `shift-assigned-${updatedJob._id}`,
-                    url: `/worker/jobs/${updatedJob._id}`,
-                }),
-            ])
-        )
-    ).catch(err => console.error(`Failed to send shift-assigned notification(s) for job ${updatedJob._id}:`, err));
-}
+    if (!updatedJob) {
+        throw new BadRequestError("Job not found.");
+    }
 
-/**
- * Return updated job with assignments
- */
-const assignments = await JobAssignment.find({
-    job: updatedJob._id,
-}).populate("worker", "fullname email");
+    if (usersToAssign.length) {
+        await logActivity({
+            job: updatedJob._id,
+            type: "workers_assigned",
+            actor: currentUserId,
+            workers: usersToAssign.map(u => u._id),
+        });
 
-res.status(StatusCodes.OK).json({
-    success: true,
-    job: updatedJob,
-    assignments,
-});
+        // Fire-and-forget, same as createJob — uses the just-updated job so a
+        // manager who changes the time/location and adds workers in the same
+        // request notifies with the final details, not the stale pre-update ones.
+        Promise.all(
+            usersToAssign.map(u =>
+                Promise.all([
+                    sendShiftAssigned({
+                        worker: { email: u.email, fullname: u.fullname },
+                        job: {
+                            _id: updatedJob._id.toString(),
+                            title: updatedJob.title,
+                            location: updatedJob.location,
+                            address: updatedJob.address,
+                            date: updatedJob.date,
+                            startTime: updatedJob.startTime,
+                            endTime: updatedJob.endTime,
+                            minutes: updatedJob.minutes,
+                        },
+                    }),
+                    sendPushToUser(u._id.toString(), {
+                        title: "New shift assigned",
+                        body: `${updatedJob.title} — ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}, ${updatedJob.startTime} at ${updatedJob.location}`,
+                        tag: `shift-assigned-${updatedJob._id}`,
+                        url: `/worker/jobs/${updatedJob._id}`,
+                    }),
+                ])
+            )
+        ).catch(err => console.error(`Failed to send shift-assigned notification(s) for job ${updatedJob._id}:`, err));
+    }
+
+    /**
+     * Return updated job with assignments
+     */
+    const assignments = await JobAssignment.find({
+        job: updatedJob._id,
+    }).populate("worker", "fullname email");
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        job: updatedJob,
+        assignments,
+    });
 };
 export const deleteJob: MiddlewareFn = async (req, res): Promise<void> => {
 

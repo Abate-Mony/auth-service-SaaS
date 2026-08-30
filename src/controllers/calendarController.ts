@@ -22,6 +22,7 @@ export const getCalendarJobs: MiddlewareFn = async (req, res) => {
   }
 
   const jobs = await Job.find({
+    company: req.user.company_id.toString(),
     date: {
       $gte: rangeStart.toDate(),
       $lt: rangeEnd.toDate(), // exclusive upper bound = whole final day included

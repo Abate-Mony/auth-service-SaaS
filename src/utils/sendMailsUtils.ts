@@ -24,11 +24,12 @@ export async function sendMail(opts: {
     subject: string;
     text: string;
     html: string;
+    companyName?:string
 }) {
     const resend = getResend();
 
     const { data, error } = await resend.emails.send({
-        from: `work.wrk <${process.env.EMAIL_FROM}>`,
+        from: `{companyName?? "work.wrk"} <${process.env.EMAIL_FROM}>`,
         to: opts.to,
         subject: opts.subject,
         text: opts.text,
