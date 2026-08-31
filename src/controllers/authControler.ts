@@ -30,7 +30,7 @@ const REFRESH_TOKEN_COOKIE_MS = (Number(process.env.REFRESH_TOKEN_EXPIRES_IN_DAY
 // Issues an access + refresh token pair for `user`, persists the refresh
 // token's hash on the user doc (so it can be looked up/revoked later), and
 // sets both as httpOnly cookies on `res`.
-const issueTokens = async (user: mongoose.Document & { _id: any; role: string; company?: any }, res: import("express").Response) => {
+export const issueTokens = async (user: mongoose.Document & { _id: any; role: string; company?: any }, res: import("express").Response) => {
   const accessToken = createAccessToken({
     user_id: user._id.toString(),
     role: user.role,

@@ -6,6 +6,10 @@ import { NOTIFICATION_CHANNELS, NOTIFICATION_EVENTS } from "../utils/constant.js
 import { NotificationChannel, NotificationEvent } from "../utils/types.js";
 import NotificationPreferenceModel from "../models/NotificationPreferenceModel.js";
 import { MiddlewareFn } from "../interfaces/expresstype.js";
+import recurringJobModel from "../models/recurringJobModel.js";
+import jobModel from "../models/jobModel.js";
+import { toUtcDay } from "../utils/dates.js";
+import JobAssignment from "../models/JobAssignment.js";
 
 export const getMyNotificationPreferences: MiddlewareFn = async (
     req,
@@ -163,4 +167,34 @@ export const updateMyNotificationPreferences: MiddlewareFn = async (
         message: "Notification preferences updated.",
         preferences,
     });
+};
+
+export const cancelRecurringSeries: MiddlewareFn = async (req, res) => {
+  const { id } = req.params;
+  const { scope } = req.body; // "stop" | "stop-and-cancel" | "this-only"
+
+  const recurring = await recurringJobModel.findById(id);
+  if (!recurring) throw new NotFoundError("Schedule not found");
+
+  if (scope !== "this-only") {
+    recurring.active = false;
+    await recurring.save();
+  }
+
+  if (scope === "stop-and-cancel") {
+    const futureJobs = await jobModel.find({
+      recurringJob: id,
+      date: { $gte: toUtcDay(new Date()) },
+      status: { $nin: ["completed", "cancelled"] },
+    }).distinct("_id");
+
+    await jobModel.updateMany({ _id: { $in: futureJobs } }, { status: "cancelled" });
+    await JobAssignment.updateMany(
+      { job: { $in: futureJobs }, status: { $in: ["pending", "accepted"] } },
+      { status: "cancelled", cancellationReason: "Recurring shift cancelled" }
+    );
+    // Workers who'd accepted need telling
+  }
+
+  res.status(StatusCodes.OK).json({ success: true });
 };

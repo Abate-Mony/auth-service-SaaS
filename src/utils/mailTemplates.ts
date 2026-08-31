@@ -195,6 +195,50 @@ export async function sendShiftReminder({
   });
 }
 
+export async function sendInvitationEmail({
+  email,
+  fullname,
+  companyName,
+  inviterName,
+  role,
+  invitationToken,
+}: {
+  email: string;
+  fullname?: string;
+  companyName: string;
+  inviterName: string;
+  role: "worker" | "manager";
+  invitationToken: string;
+}) {
+  const greeting = fullname ? fullname.split(" ")[0] : "there";
+  const roleLabel = role === "manager" ? "Manager" : "Worker";
+  const link = `${process.env.CLIENT_URL}/invite/accept?token=${encodeURIComponent(invitationToken)}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${greeting}, ${inviterName} invited you to join <strong>${companyName}</strong>
+      as a ${roleLabel}.
+    </p>
+
+    ${button(link, "Accept invitation")}
+
+    <p style="margin:0;font-size:13px;color:#94A3B8;">
+      This invitation expires in 7 days. If you weren't expecting this, you can ignore this email.
+    </p>`;
+
+  await sendMail({
+    to: email,
+    subject: `You've been invited to join ${companyName}`,
+    text:
+      `Hi ${greeting},\n\n` +
+      `${inviterName} invited you to join ${companyName} as a ${roleLabel}.\n\n` +
+      `Accept invitation: ${link}\n\n` +
+      `This invitation expires in 7 days. If you weren't expecting this, you can ignore this email.`,
+    html: layout({ heading: `You're invited to join ${companyName}`, body }),
+    companyName,
+  });
+}
+
 export async function sendVerificationEmail({
   email,
   fullname,

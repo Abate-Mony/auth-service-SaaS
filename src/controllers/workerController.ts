@@ -15,6 +15,7 @@ import { checkGeofence } from "../utils/geo.js";
 import { sendWorkerJobStatusEmail } from "../utils/sendMailsUtils.js";
 import { sendPushToUser } from "../utils/webPush.js";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
+import { sanitizeUser } from "../utils/tokenUtils.js";
 
 export const createWorker: MiddlewareFn = async (req, res) => {
     const { fullname, email, password, role } = req.body;
@@ -45,7 +46,7 @@ export const createWorker: MiddlewareFn = async (req, res) => {
 
     res.status(StatusCodes.CREATED).json({
         message: "Worker created successfully.",
-        worker,
+        worker: sanitizeUser(worker),
     });
 };
 
@@ -75,16 +76,30 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
         }
     }
 
-    const lookupJob: mongoose.PipelineStage.Lookup = {
-        $lookup: {
-            from: "jobs", // Mongoose lowercases + pluralizes "Job" -> "jobs" by default; adjust if you overrode the collection name
-            let: { jobId: "$job" },
-            pipeline: [
-                { $match: { $expr: { $eq: ["$_id", "$$jobId"] }, isDeleted: false } },
-            ],
-            as: "job",
-        },
-    };
+ const lookupJob: mongoose.PipelineStage.Lookup = {
+    $lookup: {
+        from: "jobs",
+        let: { jobId: "$job" },
+        pipeline: [
+            {
+                $match: {
+                    $expr: {
+                        $eq: ["$_id", "$$jobId"]
+                    },
+
+                    isDeleted: false,
+
+                    // Draft jobs are internal to managers/admins.
+                    // Workers should not see them until published.
+                    status: {
+                        $ne: "draft"
+                    }
+                }
+            },
+        ],
+        as: "job",
+    },
+};
     const unwindJob: mongoose.PipelineStage.Unwind = { $unwind: "$job" };
     const projectRow: mongoose.PipelineStage.Project = {
         $project: {
@@ -195,53 +210,144 @@ const ASSIGNMENT_STATUSES = ["pending", "accepted", "declined", "in-progress", "
 // completed work (all-time), and earnings for the current calendar month.
 // Add more facets here as new stats are needed.
 export const getWorkerDashboardStats: MiddlewareFn = async (req, res) => {
-    const workerId = new mongoose.Types.ObjectId(req.user.user_id);
-    const monthStart = dayjs().startOf("month").toDate();
-    const monthEnd = dayjs().endOf("month").toDate();
+  const workerId = new mongoose.Types.ObjectId(req.user.user_id);
 
-    const [result] = await JobAssignment.aggregate([
-        { $match: { worker: workerId } },
-        {
-            $facet: {
-                statusCounts: [
-                    { $group: { _id: "$status", count: { $sum: 1 } } },
-                ],
-                completedStats: [
-                    { $match: { status: "completed" } },
-                    {
-                        $group: {
-                            _id: null,
-                            hoursWorked: { $sum: "$hoursWorked" },
-                            averagePayRate: { $avg: "$payRate" },
-                        },
-                    },
-                ],
-                monthlyEarnings: [
-                    { $match: { status: "completed", completedAt: { $gte: monthStart, $lte: monthEnd } } },
-                    { $group: { _id: null, earnings: { $sum: "$totalPay" } } },
-                ],
+  const monthStart = dayjs().startOf("month").toDate();
+  const monthEnd = dayjs().endOf("month").toDate();
+
+  const [result] = await JobAssignment.aggregate([
+    {
+      $match: {
+        worker: workerId,
+        isDeleted: false,
+      },
+    },
+
+    {
+      $facet: {
+        statusCounts: [
+          {
+            $group: {
+              _id: "$status",
+              count: { $sum: 1 },
             },
-        },
-    ]);
+          },
+        ],
 
-    const jobStats = Object.fromEntries(ASSIGNMENT_STATUSES.map(status => [status, 0])) as Record<typeof ASSIGNMENT_STATUSES[number], number>;
-    for (const row of result.statusCounts) {
-        jobStats[row._id as typeof ASSIGNMENT_STATUSES[number]] = row.count;
-    }
+        monthlyStats: [
+          {
+            $match: {
+              status: "completed",
+              completedAt: {
+                $gte: monthStart,
+                $lte: monthEnd,
+              },
+            },
+          },
 
-    const completed = result.completedStats[0] ?? {};
-    const monthly = result.monthlyEarnings[0] ?? {};
-    const total_job_completed = Object.values(jobStats).reduce((acc, next) => acc + next)
-    res.status(StatusCodes.OK).json({
-        success: true,
-        jobStats,
-        hoursWorked: completed.hoursWorked ?? 0,
-        averagePayRate: completed.averagePayRate ?? 0,
-        monthlyEarnings: monthly.earnings ?? 0,
-        total_job_completed
-    });
+          {
+            $addFields: {
+              payableMinutes: {
+                $ifNull: [
+                  "$approvedMinutes",
+                  {
+                    $ifNull: [
+                      "$actualMinutes",
+                      0,
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+
+          {
+            $group: {
+              _id: null,
+
+              completedJobs: {
+                $sum: 1,
+              },
+
+              totalMinutes: {
+                $sum: "$payableMinutes",
+              },
+
+              averagePayRate: {
+                $avg: "$payRate",
+              },
+
+              totalEarnings: {
+                $sum: {
+                  $multiply: [
+                    {
+                      $divide: [
+                        "$payableMinutes",
+                        60,
+                      ],
+                    },
+                    "$payRate",
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    },
+  ]);
+
+  const jobStats = Object.fromEntries(
+    ASSIGNMENT_STATUSES.map((status) => [
+      status,
+      0,
+    ])
+  ) as Record<
+    typeof ASSIGNMENT_STATUSES[number],
+    number
+  >;
+
+  for (const row of result.statusCounts) {
+    jobStats[
+      row._id as typeof ASSIGNMENT_STATUSES[number]
+    ] = row.count;
+  }
+
+  const monthly = result.monthlyStats[0] ?? {};
+
+  const totalJobs = Object.values(jobStats).reduce(
+    (total, count) => total + count,
+    0
+  );
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+
+    jobStats,
+
+    monthly: {
+      earnings: Number(
+        (monthly.totalEarnings ?? 0).toFixed(2)
+      ),
+
+      totalMinutes:
+        monthly.totalMinutes ?? 0,
+
+      hoursWorked: Number(
+        ((monthly.totalMinutes ?? 0) / 60).toFixed(2)
+      ),
+
+      completedJobs:
+        monthly.completedJobs ?? 0,
+
+      averagePayRate: Number(
+        (monthly.averagePayRate ?? 0).toFixed(2)
+      ),
+    },
+
+    totalJobs,
+  });
 };
-
 export const getJob: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
 

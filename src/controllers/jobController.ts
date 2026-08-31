@@ -78,6 +78,9 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         endDate,
         maxOccurrences,
         generateAheadDays,
+          geofenceMode,
+         geofenceRadiusMeters,
+         clockInGraceMinutes
     } = req.body;
 
     if (!startTime || !endTime) throw new BadRequestError("start or end time required");
@@ -115,7 +118,9 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     const workerIds = realWorkers.map(w => w._id);
 
     // Allowlisted — never spread req.body, or clients can set isTemplate/status/createdBy
-    console.log("requested_user ", req.user)
+    console.log("requested_user body", req.body)
+//      geofenceMode: 'enforce',
+// [1]   geofenceRadiusMeters: 150,
     const baseJobFields = {
         title,
         description,
@@ -136,7 +141,11 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         notes: notes ?? "",
         instructions: instructions ?? "",
         createdBy: currentUserId,
+         geofenceMode,
+         geofenceRadiusMeters,
+         clockInGraceMinutes
     };
+    // throw new BadRequestError("testing")
 
     // ── Recurring job ──────────────────────────────────────────────────────
     if (isRecurring) {
@@ -361,6 +370,8 @@ export const getAllJobs: MiddlewareFn = async (
         priority,
         sort = "newest",
         page = "1", limit: limitQuery = "100",
+        client,
+        unassigned
     } = req.query;
     const limit = Number(limitQuery) || 10;
 
@@ -369,7 +380,18 @@ export const getAllJobs: MiddlewareFn = async (
         // createdBy: req.user.user_id
         company: req.user.company_id
     };
-
+    if (unassigned && unassigned !== "false") {
+        // Jobs with zero active assignments — exclude any job id that has
+        // at least one non-deleted JobAssignment linked to it.
+        const assignedJobIds = await JobAssignment.distinct("job", { isDeleted: false });
+        query._id = { $nin: assignedJobIds };
+    }
+    if (client) {
+        query.client = {
+            $regex: client,
+            $options: "i",
+        }
+    }
     if (search) {
         query.title = {
             $regex: search,
@@ -402,7 +424,6 @@ export const getAllJobs: MiddlewareFn = async (
         .limit(limit);
 
     const assignments = await JobAssignment.find({
-        createdBy: getReqUser(req).user_id,
         job: {
             $in: jobs.map(job => job._id),
         },
@@ -414,10 +435,10 @@ export const getAllJobs: MiddlewareFn = async (
     const flatAssignments = assignments.map(({ worker, ...rest }) => ({
         ...rest,
         email: (worker as any)?.email,
-        worker:(worker as any)?._id,
+        worker: (worker as any)?._id,
     }));
 
-    console.log("flat-worker",assignments)
+    // console.log("flat-worker",assignments)
     const assignmentMap = flatAssignments.reduce((acc, assignment) => {
         const key = assignment.job.toString();
 
@@ -434,7 +455,7 @@ export const getAllJobs: MiddlewareFn = async (
         workers: assignmentMap[job._id.toString()] ?? [],
     }));
     // console.log("this is the result : ", result.map(r => r.workers))
-
+    console.log("jobs", result)
     const totalJobs = await Job.countDocuments(query);
     res.status(StatusCodes.OK).json({
         success: true,
@@ -542,7 +563,7 @@ export const getJob: MiddlewareFn = async (
 const UPDATE_JOB_ALLOWED_FIELDS = [
     "title", "description", "client", "location", "address", "coordinates",
     "requiredWorkers", "priority", "supervisor", "payRate", "chargeRate",
-    "notes", "instructions", "status",
+    "notes", "instructions", "status","geofenceMode","geofenceRadiusMeters"
 ] as const;
 
 export const updateJob: MiddlewareFn = async (req, res) => {
@@ -568,75 +589,75 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     // the caller is only editing the title) — an explicit [] is what clears
     // every assignment, never an omitted field.
     let usersToAssign: any[] = [];
-    console.log("enter here .... update-job", req.body.workers)
+  
 
-    if (req.body.workers !== undefined) {
-        console.log("this is the workers ", req.body.workers)
-        let workers: any[];
-        try {
-            workers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
-        } catch {
-            throw new BadRequestError("Invalid workers payload");
-        }
-        if (!Array.isArray(workers)) {
-            throw new BadRequestError("Invalid workers payload");
-        }
+        if (req.body.workers !== undefined) {
+            console.log("this is the workers ", req.body.workers)
+            let workers: any[];
+            try {
+                workers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
+            } catch {
+                throw new BadRequestError("Invalid workers payload");
+            }
+            if (!Array.isArray(workers)) {
+                throw new BadRequestError("Invalid workers payload");
+            }
 
-        // Accept either shape: a flat { email } (what createJob expects) or a
-        // populated assignment's nested { worker: { email } } — the frontend
-        // sends whichever it currently has on hand for each worker row.
-        const workerEmails = workers
-            .map((w: any) => w?.email ?? w?.worker?.email)
-            .filter(Boolean);
+            // Accept either shape: a flat { email } (what createJob expects) or a
+            // populated assignment's nested { worker: { email } } — the frontend
+            // sends whichever it currently has on hand for each worker row.
+            const workerEmails = workers
+                .map((w: any) => w?.email ?? w?.worker?.email)
+                .filter(Boolean);
 
-        // A non-empty workers array that resolves to zero emails means the
-        // payload shape wasn't recognised — never treat that as "unassign
-        // everyone", which is what silently happened before this guard.
-        if (workers.length > 0 && workerEmails.length === 0) {
-            throw new BadRequestError("Invalid workers payload — each worker must include an email.");
-        }
+            // A non-empty workers array that resolves to zero emails means the
+            // payload shape wasn't recognised — never treat that as "unassign
+            // everyone", which is what silently happened before this guard.
+            if (workers.length > 0 && workerEmails.length === 0) {
+                throw new BadRequestError("Invalid workers payload — each worker must include an email.");
+            }
 
-        const selectedUsers = workerEmails.length
-            ? await userModel.find({ email: { $in: workerEmails }, isActive: true })
-            : [];
+            const selectedUsers = workerEmails.length
+                ? await userModel.find({ email: { $in: workerEmails }, isActive: true })
+                : [];
 
-        const foundEmails = new Set(selectedUsers.map(u => u.email));
-        const missingEmails = workerEmails.filter(e => !foundEmails.has(e));
-        if (missingEmails.length) {
-            throw new BadRequestError(`No active account found for: ${missingEmails.join(", ")}`);
-        }
+            const foundEmails = new Set(selectedUsers.map(u => u.email));
+            const missingEmails = workerEmails.filter(e => !foundEmails.has(e));
+            if (missingEmails.length) {
+                throw new BadRequestError(`No active account found for: ${missingEmails.join(", ")}`);
+            }
 
-        const currentAssignments = await JobAssignment.find({ job: job._id });
-        const selectedWorkerIds = selectedUsers.map(u => u._id.toString());
-        const currentWorkerIds = currentAssignments.map(a => a.worker.toString());
+            const currentAssignments = await JobAssignment.find({ job: job._id });
+            const selectedWorkerIds = selectedUsers.map(u => u._id.toString());
+            const currentWorkerIds = currentAssignments.map(a => a.worker.toString());
 
-        const assignmentsToRemove = currentAssignments.filter(
-            a => !selectedWorkerIds.includes(a.worker.toString())
-        );
-        usersToAssign = selectedUsers.filter(
-            u => !currentWorkerIds.includes(u._id.toString())
-        );
-        // change it later to isdelted=true
-        if (assignmentsToRemove.length) {
-            await JobAssignment.updateMany(
-                { _id: { $in: assignmentsToRemove.map(a => a._id) } },
-                { isDeleted: true }
+            const assignmentsToRemove = currentAssignments.filter(
+                a => !selectedWorkerIds.includes(a.worker.toString())
             );
-        }
-
-        if (usersToAssign.length) {
-            await JobAssignment.insertMany(
-                usersToAssign.map(user => ({
-                    job: job._id,
-                    worker: user._id,
-                    createdBy: currentUserId,
-                    company: companyId,
-                    payRate: req.body.payRate ?? job.payRate,
-                    fullname: user.fullname,
-                }))
+            usersToAssign = selectedUsers.filter(
+                u => !currentWorkerIds.includes(u._id.toString())
             );
+            // change it later to isdelted=true
+            if (assignmentsToRemove.length) {
+                await JobAssignment.updateMany(
+                    { _id: { $in: assignmentsToRemove.map(a => a._id) } },
+                    { isDeleted: true }
+                );
+            }
+
+            if (usersToAssign.length) {
+                await JobAssignment.insertMany(
+                    usersToAssign.map(user => ({
+                        job: job._id,
+                        worker: user._id,
+                        createdBy: currentUserId,
+                        company: companyId,
+                        payRate: req.body.payRate ?? job.payRate,
+                        fullname: user.fullname,
+                    }))
+                );
+            }
         }
-    }
 
     // Allowlisted — never spread req.body, or clients can set company/
     // createdBy/isDeleted/isTemplate/recurringJob directly.

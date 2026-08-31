@@ -31,6 +31,7 @@ import { autoCloseAbandonedShifts } from "./utils/autoCloseAbandonedShifts.js";
 import notificationPreferenceRouter
   from "./routes/notificationPreferenceRouter.js";
   import timesheetRouter from "./routes/timesheetRouter.js";
+  import invitationRouter from "./routes/invitationRouter.js";
 const app = express();
 app.use(express.json());
 // TEMP: every-second interval to stress-test generateOccurrences' race-condition fix. Revert to "0 1 * * *" before committing/deploying.
@@ -85,6 +86,10 @@ app.use(
   timesheetRouter
 );
 app.use("/api/v1/calendar", authenticateUser, calendarRouter)
+// Not wrapped in authenticateUser at this level — validate/accept are
+// public (the recipient isn't logged in yet); the router applies
+// authenticateUser itself on the routes that actually need it.
+app.use("/api/v1/invitations", invitationRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });

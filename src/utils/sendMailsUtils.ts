@@ -29,7 +29,7 @@ export async function sendMail(opts: {
     const resend = getResend();
 
     const { data, error } = await resend.emails.send({
-        from: `{companyName?? "work.wrk"} <${process.env.EMAIL_FROM}>`,
+        from: `${opts.companyName ?? "work.wrk"} <${process.env.EMAIL_FROM}>`,
         to: opts.to,
         subject: opts.subject,
         text: opts.text,

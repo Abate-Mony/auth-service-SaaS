@@ -26,9 +26,10 @@ export const getAllUser: MiddlewareFn = async (
   req,
   res
 ): Promise<void> => {
-  const { search } = req.query;
+  const { search, role } = req.query;
   const currentUser = req.user;
-
+  console.log("this is the role",role)
+  // if(role)
   const queryObject: any = {
     _id: { $ne: currentUser.user_id },
     // isActive: true,
@@ -38,12 +39,12 @@ export const getAllUser: MiddlewareFn = async (
     // nothing against the ObjectId-typed `company` field.
     company: new mongoose.Types.ObjectId(req.user.company_id.toString()),
   };
-
   if (currentUser.role === "admin") {
-    // Admin sees everyone but themselves
-    queryObject.role = { $in: ["manager", "worker"] };
+    // Admin sees everyone but themselves, optionally narrowed to just one role
+    queryObject.role = role === "worker" || role === "manager" ? role : { $in: ["manager", "worker"] };
   } else if (currentUser.role === "manager") {
-    // Managers only see workers — not each other, not the admin
+    // Managers only see workers — not each other, not the admin — regardless
+    // of what `role` was requested
     queryObject.role = "worker";
   } else {
     // Workers shouldn't be listing users at all
