@@ -6,13 +6,14 @@ import JobAssignment from "../models/JobAssignment.js";
 import jobModel from "../models/jobModel.js";
 import userModel from "../models/userModel.js";
 import { hashPassword } from "../utils/passwordUtils.js";
-import { logActivity } from "../utils/logActivity.js";
+import { logActivity, logActivityMany } from "../utils/logActivity.js";
 import recurringJobModel from "../models/recurringJobModel.js";
 import dayjs from "../utils/dayjsSetup.js";
 import Company from "../models/company.js";
 import { scheduledEndOf, scheduledStartOf, toUtcDay, TZ } from "../utils/dates.js";
 import { checkGeofence } from "../utils/geo.js";
 import { sendWorkerJobStatusEmail } from "../utils/sendMailsUtils.js";
+import { sendRecurringSeriesResponse } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { sanitizeUser } from "../utils/tokenUtils.js";
@@ -973,6 +974,239 @@ export const endWorkerBreak: MiddlewareFn = async (req, res) => {
     });
 };
 
+/**
+ * GET /workers/recurring-groups
+ * Everything a worker needs to respond to recurring shifts in bulk: their
+ * upcoming (not-yet-happened) assignments across every recurring job they're
+ * on, grouped by series with pending/accepted/declined counts. Past shifts
+ * belong on the normal jobs list, not this "respond in bulk" view.
+ */
+export const getRecurringAssignmentGroups: MiddlewareFn = async (req, res) => {
+    const workerId = new mongoose.Types.ObjectId(req.user.user_id);
+    const today = toUtcDay(new Date());
+
+    const rows = await JobAssignment.aggregate([
+        { $match: { worker: workerId, isDeleted: false, status: { $ne: "cancelled" } } },
+        {
+            $lookup: {
+                from: "jobs",
+                let: { jobId: "$job" },
+                pipeline: [
+                    {
+                        $match: {
+                            $expr: { $eq: ["$_id", "$$jobId"] },
+                            isDeleted: false,
+                            recurringJob: { $ne: null },
+                            date: { $gte: today },
+                            status: { $ne: "cancelled" },
+                        },
+                    },
+                ],
+                as: "job",
+            },
+        },
+        { $unwind: "$job" },
+        { $sort: { "job.date": 1 } },
+        {
+            $group: {
+                _id: "$job.recurringJob",
+                pendingCount: { $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] } },
+                acceptedCount: { $sum: { $cond: [{ $eq: ["$status", "accepted"] }, 1, 0] } },
+                declinedCount: { $sum: { $cond: [{ $eq: ["$status", "declined"] }, 1, 0] } },
+                shifts: {
+                    $push: {
+                        jobId: "$job._id",
+                        assignmentId: "$_id",
+                        date: "$job.date",
+                        startTime: "$job.startTime",
+                        endTime: "$job.endTime",
+                        location: "$job.location",
+                        status: "$status",
+                    },
+                },
+            },
+        },
+    ]);
+
+    if (!rows.length) {
+        res.status(StatusCodes.OK).json({ success: true, groups: [] });
+        return;
+    }
+
+    // Populate via the Mongoose model rather than a raw $lookup on the
+    // collection name — avoids having to get RecurringJob's pluralized
+    // collection name exactly right.
+    const schedules = await recurringJobModel
+        .find({ _id: { $in: rows.map(r => r._id) } })
+        .populate("templateJob", "title location client startTime endTime")
+        .lean();
+    const scheduleById = new Map(schedules.map(s => [s._id.toString(), s]));
+
+    const groups = rows
+        .map(r => {
+            const schedule = scheduleById.get(r._id.toString());
+            // Schedule was deleted/inaccessible since the assignment was
+            // created — skip rather than surface a broken group.
+            if (!schedule) return null;
+            const template = schedule.templateJob as any;
+            const shifts = r.shifts as any[];
+            return {
+                recurringJobId: r._id,
+                title: template?.title ?? "Recurring shift",
+                location: template?.location,
+                client: template?.client,
+                frequency: schedule.frequency,
+                interval: schedule.interval,
+                daysOfWeek: schedule.daysOfWeek,
+                startTime: template?.startTime,
+                endTime: template?.endTime,
+                pendingCount: r.pendingCount,
+                acceptedCount: r.acceptedCount,
+                declinedCount: r.declinedCount,
+                upcomingCount: shifts.length,
+                nextShift: shifts.find(s => s.status === "pending" || s.status === "accepted") ?? null,
+                shifts,
+            };
+        })
+        .filter(Boolean);
+
+    res.status(StatusCodes.OK).json({ success: true, groups });
+};
+
+// Fire-and-forget: the manager who owns a recurring schedule gets one
+// summary notification when a worker responds to a whole series at once —
+// same "one email, not N" rule as sendRecurringShiftAssigned on the
+// worker-facing side. Gated by the manager's own notification preferences,
+// reusing the existing job_accepted/job_declined events rather than adding
+// new ones just for the bulk case.
+async function notifyManagerOfSeriesResponse({
+    recurringJobId,
+    workerId,
+    type,
+    count,
+    jobDates,
+}: {
+    recurringJobId: string;
+    workerId: string;
+    type: "accepted" | "declined";
+    count: number;
+    jobDates: Date[];
+}) {
+    if (!count) return;
+
+    const [schedule, worker] = await Promise.all([
+        recurringJobModel
+            .findById(recurringJobId)
+            .populate<{ createdBy: { _id: mongoose.Types.ObjectId; email: string } }>("createdBy", "email")
+            .populate<{ templateJob: { title: string } }>("templateJob", "title")
+            .lean(),
+        userModel.findById(workerId).select("fullname").lean(),
+    ]);
+    if (!schedule || !worker) return;
+
+    const manager = schedule.createdBy;
+    if (!manager?.email) return;
+
+    const managerId = manager._id.toString();
+    const event = type === "accepted" ? "job_accepted" : "job_declined";
+    const [canEmail, canPush] = await Promise.all([
+        shouldNotify(managerId, event, "email"),
+        shouldNotify(managerId, event, "push"),
+    ]);
+
+    const sortedDates = [...jobDates].sort((a, b) => a.getTime() - b.getTime());
+    const title = schedule.templateJob?.title ?? "Recurring shift";
+
+    await Promise.all([
+        canEmail
+            ? sendRecurringSeriesResponse({
+                manager: { email: manager.email },
+                worker: { fullname: worker.fullname },
+                job: { title },
+                recurringJobId,
+                type,
+                count,
+                firstDate: sortedDates[0],
+                lastDate: sortedDates[sortedDates.length - 1],
+            })
+            : Promise.resolve(),
+        canPush
+            ? sendPushToUser(managerId, {
+                title: type === "accepted" ? "Shifts accepted" : "Shifts declined",
+                body: `${worker.fullname} ${type} ${count} shift${count === 1 ? "" : "s"} on ${title}`,
+                tag: `recurring-series-${recurringJobId}-${type}`,
+                url: `/jobs/recurring/recurring-job-detail/${recurringJobId}`,
+            })
+            : Promise.resolve(),
+    ]);
+}
+
+/**
+ * PATCH /workers/recurring-jobs/:id/accept-all
+ * Accepts every currently-pending assignment in a recurring series at once.
+ * Re-checks what's actually pending right now rather than trusting a count
+ * the frontend already had cached — another tab, an expired shift, or a
+ * manager cancelling one in the meantime are all real races.
+ */
+export const acceptRecurringSeries: MiddlewareFn = async (req, res) => {
+    const { id: recurringJobId } = req.params;
+    const workerId = getReqUser(req).user_id;
+
+    const futureJobs = await jobModel.find({
+        recurringJob: recurringJobId,
+        date: { $gte: new Date() },
+        isDeleted: false,
+        status: { $ne: "cancelled" },
+    }).select("_id date").lean();
+    const futureJobIds = futureJobs.map(j => j._id);
+
+    const pendingAssignments = await JobAssignment.find({
+        job: { $in: futureJobIds },
+        worker: workerId,
+        status: "pending",
+        isDeleted: false,
+    }).select("_id job").lean();
+
+    if (!pendingAssignments.length) {
+        res.status(StatusCodes.OK).json({ success: true, accepted: 0 });
+        return;
+    }
+
+    await JobAssignment.updateMany(
+        { _id: { $in: pendingAssignments.map(a => a._id) } },
+        { status: "accepted", acceptedAt: new Date() }
+    );
+
+    const jobDateById = new Map(futureJobs.map(j => [j._id.toString(), j.date]));
+    await logActivityMany(
+        pendingAssignments.map(a => ({
+            job: a.job,
+            jobDate: jobDateById.get(a.job.toString()),
+            assignment: a._id,
+            worker: workerId,
+            type: "assignment_accepted" as const,
+            actor: workerId,
+        }))
+    );
+
+    notifyManagerOfSeriesResponse({
+        recurringJobId: String(recurringJobId),
+        workerId: String(workerId),
+        type: "accepted",
+        count: pendingAssignments.length,
+        jobDates: pendingAssignments.map(a => jobDateById.get(a.job.toString())).filter((d): d is Date => !!d),
+    }).catch(err => console.error(`Failed to notify manager of bulk accept for recurring job ${recurringJobId}:`, err));
+
+    res.status(StatusCodes.OK).json({ success: true, accepted: pendingAssignments.length });
+};
+
+/**
+ * PATCH /workers/recurring-jobs/:id/decline-all
+ * Counterpart to accept-all. Also pulls the worker out of the schedule's
+ * defaultWorkers so future auto-generated occurrences stop including them —
+ * accepting doesn't do the reverse; re-adding a worker to a schedule is a
+ * manager decision, not implied by them accepting what's already there.
+ */
 export const declineRecurringSeries: MiddlewareFn = async (req, res) => {
     const { id: recurringJobId } = req.params;
     const workerId = getReqUser(req).user_id;
@@ -982,18 +1216,48 @@ export const declineRecurringSeries: MiddlewareFn = async (req, res) => {
         { $pull: { defaultWorkers: workerId } }
     );
 
-    const futureJobIds = await jobModel.find({
+    const futureJobs = await jobModel.find({
         recurringJob: recurringJobId,
         date: { $gte: new Date() },
         isDeleted: false,
-    }).distinct("_id");
+    }).select("_id date").lean();
+    const futureJobIds = futureJobs.map(j => j._id);
 
-    await JobAssignment.updateMany(
-        { job: { $in: futureJobIds }, worker: workerId, status: "pending" },
-        { status: "declined", declinedAt: new Date() }
-    );
+    const pendingAssignments = await JobAssignment.find({
+        job: { $in: futureJobIds },
+        worker: workerId,
+        status: "pending",
+        isDeleted: false,
+    }).select("_id job").lean();
 
-    res.status(StatusCodes.OK).json({ success: true });
+    if (pendingAssignments.length) {
+        await JobAssignment.updateMany(
+            { _id: { $in: pendingAssignments.map(a => a._id) } },
+            { status: "declined", declinedAt: new Date() }
+        );
+
+        const jobDateById = new Map(futureJobs.map(j => [j._id.toString(), j.date]));
+        await logActivityMany(
+            pendingAssignments.map(a => ({
+                job: a.job,
+                jobDate: jobDateById.get(a.job.toString()),
+                assignment: a._id,
+                worker: workerId,
+                type: "assignment_declined" as const,
+                actor: workerId,
+            }))
+        );
+
+        notifyManagerOfSeriesResponse({
+            recurringJobId: String(recurringJobId),
+            workerId: String(workerId),
+            type: "declined",
+            count: pendingAssignments.length,
+            jobDates: pendingAssignments.map(a => jobDateById.get(a.job.toString())).filter((d): d is Date => !!d),
+        }).catch(err => console.error(`Failed to notify manager of bulk decline for recurring job ${recurringJobId}:`, err));
+    }
+
+    res.status(StatusCodes.OK).json({ success: true, declined: pendingAssignments.length });
 };
 // Body is PushSubscription.toJSON() from the frontend's service worker
 // registration — endpoint identifies the device, keys are what web-push

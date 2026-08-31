@@ -1,5 +1,7 @@
 import dayjs from "../utils/dayjsSetup.js";
 import jobModel from "../models/jobModel.js";
+import JobAssignment from "../models/JobAssignment.js";
+import userModel from "../models/userModel.js";
 import recurringJobModel from "../models/recurringJobModel.js";
 import type { RecurringJob as RecurringJobType } from "../models/recurringJobModel.js";
 import type { HydratedDocument } from "mongoose";
@@ -168,6 +170,37 @@ export async function generateOccurrences(
       { _id: recurring._id },
       { $inc: { occurrencesGenerated: created.length } }
     );
+
+    // Every occurrence gets the schedule's default workers assigned —
+    // regardless of which caller generated it (initial creation, the daily
+    // rolling-window cron, or a pattern edit's regeneration). Doing this
+    // here rather than in each caller is what stops an occurrence from
+    // silently landing with nobody assigned to it.
+    if (recurring.defaultWorkers?.length) {
+      const workers = await userModel
+        .find({ _id: { $in: recurring.defaultWorkers } })
+        .select("fullname")
+        .lean();
+
+      if (workers.length) {
+        const assignments = created.flatMap(job =>
+          workers.map(worker => ({
+            job: job._id,
+            worker: worker._id,
+            createdBy: recurring.createdBy,
+            company: template.company,
+            payRate: template.payRate,
+            fullname: worker.fullname,
+          }))
+        );
+
+        try {
+          await JobAssignment.insertMany(assignments, { ordered: false });
+        } catch (err: any) {
+          if (err?.code !== 11000 && !err?.writeErrors) throw err;
+        }
+      }
+    }
   }
 
   return created;

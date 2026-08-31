@@ -198,6 +198,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                 maxOccurrences,
                 defaultWorkers: workerIds,
                 createdBy: currentUserId,
+                company: req.user.company_id,
             });
 
             let effectiveGenerateAheadDays = generateAheadDays;
@@ -206,22 +207,10 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                 effectiveGenerateAheadDays = company?.generateAheadDays ?? 30;
             }
             const generatedUntil = new Date(Date.now() + effectiveGenerateAheadDays * 24 * 60 * 60 * 1000);
+            // generateOccurrences assigns recurringJob.defaultWorkers (== workerIds,
+            // set above) to every job it creates — no separate assignment step
+            // needed here.
             generatedJobs = await generateOccurrences(recurringJob, generatedUntil);
-
-            if (workerIds.length && generatedJobs.length) {
-                const allAssignments = generatedJobs.flatMap(job =>
-                    workerIds.map((workerId, idx) => ({
-                        job: job._id,
-                        worker: workerId,
-                        createdBy: currentUserId,
-                        payRate: baseJobFields.payRate,
-                        company: req.user.company_id,
-                        fullname: realWorkers[idx].fullname
-                    }))
-                );
-                // ordered:false so one duplicate doesn't abort the whole batch
-                await JobAssignment.insertMany(allAssignments, { ordered: false });
-            }
         } catch (err: any) {
             if (generatedJobs.length) {
                 await Job.deleteMany({ _id: { $in: generatedJobs.map(j => j._id) } });

@@ -155,6 +155,58 @@ export async function sendRecurringShiftAssigned({
     html: layout({ heading: "You've been added to a recurring shift", body }),
   });
 }
+/** Manager-facing counterpart to sendRecurringShiftAssigned — a worker
+ *  responding to a whole series at once (bulk accept/decline) gets the
+ *  manager one summary too, not one email per shift. */
+export async function sendRecurringSeriesResponse({
+  manager,
+  worker,
+  job,
+  recurringJobId,
+  type,
+  count,
+  firstDate,
+  lastDate,
+}: {
+  manager: { email: string };
+  worker: { fullname: string };
+  job: { title: string };
+  recurringJobId: string;
+  type: "accepted" | "declined";
+  count: number;
+  firstDate: Date | string;
+  lastDate: Date | string;
+}) {
+  const link = `${process.env.CLIENT_URL}/jobs/recurring/recurring-job-detail/${recurringJobId}`;
+  const range = `${dayjs(firstDate).tz(TZ).format("D MMM")} – ${dayjs(lastDate).tz(TZ).format("D MMM")}`;
+  const verb = type === "accepted" ? "accepted" : "declined";
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      ${worker.fullname} ${verb} <strong>${count} shift${count === 1 ? "" : "s"}</strong> in one go on the recurring schedule below.
+      ${type === "declined" ? "You may need to cover these." : ""}
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Shifts", `${count} ${verb}`)}
+      ${detailRow("Between", range)}
+    </table>
+
+    ${button(link, "View schedule")}`;
+
+  await sendMail({
+    to: manager.email,
+    subject: `${worker.fullname} ${verb} ${count} shift${count === 1 ? "" : "s"} — ${job.title}`,
+    text:
+      `${worker.fullname} ${verb} ${count} shift${count === 1 ? "" : "s"} in one go.\n\n` +
+      `Job: ${job.title}\n` +
+      `Between: ${range}\n\n` +
+      `View schedule: ${link}`,
+    html: layout({ heading: `${count} shift${count === 1 ? "" : "s"} ${verb}`, body }),
+  });
+}
+
 export async function sendShiftReminder({
   worker,
   job,

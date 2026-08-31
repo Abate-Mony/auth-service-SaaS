@@ -32,6 +32,7 @@ import notificationPreferenceRouter
   from "./routes/notificationPreferenceRouter.js";
   import timesheetRouter from "./routes/timesheetRouter.js";
   import invitationRouter from "./routes/invitationRouter.js";
+  import recurringJobRouter from "./routes/recurringJobRouter.js";
 const app = express();
 app.use(express.json());
 // TEMP: every-second interval to stress-test generateOccurrences' race-condition fix. Revert to "0 1 * * *" before committing/deploying.
@@ -90,6 +91,7 @@ app.use("/api/v1/calendar", authenticateUser, calendarRouter)
 // public (the recipient isn't logged in yet); the router applies
 // authenticateUser itself on the routes that actually need it.
 app.use("/api/v1/invitations", invitationRouter)
+app.use("/api/v1/recurring-jobs", authenticateUser, recurringJobRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });

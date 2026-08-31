@@ -22,7 +22,13 @@ export const getRecurringJobs: MiddlewareFn = async (req, res) => {
   const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
   const limitNum = Math.max(1, parseInt(limit as string, 10) || 20);
 
-  const match: Record<string, any> = {};
+  // Cast explicitly: the aggregate() $match below sends this straight to
+  // MongoDB with no Mongoose auto-casting, so a raw string here (as
+  // req.user.company_id is, straight off the JWT) would silently match
+  // nothing against the ObjectId-typed `company` field.
+  const match: Record<string, any> = {
+    company: new mongoose.Types.ObjectId(getReqUser(req).company_id.toString()),
+  };
   if (active === "true") match.active = true;
   if (active === "false") match.active = false;
 
@@ -103,7 +109,7 @@ export const getRecurringJob: MiddlewareFn = async (req, res) => {
   const { id } = req.params;
 
   const schedule = await recurringJobModel
-    .findById(id)
+    .findOne({ _id: id, company: getReqUser(req).company_id })
     .populate("templateJob")
     .populate("defaultWorkers", "fullname email")
     .populate("createdBy", "fullname")
@@ -141,7 +147,7 @@ export const updateRecurringJob: MiddlewareFn = async (req, res) => {
   const { id } = req.params;
   const { frequency, interval, daysOfWeek, endDate, maxOccurrences, defaultWorkers } = req.body;
 
-  const schedule = await recurringJobModel.findById(id);
+  const schedule = await recurringJobModel.findOne({ _id: id, company: getReqUser(req).company_id });
   if (!schedule) throw new NotFoundError("Recurring schedule not found");
 
   if (frequency !== undefined) {
@@ -239,7 +245,7 @@ export const cancelRecurringJob: MiddlewareFn = async (req, res) => {
   const { id } = req.params;
   const { cancelFutureJobs = false } = req.body;
 
-  const schedule = await recurringJobModel.findById(id);
+  const schedule = await recurringJobModel.findOne({ _id: id, company: getReqUser(req).company_id });
   if (!schedule) throw new NotFoundError("Recurring schedule not found");
 
   schedule.active = false;
@@ -320,7 +326,7 @@ export const cancelRecurringJob: MiddlewareFn = async (req, res) => {
 export const reactivateRecurringJob: MiddlewareFn = async (req, res) => {
   const { id } = req.params;
 
-  const schedule = await recurringJobModel.findById(id);
+  const schedule = await recurringJobModel.findOne({ _id: id, company: getReqUser(req).company_id });
   if (!schedule) throw new NotFoundError("Recurring schedule not found");
 
   if (schedule.active) {
