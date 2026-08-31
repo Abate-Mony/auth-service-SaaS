@@ -348,6 +348,7 @@ export const getWorkerDashboardStats: MiddlewareFn = async (req, res) => {
     totalJobs,
   });
 };
+
 export const getJob: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
 
