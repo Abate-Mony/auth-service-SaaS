@@ -42,9 +42,12 @@ export const issueTokens = async (user: mongoose.Document & { _id: any; role: st
     { _id: user._id },
     { refreshToken: hash, refreshTokenExpiresAt: expiresAt }
   );
-
   res.cookie("refreshToken", refreshToken, setCookies(REFRESH_TOKEN_COOKIE_MS));
   res.cookie("token", accessToken, setCookies(ACCESS_TOKEN_COOKIE_MS));
+  return {
+    accessToken,
+    refreshToken,
+  }
 };
 
 
@@ -118,7 +121,27 @@ export const login: MiddlewareFn = async (req, res) => {
   res.status(StatusCodes.OK).json({ msg: "user logged in", user: sanitizeUser(user) });
 };
 
+export const mobileLogin: MiddlewareFn = async (req, res) => {
+  const { email, password } = req.body;
+console.log("this is the email and password : ", email, password)
+  const user = await User.findOne({ email }).select("+password");
 
+  const isValidUser =
+    user && (await comparePassword(password, user.password));
+
+  if (!isValidUser) {
+    throw new UnauthenticatedError("invalid credentials");
+  }
+
+  const { accessToken, refreshToken } = await issueTokens(user, res);
+
+  res.status(StatusCodes.OK).json({
+    msg: "user logged in",
+    user: sanitizeUser(user),
+    accessToken,
+    refreshToken,
+  });
+};
 export const register: MiddlewareFn = async (req, res) => {
   const {
     password,

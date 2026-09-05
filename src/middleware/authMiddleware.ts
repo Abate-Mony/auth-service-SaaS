@@ -6,12 +6,15 @@ import {
 import { MiddlewareFn } from "../interfaces/expresstype.js";
 import { verifyAccessToken } from "../utils/tokenUtils.js";
 import { USER_ROLES } from "../utils/types.js";
-// Verifies the JWT stored in the "token" cookie and attaches the decoded
-// { user_id, role } payload to req.user for downstream handlers/middleware.
-// Any missing/invalid/expired token is normalized to a single 401 so callers
-// can't distinguish "no token" from "bad token".
+// Verifies the JWT stored in the "token" cookie (web) or sent as a
+// "Authorization: Bearer <token>" header (mobile, which has no shared
+// cookie jar with the browser) and attaches the decoded { user_id, role }
+// payload to req.user for downstream handlers/middleware. Any missing/
+// invalid/expired token is normalized to a single 401 so callers can't
+// distinguish "no token" from "bad token".
 export const authenticateUser: MiddlewareFn = (req, _res, next) => {
-  const { token } = req?.cookies;
+  const bearer = req?.headers?.authorization;
+  const token = req?.cookies?.token ?? (bearer?.startsWith("Bearer ") ? bearer.slice(7) : undefined);
   if (!token) throw new UnauthenticatedError("authentication invalid");
 
   try {
