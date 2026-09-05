@@ -13,10 +13,21 @@ import Company from "../models/company.js";
 import { scheduledEndOf, scheduledStartOf, toUtcDay, TZ } from "../utils/dates.js";
 import { checkGeofence } from "../utils/geo.js";
 import { sendWorkerJobStatusEmail } from "../utils/sendMailsUtils.js";
-import { sendRecurringSeriesResponse } from "../utils/mailTemplates.js";
+import { sendRecurringSeriesResponse, sendOpenShiftClaimNotice, sendClaimReviewResultEmail } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { sanitizeUser } from "../utils/tokenUtils.js";
+import { buildRestrictionResponse } from "../middleware/restrictionMiddleware.js";
+import { RestrictableAction } from "../models/userRestrictionModel.js";
+
+// Which restriction the worker-status route enforces depends on the status
+// being requested, not the route itself — "declined" has no restrictable
+// action, a worker can always turn down a shift.
+const RESTRICTION_ACTION_FOR_STATUS: Partial<Record<string, RestrictableAction>> = {
+    accepted: "accept_jobs",
+    "in-progress": "clock_in",
+    completed: "clock_out",
+};
 
 export const createWorker: MiddlewareFn = async (req, res) => {
     const { fullname, email, password, role } = req.body;
@@ -423,6 +434,19 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     });
     if (!assignment) {
         throw new NotFoundError("You are not assigned to this job.");
+    }
+
+    // The blocked action depends on the requested status, so this is checked
+    // here rather than as route-level middleware. A worker already mid-shift
+    // must always be able to clock out — losing their recorded hours and pay
+    // to a restriction created after they started is never the right outcome.
+    const restrictedAction = RESTRICTION_ACTION_FOR_STATUS[status as keyof typeof RESTRICTION_ACTION_FOR_STATUS];
+    if (restrictedAction && req.restriction?.blocks(restrictedAction)) {
+        const clockingOutMidShift = restrictedAction === "clock_out" && assignment.status === "in-progress";
+        if (!clockingOutMidShift) {
+            res.status(StatusCodes.FORBIDDEN).json(buildRestrictionResponse(req.restriction));
+            return;
+        }
     }
 
     const job = await jobModel.findOne({ _id: assignment.job, isDeleted: false }).lean();
@@ -1038,7 +1062,11 @@ export const getRecurringAssignmentGroups: MiddlewareFn = async (req, res) => {
     // collection name exactly right.
     const schedules = await recurringJobModel
         .find({ _id: { $in: rows.map(r => r._id) } })
-        .populate("templateJob", "title location client startTime endTime")
+        .populate({
+            path: "templateJob",
+            select: "title location client startTime endTime",
+            populate: { path: "client", select: "name" },
+        })
         .lean();
     const scheduleById = new Map(schedules.map(s => [s._id.toString(), s]));
 
@@ -1283,4 +1311,199 @@ export const savePushSubscription: MiddlewareFn = async (req, res) => {
 export const checkInJob: MiddlewareFn = async (req, res) => {
     req.body.status = "in-progress";
     return updateWorkerJobStatus(req, res, () => { });
+};
+
+// GET /workers/open-shifts — published, openToClaims jobs this worker hasn't
+// already claimed and that still have an unfilled slot.
+export const getOpenShifts: MiddlewareFn = async (req, res) => {
+    const companyId = req.user.company_id.toString();
+    const workerId = req.user.user_id.toString();
+    const today = toUtcDay(new Date());
+
+    const openJobs = await jobModel.find({
+        company: companyId,
+        isDeleted: false,
+        isTemplate: false,
+        status: "published",
+        openToClaims: true,
+        date: { $gte: today },
+    })
+        .populate("client", "name")
+        .sort({ date: 1, startTime: 1 })
+        .lean();
+
+    if (!openJobs.length) {
+        res.status(StatusCodes.OK).json({ success: true, jobs: [] });
+        return;
+    }
+
+    const jobIds = openJobs.map(job => job._id);
+    const assignmentsByJob = await JobAssignment.aggregate([
+        { $match: { job: { $in: jobIds }, isDeleted: false, status: { $nin: ["declined", "cancelled"] } } },
+        { $group: { _id: "$job", count: { $sum: 1 }, workers: { $push: "$worker" } } },
+    ]);
+    const infoByJob = new Map(assignmentsByJob.map(a => [a._id.toString(), a]));
+
+    // A job stays "open" only while it still has an unfilled slot and this
+    // worker isn't already on it — claimed-out or already-claimed shifts
+    // simply don't show up, rather than showing up disabled.
+    const jobs = openJobs.filter(job => {
+        const info = infoByJob.get(job._id.toString());
+        const filled = info?.count ?? 0;
+        const alreadyClaimed = (info?.workers ?? []).some((w: mongoose.Types.ObjectId) => w.toString() === workerId);
+        return !alreadyClaimed && filled < (job.requiredWorkers ?? 1);
+    });
+
+    res.status(StatusCodes.OK).json({ success: true, jobs });
+};
+
+// POST /workers/open-shifts/:jobId/claim
+export const claimOpenShift: MiddlewareFn = async (req, res) => {
+    const jobId = req.params.jobId as string;
+    if (!mongoose.Types.ObjectId.isValid(jobId)) {
+        throw new BadRequestError("Invalid job id.");
+    }
+
+    const companyId = req.user.company_id.toString();
+    const workerId = req.user.user_id;
+    const today = toUtcDay(new Date());
+
+    const job = await jobModel.findOne({
+        _id: jobId,
+        company: companyId,
+        isDeleted: false,
+        isTemplate: false,
+        status: "published",
+        openToClaims: true,
+        date: { $gte: today },
+    }).lean();
+    if (!job) throw new NotFoundError("This shift is no longer available to claim.");
+
+    const existing = await JobAssignment.findOne({ job: jobId, worker: workerId, isDeleted: false });
+    if (existing) throw new BadRequestError("You've already claimed this shift.");
+
+    // Check-then-insert, not a transaction — claiming is a human-paced,
+    // low-frequency action here, not a high-contention queue, and the
+    // {job, worker} unique index still blocks the one race that actually
+    // matters (the same worker double-claiming from two tabs).
+    const activeCount = await JobAssignment.countDocuments({
+        job: jobId,
+        isDeleted: false,
+        status: { $nin: ["declined", "cancelled"] },
+    });
+    if (activeCount >= (job.requiredWorkers ?? 1)) {
+        throw new BadRequestError("This shift has just been filled by someone else.");
+    }
+
+    const worker = await userModel.findById(workerId).select("fullname email");
+    if (!worker) throw new UnauthenticatedError("Login again.");
+
+    const needsApproval = job.requiresApproval !== false;
+    const now = new Date();
+
+    let assignment;
+    try {
+        assignment = await JobAssignment.create({
+            fullname: worker.fullname,
+            job: job._id,
+            worker: workerId,
+            createdBy: workerId,
+            company: companyId,
+            status: needsApproval ? "pending" : "accepted",
+            pendingApproval: needsApproval,
+            ...(needsApproval ? {} : { acceptedAt: now }),
+        });
+    } catch (err: any) {
+        if (err?.code === 11000) throw new BadRequestError("You've already claimed this shift.");
+        throw err;
+    }
+
+    const manager = await userModel.findById(job.createdBy).select("email");
+    if (manager?.email) {
+        sendOpenShiftClaimNotice({
+            managerEmail: manager.email,
+            workerFullname: worker.fullname,
+            job: {
+                _id: job._id.toString(),
+                title: job.title,
+                date: job.date,
+                startTime: job.startTime,
+                endTime: job.endTime,
+            },
+            needsApproval,
+        }).catch(err => console.error("Failed to send open-shift claim notice:", err));
+    }
+
+    await logActivity({
+        job: job._id,
+        jobDate: job.date,
+        assignment: assignment._id,
+        worker: workerId,
+        type: "assignment_claimed",
+        actor: workerId,
+        metadata: { needsApproval },
+    });
+
+    res.status(StatusCodes.CREATED).json({ success: true, assignment, needsApproval });
+};
+
+// PATCH /workers/assignments/:assignmentId/claim-review — admin/manager only.
+// Approves or declines a self-claim on a job whose requiresApproval is true.
+export const reviewOpenShiftClaim: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const { approve } = req.body;
+    if (typeof approve !== "boolean") {
+        throw new BadRequestError("approve must be true or false.");
+    }
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        isDeleted: false,
+        pendingApproval: true,
+    });
+    if (!assignment) throw new NotFoundError("No pending claim found for this assignment.");
+
+    const job = await jobModel.findOne({ _id: assignment.job, isDeleted: false });
+    if (!job || job.company.toString() !== req.user.company_id.toString()) {
+        throw new NotFoundError("No pending claim found for this assignment.");
+    }
+
+    const now = new Date();
+    if (approve) {
+        assignment.status = "accepted";
+        assignment.acceptedAt = now;
+    } else {
+        assignment.status = "declined";
+        assignment.declinedAt = now;
+        assignment.cancellationReason = "Claim declined by manager";
+    }
+    assignment.pendingApproval = false;
+    await assignment.save();
+
+    await logActivity({
+        job: job._id,
+        jobDate: job.date,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: approve ? "assignment_claim_approved" : "assignment_claim_declined",
+        actor: req.user.user_id,
+    });
+
+    const worker = await userModel.findById(assignment.worker).select("fullname email");
+    if (worker?.email) {
+        sendClaimReviewResultEmail({
+            email: worker.email,
+            fullname: worker.fullname,
+            job: {
+                _id: job._id.toString(),
+                title: job.title,
+                date: job.date,
+                startTime: job.startTime,
+                endTime: job.endTime,
+            },
+            approved: approve,
+        }).catch(err => console.error("Failed to send claim-review result email:", err));
+    }
+
+    res.status(StatusCodes.OK).json({ success: true, assignment });
 };

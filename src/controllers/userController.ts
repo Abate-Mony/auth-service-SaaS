@@ -5,7 +5,9 @@ import { NotFoundError, UnauthenticatedError, UnauthorizedError } from "../error
 import { getReqUser, MiddlewareFn } from "../interfaces/expresstype.js";
 import JobAssignment from "../models/JobAssignment.js";
 import userModel from "../models/userModel.js";
-import { toUtcDay } from "../utils/dates.js";
+import Company from "../models/company.js";
+import ActivityLog from "../models/ActivityLog.js";
+import { scheduledStartOf, toUtcDay, TZ } from "../utils/dates.js";
 import dayjs from "../utils/dayjsSetup.js";
 import { sanitizeUser } from "../utils/tokenUtils.js";
 export const currentUser: MiddlewareFn = async (req, res) => {
@@ -115,6 +117,25 @@ export const getAllUser: MiddlewareFn = async (
 
   res.status(200).json({ users, numberOfPage, limit, currentPage: page, nHits: totalUsers });
 };
+// Net of unpaid breaks — the same arithmetic as JobAssignment's
+// `workedMinutes` virtual, just usable here without hydrating a full
+// Mongoose document for every row.
+const workedMinutesOf = (a: {
+  checkedInAt?: Date | null;
+  checkedOutAt?: Date | null;
+  breaks?: { startedAt?: Date | null; endedAt?: Date | null }[];
+}): number => {
+  if (!a.checkedInAt || !a.checkedOutAt) return 0;
+  const gross = Math.round((a.checkedOutAt.getTime() - a.checkedInAt.getTime()) / 60_000);
+  const breakMins = (a.breaks ?? []).reduce(
+    (sum, b) => (b.startedAt && b.endedAt ? sum + Math.round((b.endedAt.getTime() - b.startedAt.getTime()) / 60_000) : sum),
+    0
+  );
+  return Math.max(0, gross - breakMins);
+};
+
+const round1 = (n: number): number => Math.round(n * 10) / 10;
+
 export const getWorkerStats: MiddlewareFn = async (req, res) => {
   const { id } = req.params;
   const currentUser = getReqUser(req);
@@ -126,77 +147,87 @@ export const getWorkerStats: MiddlewareFn = async (req, res) => {
   const worker = await userModel.findOne({ _id: id, company: currentUser.company_id }).lean();
   if (!worker) throw new NotFoundError("Worker not found");
 
-  const weekStart = dayjs.utc().startOf("week").toDate();
+  const company = await Company.findById(currentUser.company_id)
+    .select("clockInGraceMinutes timezone")
+    .lean();
+  const tz = company?.timezone ?? TZ;
+  const graceMs = (company?.clockInGraceMinutes ?? 30) * 60_000;
 
-  const [agg] = await JobAssignment.aggregate([
-    { $match: { worker: new mongoose.Types.ObjectId(id as string) } },
-    {
-      $addFields: {
-        // Worked minutes, net of breaks — mirrors the virtual, which
-        // aggregations can't use.
-        workedMinutes: {
-          $cond: [
-            { $and: ["$checkedInAt", "$checkedOutAt"] },
-            {
-              $subtract: [
-                { $dateDiff: { startDate: "$checkedInAt", endDate: "$checkedOutAt", unit: "minute" } },
-                {
-                  $sum: {
-                    $map: {
-                      input: { $ifNull: ["$breaks", []] },
-                      as: "b",
-                      in: {
-                        $cond: [
-                          "$$b.endedAt",
-                          { $dateDiff: { startDate: "$$b.startedAt", endDate: "$$b.endedAt", unit: "minute" } },
-                          0,
-                        ],
-                      },
-                    },
-                  },
-                },
-              ],
-            },
-            0,
-          ],
-        },
-      },
-    },
-    {
-      $group: {
-        _id: null,
-        jobsCompleted: {
-          $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] },
-        },
-        jobsAccepted: {
-          $sum: { $cond: [{ $in: ["$status", ["accepted", "in-progress", "completed"]] }, 1, 0] },
-        },
-        jobsDeclined: {
-          $sum: { $cond: [{ $eq: ["$status", "declined"] }, 1, 0] },
-        },
-        totalAssignments: { $sum: 1 },
-        totalMinutes: { $sum: "$workedMinutes" },
-        minutesThisWeek: {
-          $sum: {
-            $cond: [{ $gte: ["$checkedInAt", weekStart] }, "$workedMinutes", 0],
-          },
-        },
-      },
-    },
-  ]);
+  // Everything downstream (this week/month, the trend, on-time %, utilisation)
+  // is easier and more correct computed here in JS with the worker's actual
+  // shift times than reconstructed inside an aggregation pipeline — the
+  // date+startTime → real-datetime math (scheduledStartOf) already exists
+  // and is timezone-aware; duplicating it in Mongo expression syntax would
+  // just be a second place for that logic to drift out of sync.
+  const assignments = await JobAssignment.find({ worker: id, isDeleted: false })
+    .populate<{
+      job: {
+        _id: mongoose.Types.ObjectId;
+        title: string;
+        location: string;
+        priority: string;
+        date: Date;
+        startTime: string;
+        endTime: string;
+        minutes: number;
+      } | null;
+    }>("job", "title location priority date startTime endTime minutes")
+    .sort({ createdAt: -1 })
+    .limit(2000)
+    .lean();
 
-  const stats = agg ?? {
-    jobsCompleted: 0,
-    jobsAccepted: 0,
-    jobsDeclined: 0,
-    totalAssignments: 0,
-    totalMinutes: 0,
-    minutesThisWeek: 0,
-  };
+  const now = dayjs().tz(tz);
+  const weekStart = now.startOf("isoWeek");
+  const monthStart = now.startOf("month");
+  // Oldest first, so index 0 is 6 weeks ago and the last entry is the
+  // current (possibly partial) week — reads left-to-right on a trend chart.
+  const weekBuckets = Array.from({ length: 7 }, (_, i) => {
+    const start = weekStart.subtract(6 - i, "week");
+    return { start, end: start.add(1, "week"), minutes: 0 };
+  });
+
+  let jobsCompleted = 0;
+  let jobsAccepted = 0; // committed: accepted, in-progress, or completed
+  let jobsDeclined = 0;
+  let totalMinutes = 0;
+  let minutesThisWeek = 0;
+  let minutesThisMonth = 0;
+  let onTimeCount = 0;
+  let checkedInCount = 0;
+  let scheduledMinutesWorked = 0; // the flip side of totalMinutes, for utilisation
+
+  for (const a of assignments) {
+    if (a.status === "completed") jobsCompleted++;
+    if (a.status === "accepted" || a.status === "in-progress" || a.status === "completed") jobsAccepted++;
+    if (a.status === "declined") jobsDeclined++;
+
+    const minutes = workedMinutesOf(a);
+    totalMinutes += minutes;
+
+    if (a.checkedInAt) {
+      const checkedInAt = dayjs(a.checkedInAt).tz(tz);
+      if (!checkedInAt.isBefore(weekStart)) minutesThisWeek += minutes;
+      if (!checkedInAt.isBefore(monthStart)) minutesThisMonth += minutes;
+
+      const bucket = weekBuckets.find(b => checkedInAt.isSameOrAfter(b.start) && checkedInAt.isBefore(b.end));
+      if (bucket) bucket.minutes += minutes;
+
+      if (a.job) {
+        checkedInCount++;
+        const scheduledStart = scheduledStartOf(a.job, tz);
+        if (a.checkedInAt.getTime() <= scheduledStart.getTime() + graceMs) onTimeCount++;
+      }
+    }
+
+    if (a.job && (a.status === "completed" || a.status === "in-progress")) {
+      scheduledMinutesWorked += a.job.minutes;
+    }
+  }
 
   // Upcoming and in-progress assignments for the "Assigned Jobs" list
   const assignedJobs = await JobAssignment.find({
     worker: id,
+    isDeleted: false,
     status: { $in: ["pending", "accepted", "in-progress"] },
   })
     .populate({
@@ -208,7 +239,37 @@ export const getWorkerStats: MiddlewareFn = async (req, res) => {
     .limit(10)
     .lean();
 
-  const respondedTo = stats.jobsAccepted + stats.jobsDeclined;
+  const respondedTo = jobsAccepted + jobsDeclined;
+  const totalAssignments = assignments.length;
+
+  // Reuses the same assignments already fetched for the stats above —
+  // most-recently-created first, capped so the profile page isn't hydrating
+  // years of history on every load.
+  const jobHistory = assignments
+    .filter(a => a.job)
+    .slice(0, 50)
+    .map(a => ({
+      _id: a._id,
+      jobId: a.job!._id,
+      title: a.job!.title,
+      location: a.job!.location,
+      priority: a.job!.priority,
+      date: a.job!.date,
+      startTime: a.job!.startTime,
+      endTime: a.job!.endTime,
+      status: a.status,
+      hours: round1(workedMinutesOf(a) / 60),
+    }));
+
+  // Designed for exactly this — see the {worker:1, createdAt:-1} index on
+  // ActivityLog. `worker` is already company-verified above via the lookup
+  // that resolved `worker`, so no separate company filter is needed here.
+  const recentActivity = await ActivityLog.find({ worker: id })
+    .sort({ createdAt: -1 })
+    .limit(10)
+    .populate("job", "title")
+    .select("type job createdAt metadata")
+    .lean();
 
   res.status(StatusCodes.OK).json({
     success: true,
@@ -222,15 +283,32 @@ export const getWorkerStats: MiddlewareFn = async (req, res) => {
       createdAt: worker.createdAt,
     },
     stats: {
-      hoursThisWeek: Math.round((stats.minutesThisWeek / 60) * 10) / 10,
-      totalHours: Math.round((stats.totalMinutes / 60) * 10) / 10,
-      jobsCompleted: stats.jobsCompleted,
-      totalAssignments: stats.totalAssignments,
-      // "Reliability" — how often they accept when asked. More meaningful
-      // than a rating you have no way to collect.
-      acceptanceRate: respondedTo ? Math.round((stats.jobsAccepted / respondedTo) * 100) : null,
+      hoursThisWeek: round1(minutesThisWeek / 60),
+      hoursThisMonth: round1(minutesThisMonth / 60),
+      totalHours: round1(totalMinutes / 60),
+      jobsCompleted,
+      totalAssignments,
+      avgHoursPerJob: jobsCompleted ? round1(totalMinutes / jobsCompleted / 60) : 0,
+      // Of the shifts they committed to (accepted/in-progress/completed),
+      // how many did they actually see through to completion.
+      completionRate: jobsAccepted ? Math.round((jobsCompleted / jobsAccepted) * 100) : null,
+      // "Reliability" — how often they accept when asked.
+      acceptanceRate: respondedTo ? Math.round((jobsAccepted / respondedTo) * 100) : null,
+      onTimeArrivalRate: checkedInCount ? Math.round((onTimeCount / checkedInCount) * 100) : null,
+      // Actual worked time against what those same shifts were scheduled
+      // for — a number consistently under 100% usually means early
+      // clock-outs or unpaid-break creep, not that they're underworked.
+      hoursUtilisationRate: scheduledMinutesWorked
+        ? Math.round((totalMinutes / scheduledMinutesWorked) * 100)
+        : null,
     },
+    hoursTrend: weekBuckets.map(b => ({
+      weekStart: b.start.format("YYYY-MM-DD"),
+      hours: round1(b.minutes / 60),
+    })),
     assignedJobs: assignedJobs.filter(a => a.job),
+    jobHistory,
+    recentActivity,
   });
 };
 export const getStaticUser: MiddlewareFn = async (req, res) => {

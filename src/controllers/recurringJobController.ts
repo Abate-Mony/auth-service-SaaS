@@ -8,6 +8,7 @@ import recurringJobModel from "../models/recurringJobModel.js";
 import { toUtcDay } from "../utils/dates.js";
 import { logActivity, logActivityMany } from "../utils/logActivity.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
+import { jobDurationMinutes } from "./jobController.js";
 import dayjs from "../utils/dayjsSetup.js";
 
 /**
@@ -145,10 +146,28 @@ export const getRecurringJob: MiddlewareFn = async (req, res) => {
  */
 export const updateRecurringJob: MiddlewareFn = async (req, res) => {
   const { id } = req.params;
-  const { frequency, interval, daysOfWeek, endDate, maxOccurrences, defaultWorkers } = req.body;
+  const { frequency, interval, daysOfWeek, endDate, maxOccurrences, defaultWorkers, startTime, endTime } = req.body;
 
   const schedule = await recurringJobModel.findOne({ _id: id, company: getReqUser(req).company_id });
   if (!schedule) throw new NotFoundError("Recurring schedule not found");
+
+  // The shift's actual start/end time lives on the hidden template job, not
+  // on the schedule document — generateOccurrences() copies startTime/
+  // endTime/minutes from it verbatim for every future occurrence it creates.
+  // Updating it here (before the regeneration below) is what makes "change
+  // the duration for future shifts" actually take effect.
+  if (startTime !== undefined || endTime !== undefined) {
+    const templateJob = await Job.findById(schedule.templateJob);
+    if (!templateJob) throw new NotFoundError("Template job not found for this schedule");
+
+    const nextStartTime = startTime ?? templateJob.startTime;
+    const nextEndTime = endTime ?? templateJob.endTime;
+
+    templateJob.startTime = nextStartTime;
+    templateJob.endTime = nextEndTime;
+    templateJob.minutes = jobDurationMinutes(nextStartTime, nextEndTime);
+    await templateJob.save();
+  }
 
   if (frequency !== undefined) {
     if (!["daily", "weekly", "monthly"].includes(frequency)) {

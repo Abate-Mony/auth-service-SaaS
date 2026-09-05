@@ -34,6 +34,12 @@ const JobAssignmentSchema = new Schema(
     // of the worker tapping "clock out" themselves.
     autoCompleted: { type: Boolean, default: false },
 
+    // Set on a self-claimed open shift whose job has requiresApproval: true.
+    // status stays "pending" (same enum value used for "worker hasn't
+    // responded yet"), but here the pending party is the manager, not the
+    // worker — this flag is what lets the two cases be told apart.
+    pendingApproval: { type: Boolean, default: false },
+
     // ── Overtime / late clock-out review ──────────────────────────────
     // actualMinutes: raw checkedIn→checkedOut time, minus breaks — what
     // really happened, for the record.

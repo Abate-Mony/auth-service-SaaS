@@ -140,6 +140,8 @@ export async function generateOccurrences(
       status: "published",
       priority: template.priority,
       requiredWorkers: template.requiredWorkers,
+      openToClaims: template.openToClaims,
+      requiresApproval: template.requiresApproval,
       supervisor: template.supervisor,
       payRate: template.payRate,
       chargeRate: template.chargeRate,

@@ -4,7 +4,15 @@ const JobSchema = new Schema(
     {
         // ── Identity ──────────────────────────────────────────────────────
         company: { type: String, required: true },
-        client: { type: String, trim: true, default: "" },
+        // Optional — internal/training/on-premises work legitimately has no
+        // client. Validated + company-scoped in the controller, never
+        // trusted as-is from the request.
+        client: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Client",
+            index: true,
+            default: null,
+        },
         title: { type: String, required: true, trim: true },
         description: { type: String, required: true, trim: true },
 
@@ -55,6 +63,13 @@ const JobSchema = new Schema(
             type: mongoose.Schema.Types.ObjectId,
             ref: "User",
         },
+        // Lets any worker pick up an unfilled slot themselves instead of
+        // waiting to be assigned — see workerController.ts's getOpenShifts/
+        // claimOpenShift.
+        openToClaims: { type: Boolean, default: false },
+        // Whether a self-claim needs a manager's sign-off before it's
+        // confirmed (assignment status "pending") or is accepted outright.
+        requiresApproval: { type: Boolean, default: true },
 
         // ── Money ─────────────────────────────────────────────────────────
         payRate: { type: Number, default: 0, min: 0 }, // per hour, to the worker

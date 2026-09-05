@@ -1,9 +1,11 @@
 import { StatusCodes } from "http-status-codes";
+import mongoose from "mongoose";
 import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
 import { MiddlewareFn, getReqUser } from "../interfaces/expresstype.js";
 import JobAssignment from "../models/JobAssignment.js";
 import Job from "../models/jobModel.js";
 import Company from "../models/company.js";
+import Client from "../models/clientModel.js";
 import recurringJobModel from "../models/recurringJobModel.js";
 import userModel from "../models/userModel.js";
 import { toUtcDay } from "../utils/dates.js";
@@ -28,6 +30,32 @@ export const jobDurationMinutes = (startTime: string, endTime: string): number =
     if (minutes <= 0) minutes += 24 * 60;
 
     return minutes;
+};
+
+// Resolves+validates a submitted client id against this company's live,
+// active clients. Never trusts an id just because the frontend only ever
+// shows valid ones — a stale tab, a replayed request, or a client that's
+// since been archived/deleted/moved company are all real possibilities.
+const resolveJobClient = async (
+    clientId: unknown,
+    companyId: string | mongoose.Types.ObjectId
+): Promise<InstanceType<typeof Client> | null> => {
+    if (clientId === undefined || clientId === null || clientId === "") return null;
+    if (typeof clientId !== "string" || !mongoose.Types.ObjectId.isValid(clientId)) {
+        throw new BadRequestError("Invalid client id.");
+    }
+
+    const client = await Client.findOne({
+        _id: clientId,
+        company: companyId,
+        isDeleted: false,
+    });
+    if (!client) throw new BadRequestError("Client not found.");
+    if (client.status !== "active") {
+        throw new BadRequestError("Client must be active before it can be assigned to a new job.");
+    }
+
+    return client;
 };
 
 // Plain-English recurrence description for the "added to a recurring shift"
@@ -66,6 +94,8 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         supervisor,
         payRate,
         chargeRate,
+        chargeType,
+        chargeAmount,
         notes,
         instructions,
         isRecurring,
@@ -80,9 +110,18 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         generateAheadDays,
           geofenceMode,
          geofenceRadiusMeters,
-         clockInGraceMinutes
+         clockInGraceMinutes,
+         status,
+         openToClaims,
+         requiresApproval,
     } = req.body;
+console.log("this is the req.body : ", req.body)
 
+    // Only these two are ever settable at creation — "completed"/"cancelled"
+    // aren't valid starting states, so anything but an explicit "draft"
+    // defaults to the normal "published" behaviour every existing caller
+    // already relies on.
+    const jobStatus: "draft" | "published" = status === "draft" ? "draft" : "published";
     if (!startTime || !endTime) throw new BadRequestError("start or end time required");
     if (!date) throw new BadRequestError("A job date is required");
 
@@ -117,6 +156,13 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
 
     const workerIds = realWorkers.map(w => w._id);
 
+    const clientDoc = await resolveJobClient(client, req.user.company_id);
+
+    // Client defaults only fill in what the request omitted — 0 is a valid
+    // explicit chargeRate and must never be treated as "not provided".
+    const finalChargeRate = chargeRate !== undefined ? chargeRate : clientDoc?.defaultChargeRate ?? 0;
+    const finalChargeType = chargeType !== undefined ? chargeType : clientDoc?.defaultChargeType ?? "hourly";
+
     // Allowlisted — never spread req.body, or clients can set isTemplate/status/createdBy
     console.log("requested_user body", req.body)
 //      geofenceMode: 'enforce',
@@ -125,7 +171,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         title,
         description,
         company: req.user.company_id.toString(),
-        client: client ?? "",
+        client: clientDoc?._id ?? null,
         location,
         address: address ?? "",
         ...(coordinates ? { coordinates } : {}),
@@ -137,13 +183,17 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         priority: priority ?? "medium",
         ...(supervisor ? { supervisor } : {}),
         payRate: payRate ?? 0,
-        chargeRate: chargeRate ?? 0,
+        chargeType: finalChargeType,
+        chargeRate: finalChargeRate,
+        chargeAmount: chargeAmount ?? 0,
         notes: notes ?? "",
         instructions: instructions ?? "",
         createdBy: currentUserId,
          geofenceMode,
          geofenceRadiusMeters,
-         clockInGraceMinutes
+         clockInGraceMinutes,
+         ...(openToClaims !== undefined ? { openToClaims } : {}),
+         ...(requiresApproval !== undefined ? { requiresApproval } : {}),
     };
     // throw new BadRequestError("testing")
 
@@ -294,7 +344,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
 
     const job = await Job.create({
         ...baseJobFields,
-        status: "published",
+        status: jobStatus,
     });
 
     await logActivity({ job: job._id, type: "job_created", actor: currentUserId });
@@ -316,36 +366,44 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             actor: currentUserId,
             workers: workerIds,
         });
+
+        // A draft isn't real to the worker yet — they're assigned in the
+        // database so the manager can see staffing while building the job,
+        // but nothing goes out until the job is actually published. See the
+        // matching draft→published branch in updateJob, which notifies
+        // everyone assigned here once that happens.
+        if (jobStatus !== "draft") {
+            // Fire-and-forget: the client doesn't need to wait on outbound
+            // mail/push, and a failed send shouldn't fail job creation.
+            Promise.all(
+                realWorkers.map(w =>
+                    Promise.all([
+                        sendShiftAssigned({
+                            worker: { email: w.email, fullname: w.fullname },
+                            job: {
+                                _id: job._id.toString(),
+                                title: job.title,
+                                location: job.location,
+                                address: job.address,
+                                date: job.date,
+                                startTime: job.startTime,
+                                endTime: job.endTime,
+                                minutes: job.minutes,
+                            },
+                        }),
+                        // Tagged per job (distinct from the shift-start-reminder
+                        // tag namespace) so re-saving/updating doesn't stack duplicates.
+                        sendPushToUser(w._id.toString(), {
+                            title: "New shift assigned",
+                            body: `${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}, ${job.startTime} at ${job.location}`,
+                            tag: `shift-assigned-${job._id}`,
+                            url: `/worker/jobs/${job._id}`,
+                        }),
+                    ])
+                )
+            ).catch(err => console.error(`Failed to send shift-assigned notification(s) for job ${job._id}:`, err));
+        }
     }
-    // Fire-and-forget: the client doesn't need to wait on outbound mail/push,
-    // and a failed send shouldn't fail job creation.
-    Promise.all(
-        realWorkers.map(w =>
-            Promise.all([
-                sendShiftAssigned({
-                    worker: { email: w.email, fullname: w.fullname },
-                    job: {
-                        _id: job._id.toString(),
-                        title: job.title,
-                        location: job.location,
-                        address: job.address,
-                        date: job.date,
-                        startTime: job.startTime,
-                        endTime: job.endTime,
-                        minutes: job.minutes,
-                    },
-                }),
-                // Tagged per job (distinct from the shift-start-reminder tag
-                // namespace) so re-saving/updating doesn't stack duplicates.
-                sendPushToUser(w._id.toString(), {
-                    title: "New shift assigned",
-                    body: `${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}, ${job.startTime} at ${job.location}`,
-                    tag: `shift-assigned-${job._id}`,
-                    url: `/worker/jobs/${job._id}`,
-                }),
-            ])
-        )
-    ).catch(err => console.error(`Failed to send shift-assigned notification(s) for job ${job._id}:`, err));
 
     res.status(StatusCodes.CREATED).json({ success: true, job });
 };
@@ -376,10 +434,10 @@ export const getAllJobs: MiddlewareFn = async (
         query._id = { $nin: assignedJobIds };
     }
     if (client) {
-        query.client = {
-            $regex: client,
-            $options: "i",
+        if (typeof client !== "string" || !mongoose.Types.ObjectId.isValid(client)) {
+            throw new BadRequestError("Invalid client id.");
         }
+        query.client = client;
     }
     if (search) {
         query.title = {
@@ -407,7 +465,7 @@ export const getAllJobs: MiddlewareFn = async (
     const skip = (currentPage - 1) * limit;
 
     let jobs = await Job.find(query)
-        // .populate("workers", "fullname email")
+        .populate("client", "name")
         .sort(sortOptions[sort as string] ?? "-createdAt")
         .skip(skip)
         .limit(limit);
@@ -523,7 +581,7 @@ export const getJob: MiddlewareFn = async (
         isDeleted: false,
 
         // companyId: getReqUser(req).companyId,
-    })
+    }).populate("client", "name status contacts phone billingEmail address defaultChargeType defaultChargeRate")
     const assignments = await JobAssignment.find({
         job: req.params.id,
         isDeleted: false,
@@ -550,9 +608,10 @@ export const getJob: MiddlewareFn = async (
     });
 };
 const UPDATE_JOB_ALLOWED_FIELDS = [
-    "title", "description", "client", "location", "address", "coordinates",
-    "requiredWorkers", "priority", "supervisor", "payRate", "chargeRate",
-    "notes", "instructions", "status","geofenceMode","geofenceRadiusMeters"
+    "title", "description", "location", "address", "coordinates",
+    "requiredWorkers", "priority", "supervisor", "payRate", "chargeRate", "chargeType", "chargeAmount",
+    "notes", "instructions", "status","geofenceMode","geofenceRadiusMeters",
+    "openToClaims", "requiresApproval",
 ] as const;
 
 export const updateJob: MiddlewareFn = async (req, res) => {
@@ -564,12 +623,46 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         throw new BadRequestError("Job not found.");
     }
 
+    // A draft was never live — nobody could have worked it — so it stays
+    // fully editable no matter what date it's set to. Anything else locks
+    // its date/time/pay/charge once the shift date has passed, or once it's
+    // explicitly completed/cancelled: retroactively changing those on a
+    // shift that already happened (or was called off) silently corrupts
+    // payroll and invoicing records. Everything else (notes, instructions,
+    // workers, etc.) stays editable either way. Mirrored client-side by
+    // isJobLocked() in utils/jobLock.ts, which mutes the edit entry points.
+    if (job.status !== "draft") {
+        const isPastDate = toUtcDay(job.date) < toUtcDay(new Date());
+        const isLocked = isPastDate || job.status === "completed" || job.status === "cancelled";
+
+        if (isLocked) {
+            const numDiffers = (raw: unknown, current: number) => raw !== undefined && Number(raw) !== current;
+            const strDiffers = (raw: unknown, current: string) => raw !== undefined && String(raw) !== current;
+
+            const attemptedChanges: string[] = [];
+            if (req.body.date !== undefined && toUtcDay(req.body.date).getTime() !== job.date.getTime()) {
+                attemptedChanges.push("date");
+            }
+            if (strDiffers(req.body.startTime, job.startTime)) attemptedChanges.push("start time");
+            if (strDiffers(req.body.endTime, job.endTime)) attemptedChanges.push("end time");
+            if (numDiffers(req.body.payRate, job.payRate)) attemptedChanges.push("pay rate");
+            if (numDiffers(req.body.chargeRate, job.chargeRate)) attemptedChanges.push("charge rate");
+            if (numDiffers(req.body.chargeAmount, job.chargeAmount)) attemptedChanges.push("charge amount");
+
+            if (attemptedChanges.length) {
+                throw new BadRequestError(
+                    `This job has already happened, so its ${attemptedChanges.join(", ")} can no longer be changed.`
+                );
+            }
+        }
+    }
+
     // Both are optional on the request — a caller editing only e.g. workers
     // or notes shouldn't have to resend the existing shift time. Only a
     // request that actually tries to change one of them needs both present.
     const startTime = req.body.startTime ?? job.startTime;
     const endTime = req.body.endTime ?? job.endTime;
-
+console.log("this is the start time and end time : ", req.body)
     if (!startTime || !endTime) {
         throw new BadRequestError("Start time and end time are required.");
     }
@@ -662,6 +755,23 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         updateFields.date = toUtcDay(req.body.date);
     }
 
+    // Handled separately from the generic allowlist loop above — unlike
+    // every other field, this one needs validation (tenant-scoped,
+    // not-deleted, active) rather than a blind copy, and null is a
+    // legitimate explicit value (removes the client) that the loop's
+    // `!== undefined` check wouldn't distinguish from "not provided".
+    // Client charge defaults are a creation-time convenience only — this
+    // does NOT re-apply defaultChargeRate/defaultChargeType when the
+    // client changes, so an existing custom rate is never silently overwritten.
+    if (req.body.client !== undefined) {
+        if (req.body.client === null) {
+            updateFields.client = null;
+        } else {
+            const clientDoc = await resolveJobClient(req.body.client, companyId);
+            updateFields.client = clientDoc?._id ?? null;
+        }
+    }
+
     const updatedJob = await Job.findByIdAndUpdate(job._id, updateFields, {
         new: true,
         runValidators: true,
@@ -678,12 +788,38 @@ export const updateJob: MiddlewareFn = async (req, res) => {
             actor: currentUserId,
             workers: usersToAssign.map(u => u._id),
         });
+    }
 
+    // Draft jobs never notify — see the matching gate in createJob. Who gets
+    // notified here depends on whether this request just published the job:
+    //   - still draft: nobody, even if workers were added in this request.
+    //   - draft -> published just now: EVERYONE currently assigned, not only
+    //     usersToAssign — anyone assigned while it was still a draft was
+    //     silently added and has never been told.
+    //   - already published (no draft transition): only usersToAssign, same
+    //     as before.
+    const oldStatus = job.status;
+    const newStatus = updateFields.status ?? oldStatus;
+
+    let workersToNotify: { _id: mongoose.Types.ObjectId; email: string; fullname: string }[] = [];
+    if (newStatus === "draft") {
+        workersToNotify = [];
+    } else if (oldStatus === "draft") {
+        const liveAssignments = await JobAssignment.find({ job: updatedJob._id, isDeleted: false })
+            .populate("worker", "fullname email");
+        workersToNotify = liveAssignments
+            .map(a => a.worker as any)
+            .filter(Boolean);
+    } else {
+        workersToNotify = usersToAssign;
+    }
+
+    if (workersToNotify.length) {
         // Fire-and-forget, same as createJob — uses the just-updated job so a
         // manager who changes the time/location and adds workers in the same
         // request notifies with the final details, not the stale pre-update ones.
         Promise.all(
-            usersToAssign.map(u =>
+            workersToNotify.map(u =>
                 Promise.all([
                     sendShiftAssigned({
                         worker: { email: u.email, fullname: u.fullname },

@@ -20,6 +20,7 @@ import errorHandlerMiddleware from "./middleware/errorHandlerMiddleware.js";
 import calendarRouter from "./routes/calendarRouter.js"
 import cors from "cors";
 import { authenticateUser } from "./middleware/authMiddleware.js";
+import { loadRestriction } from "./middleware/restrictionMiddleware.js";
 import jobRouter from "./routes/jobRouter.js";
 import workerRouter from "./routes/workerRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
@@ -33,6 +34,10 @@ import notificationPreferenceRouter
   import timesheetRouter from "./routes/timesheetRouter.js";
   import invitationRouter from "./routes/invitationRouter.js";
   import recurringJobRouter from "./routes/recurringJobRouter.js";
+  import clientRouter from "./routes/clientRouter.js";
+  import userRestrictionRouter from "./routes/userRestrictionRouter.js";
+  import analyticsRouter from "./routes/analyticsRouter.js";
+  import reportRouter from "./routes/reportRouter.js";
 const app = express();
 app.use(express.json());
 // TEMP: every-second interval to stress-test generateOccurrences' race-condition fix. Revert to "0 1 * * *" before committing/deploying.
@@ -66,32 +71,42 @@ app.use(`/api/v1/auth`, authRouter);
 // DONE WITH USERS DOCUMENTATION ON POSTMAN
 app.use(`/api/v1/users`,
   authenticateUser,
+  loadRestriction,
   userRouter);
 // DONE WITH USERS DOCUMENTATION ON POSTMAN
-app.use("/api/v1/jobs", authenticateUser, jobRouter);
+app.use("/api/v1/jobs", authenticateUser, loadRestriction, jobRouter);
 // DONE WITH WORKERS DOCUMENTATION ON POSTMAN
 app.use("/api/v1/workers",
   authenticateUser,
+  loadRestriction,
   workerRouter
 )
 app.use(
   "/api/v1/notification-preferences",
   authenticateUser,
+  loadRestriction,
   notificationPreferenceRouter
 );
-app.use("/api/v1/activity-logs", authenticateUser, activityLogRouter);
-app.use("/api/v1/companies", authenticateUser, companyRouter);
+app.use("/api/v1/activity-logs", authenticateUser, loadRestriction, activityLogRouter);
+app.use("/api/v1/companies", authenticateUser, loadRestriction, companyRouter);
 app.use(
   "/api/v1/timesheets",
   authenticateUser,
+  loadRestriction,
   timesheetRouter
 );
-app.use("/api/v1/calendar", authenticateUser, calendarRouter)
+app.use("/api/v1/calendar", authenticateUser, loadRestriction, calendarRouter)
 // Not wrapped in authenticateUser at this level — validate/accept are
 // public (the recipient isn't logged in yet); the router applies
 // authenticateUser itself on the routes that actually need it.
 app.use("/api/v1/invitations", invitationRouter)
-app.use("/api/v1/recurring-jobs", authenticateUser, recurringJobRouter)
+app.use("/api/v1/recurring-jobs", authenticateUser, loadRestriction, recurringJobRouter)
+app.use("/api/v1/clients", authenticateUser, loadRestriction, clientRouter)
+// Applies authenticateUser and loadRestriction itself (see userRestrictionRouter)
+// since GET /me and POST /me/appeal must stay reachable at every access level.
+app.use("/api/v1/restrictions", userRestrictionRouter)
+app.use("/api/v1/analytics", authenticateUser, loadRestriction, analyticsRouter)
+app.use("/api/v1/reports", authenticateUser, loadRestriction, reportRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });

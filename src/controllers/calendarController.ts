@@ -30,6 +30,7 @@ export const getCalendarJobs: MiddlewareFn = async (req, res) => {
     status: { $ne: "draft" },
     isDeleted: false,
   })
+    .populate("client", "name")
     .sort({ date: 1, startTime: 1 })
     .lean();
 

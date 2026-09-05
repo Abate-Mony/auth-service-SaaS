@@ -27,7 +27,33 @@ function startOfMonth(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
 
+// Worked minutes, net of breaks — JobAssignment only exposes this as a
+// virtual (workedMinutes), which a Mongo aggregation pipeline can't see.
+// The previous version of this file summed a field called "hoursWorked"
+// that was never actually on the schema, so every hours total here always
+// came back 0 — computed in JS instead, same as the rest of this codebase
+// already does for worker stats and timesheets.
+function workedMinutesOf(a: {
+  checkedInAt?: Date | null;
+  checkedOutAt?: Date | null;
+  breaks?: { startedAt?: Date | null; endedAt?: Date | null }[];
+}): number {
+  if (!a.checkedInAt || !a.checkedOutAt) return 0;
+  const gross = Math.round((a.checkedOutAt.getTime() - a.checkedInAt.getTime()) / 60_000);
+  const breakMins = (a.breaks ?? []).reduce((sum, b) => {
+    if (!b.startedAt || !b.endedAt) return sum;
+    return sum + Math.round((b.endedAt.getTime() - b.startedAt.getTime()) / 60_000);
+  }, 0);
+  return Math.max(0, gross - breakMins);
+}
+
 export const getDashboardStats: MiddlewareFn = async (req, res) => {
+  const currentUser = getReqUser(req);
+  const companyId = currentUser.company_id;
+  // Job.company is schema-typed String (a pre-existing quirk elsewhere in
+  // this codebase), unlike User/JobAssignment's ObjectId — cast separately.
+  const companyIdStr = companyId.toString();
+
   const now = new Date();
   const todayStart = startOfDay(now);
   const todayEnd = endOfDay(now);
@@ -36,6 +62,10 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
   const weekStart = startOfWeek(now);
   const monthStart = startOfMonth(now);
   const lastMonthStart = new Date(monthStart.getFullYear(), monthStart.getMonth() - 1, 1);
+  // Bounds "recent activity" to jobs from the last 30 days — otherwise
+  // scoping ActivityLog (which has no company field of its own) to this
+  // company would mean pulling every job id it's ever had.
+  const activityWindowStart = new Date(now.getTime() - 30 * 86400000);
 
   const [
     todaysJobsCount,
@@ -43,51 +73,52 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
     yesterdaysJobsCount,
     totalWorkersCount,
     workersActiveNow,
-    hoursThisWeekAgg,
-    hoursByDayAgg,
+    weekAssignments,
     jobsCompletedThisMonth,
     jobsCompletedLastMonth,
     workingNow,
     todaysJobsList,
-    recentActivity,
+    recentActivityJobs,
     unstaffedJob,
     companySettings,
   ] = await Promise.all([
-    jobModel.countDocuments({ date: { $gte: todayStart, $lte: todayEnd } }),
+    jobModel.countDocuments({ company: companyIdStr, date: { $gte: todayStart, $lte: todayEnd } }),
 
     jobModel.countDocuments({
+      company: companyIdStr,
       date: { $gte: todayStart, $lte: todayEnd },
       status: "published",
     }),
 
-    jobModel.countDocuments({ date: { $gte: yesterdayStart, $lte: yesterdayEnd } }),
+    jobModel.countDocuments({ company: companyIdStr, date: { $gte: yesterdayStart, $lte: yesterdayEnd } }),
 
-    userModel.countDocuments({ role: "worker" }),
+    userModel.countDocuments({ role: "worker", company: companyId }),
 
     JobAssignment.countDocuments({
+      company: companyId,
       status: "in-progress",
       checkedInAt: { $ne: null },
       checkedOutAt: null,
     }),
 
-    JobAssignment.aggregate([
-      { $match: { checkedInAt: { $gte: weekStart } } },
-      { $group: { _id: null, total: { $sum: "$hoursWorked" } } },
-    ]),
+    JobAssignment.find({
+      company: companyId,
+      checkedInAt: { $gte: weekStart, $ne: null },
+      checkedOutAt: { $ne: null },
+    })
+      .select("checkedInAt checkedOutAt breaks")
+      .lean(),
 
-    JobAssignment.aggregate([
-      { $match: { checkedInAt: { $gte: weekStart } } },
-      { $group: { _id: { $dayOfWeek: "$checkedInAt" }, total: { $sum: "$hoursWorked" } } },
-    ]),
-
-    jobModel.countDocuments({ status: "completed", updatedAt: { $gte: monthStart } }),
+    jobModel.countDocuments({ company: companyIdStr, status: "completed", updatedAt: { $gte: monthStart } }),
 
     jobModel.countDocuments({
+      company: companyIdStr,
       status: "completed",
       updatedAt: { $gte: lastMonthStart, $lt: monthStart },
     }),
 
     JobAssignment.find({
+      company: companyId,
       status: "in-progress",
       checkedInAt: { $ne: null },
       checkedOutAt: null,
@@ -98,17 +129,16 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
       .limit(5),
 
     jobModel
-      .find({ date: { $gte: todayStart, $lte: todayEnd } })
+      .find({ company: companyIdStr, date: { $gte: todayStart, $lte: todayEnd } })
       .sort({ startTime: 1 })
       .limit(10),
 
-    ActivityLog.find({ job: { $exists: true } })
-      .populate("actor", "fullname")
-      .populate("job", "title")
-      .sort({ createdAt: -1 })
-      .limit(10),
+    jobModel
+      .find({ company: companyIdStr, date: { $gte: activityWindowStart } })
+      .select("_id")
+      .lean(),
 
-    jobModel.findOne({ status: "published" }).then(async job => {
+    jobModel.findOne({ company: companyIdStr, status: "published" }).then(async job => {
       if (!job) return null;
       const assignedCount = await JobAssignment.countDocuments({
         job: job._id,
@@ -117,18 +147,33 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
       return assignedCount === 0 ? job : null;
     }),
 
-    Company.findById(getReqUser(req).company_id).select("weeklyHoursTarget").lean(),
+    Company.findById(companyId).select("weeklyHoursTarget").lean(),
   ]);
 
-  const hoursThisWeek = hoursThisWeekAgg[0]?.total ?? 0;
+  // ActivityLog has no company field of its own — scoped here through the
+  // company's own recent job ids resolved above, rather than the previous
+  // {job: {$exists: true}}, which returned every company's activity mixed
+  // together.
+  const recentActivity = await ActivityLog.find({
+    job: { $in: recentActivityJobs.map(j => j._id) },
+  })
+    .populate("actor", "fullname")
+    .populate("job", "title")
+    .sort({ createdAt: -1 })
+    .limit(10);
 
-  const dayMap: Record<number, string> = {
-    2: "Mon", 3: "Tue", 4: "Wed", 5: "Thu", 6: "Fri", 7: "Sat", 1: "Sun",
-  };
-  const hoursByDay = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(day => {
-    const match = hoursByDayAgg.find((h: any) => dayMap[h._id] === day);
-    return { day, hours: match ? Math.round(match.total) : 0 };
-  });
+  let hoursThisWeekMinutes = 0;
+  const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const minutesByDay: Record<string, number> = { Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0, Sun: 0 };
+  for (const a of weekAssignments) {
+    const minutes = workedMinutesOf(a);
+    hoursThisWeekMinutes += minutes;
+    if (a.checkedInAt) minutesByDay[DAY_NAMES[a.checkedInAt.getDay()]] += minutes;
+  }
+  const hoursByDay = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(day => ({
+    day,
+    hours: Math.round(minutesByDay[day] / 60),
+  }));
 
   const completedDelta =
     jobsCompletedLastMonth === 0
@@ -149,7 +194,7 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
         total: totalWorkersCount,
       },
       hoursThisWeek: {
-        total: Math.round(hoursThisWeek),
+        total: Math.round(hoursThisWeekMinutes / 60),
         // weeklyHoursTarget is a company-wide setting; falls back to the old
         // "80 hours per worker" guess when a company hasn't configured one.
         target: companySettings?.weeklyHoursTarget || totalWorkersCount * 80,

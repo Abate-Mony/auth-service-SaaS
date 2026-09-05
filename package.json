@@ -7,7 +7,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "tsc",
-    "dev": "concurrently \"tsc -w\" \"nodemon dist/server.js\""
+    "dev": "concurrently \"tsc -w\" \"nodemon dist/server.js\"",
+    "migrate:clients": "node dist/scripts/migrateClientsToEntities.js",
+    "migrate:clients:dry-run": "node dist/scripts/migrateClientsToEntities.js --dry-run"
   },
   "keywords": [],
   "author": "",

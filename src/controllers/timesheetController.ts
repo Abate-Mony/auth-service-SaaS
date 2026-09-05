@@ -1,7 +1,8 @@
+import type { Request, Response } from "express";
 import { MiddlewareFn } from "../interfaces/expresstype.js";
 import dayjs from "dayjs";
 import JobAssignment from "../models/JobAssignment.js";
-import { BadRequestError } from "../errors/customErrors.js";
+import { BadRequestError, NotFoundError, UnauthorizedError } from "../errors/customErrors.js";
 import { StatusCodes } from "http-status-codes";
 import userModel from "../models/userModel.js";
 import Company from "../models/company.js";
@@ -44,144 +45,145 @@ const getPeriodRange = (period: Period) => {
     }
   }
 };
-export const getMyTimesheet: MiddlewareFn = async (req, res) => {
-  console.log("enter here");
+const ALLOWED_PERIODS: Period[] = ["weekly", "biweekly", "monthly"];
 
-  const workerId = req.user.user_id;
+// A completed shift's payable minutes — approvedMinutes when a manager has
+// signed off on it (caps an over-running shift until they do), otherwise the
+// raw checked-in→checked-out time net of breaks.
+const payableMinutesOf = (assignment: {
+  approvedMinutes?: number | null;
+  checkedInAt?: Date | null;
+  checkedOutAt?: Date | null;
+  breaks?: { startedAt?: Date | null; endedAt?: Date | null }[];
+}): number => {
+  if (assignment.approvedMinutes != null) return assignment.approvedMinutes;
+  if (!assignment.checkedInAt || !assignment.checkedOutAt) return 0;
 
-  const period = (req.query.period ?? "weekly") as Period;
+  const grossMinutes = dayjs(assignment.checkedOutAt).diff(dayjs(assignment.checkedInAt), "minute");
+  const breakMinutes = (assignment.breaks ?? []).reduce((sum, b) => {
+    if (!b.startedAt || !b.endedAt) return sum;
+    return sum + dayjs(b.endedAt).diff(dayjs(b.startedAt), "minute");
+  }, 0);
 
-  const allowedPeriods: Period[] = [
-    "weekly",
-    "biweekly",
-    "monthly",
-  ];
+  return Math.max(0, grossMinutes - breakMinutes);
+};
 
-  if (!allowedPeriods.includes(period)) {
-    throw new BadRequestError(
-      "Period must be weekly, biweekly, or monthly"
-    );
-  }
-
-  const { start, end } = getPeriodRange(period);
+// Shared by the worker's own timesheet summary and the admin/manager
+// "view a worker's timesheet" summary below — same numbers, same shape,
+// just whichever worker id it's called with.
+//
+// `range` lets a caller who already knows exactly which days they want
+// (the frontend's own period-paging math, e.g. "the biweekly block from
+// 12 Aug") override the default "this period, right now" window — without
+// it, a request for last week's timesheet would silently come back with
+// this week's numbers instead.
+const buildTimesheetSummary = async (
+  workerId: string,
+  period: Period,
+  range?: { start: Date; end: Date }
+) => {
+  const { start, end } = range ?? getPeriodRange(period);
 
   const assignments = await JobAssignment.find({
     worker: workerId,
     status: "completed",
     isDeleted: false,
-
-    checkedInAt: {
-      $gte: start,
-      $lt: end,
-    },
+    checkedInAt: { $gte: start, $lt: end },
   })
-    .populate("job")
-    .sort({ checkedInAt: 1 });
+    .populate<{ job: { title: string; date: Date; startTime: string; endTime: string } | null }>(
+      "job",
+      "title date startTime endTime"
+    )
+    .sort({ checkedInAt: 1 })
+    .lean();
 
-  const totalMinutes = assignments.reduce(
-    (total: number, assignment) => {
-      // approvedMinutes is what actually counts for payroll — it's capped
-      // below the raw worked time whenever a shift ran over and hasn't been
-      // manager-approved yet. Older records predating this field fall back
-      // to the raw computation.
-      if (assignment.approvedMinutes != null) {
-        return total + assignment.approvedMinutes;
-      }
-
-      if (
-        !assignment.checkedInAt ||
-        !assignment.checkedOutAt
-      ) {
-        return total;
-      }
-
-      const grossMinutes = dayjs(
-        assignment.checkedOutAt
-      ).diff(
-        dayjs(assignment.checkedInAt),
-        "minute"
-      );
-
-      // Convert Mongoose DocumentArray to normal JS array
-      const breaks = Array.from(
-        assignment.breaks ?? []
-      );
-
-      const breakMinutes = breaks.reduce(
-        (sum: number, breakItem) => {
-          if (
-            !breakItem.startedAt ||
-            !breakItem.endedAt
-          ) {
-            return sum;
-          }
-
-          const minutes = dayjs(
-            breakItem.endedAt
-          ).diff(
-            dayjs(breakItem.startedAt),
-            "minute"
-          );
-
-          return sum + minutes;
-        },
-        0
-      );
-
-      const workedMinutes = Math.max(
-        0,
-        grossMinutes - breakMinutes
-      );
-
-      return total + workedMinutes;
-    },
-    0
-  );
-
-  console.log("summary:", {
-    totalJobs: assignments.length,
-    totalMinutes,
-    totalHours: Number(
-      (totalMinutes / 60).toFixed(2)
-    ),
+  let totalMinutes = 0;
+  const rows = assignments.map(a => {
+    const minutes = payableMinutesOf(a);
+    totalMinutes += minutes;
+    return {
+      _id: a._id,
+      title: a.job?.title ?? "Shift",
+      date: a.job?.date ?? a.checkedInAt,
+      startTime: a.job?.startTime ?? null,
+      endTime: a.job?.endTime ?? null,
+      minutes,
+    };
   });
 
-  res.status(StatusCodes.OK).json({
-    success: true,
-    period,
+  return {
     start,
     end,
-
     summary: {
       totalJobs: assignments.length,
+      shiftsCount: assignments.length,
+      hasData: assignments.length > 0,
       totalMinutes,
-      totalHours: Number(
-        (totalMinutes / 60).toFixed(2)
-      ),
+      totalHours: Number((totalMinutes / 60).toFixed(2)),
+      assignments: rows,
     },
-
-    assignments,
-  });
+  };
 };
-export const downloadMyTimesheetPdf: MiddlewareFn =
-  async (req, res) => {
 
-    const workerId = req.user.user_id;
+const parsePeriod = (req: Request): Period => {
+  const period = (req.query.period ?? "weekly") as Period;
+  if (!ALLOWED_PERIODS.includes(period)) {
+    throw new BadRequestError("Period must be weekly, biweekly, or monthly");
+  }
+  return period;
+};
 
-    const {
-      startDate,
-      endDate,
-    } = req.query as {
-      startDate?: string;
-      endDate?: string;
-    };
+// Both startDate and endDate are optional and treated as an inclusive
+// calendar range (endDate's whole day counts) — callers that already know
+// which exact days they want (the frontend's period-paging) send both;
+// callers that just want "the current period" send neither and fall back
+// to getPeriodRange inside buildTimesheetSummary.
+const parseExplicitRange = (req: Request): { start: Date; end: Date } | undefined => {
+  const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
+  if (!startDate || !endDate) return undefined;
+  return {
+    start: dayjs(startDate).startOf("day").toDate(),
+    end: dayjs(endDate).add(1, "day").startOf("day").toDate(),
+  };
+};
 
-    if (!startDate || !endDate) {
-      throw new BadRequestError(
-        "startDate and endDate are required."
-      );
-    }
+export const getMyTimesheet: MiddlewareFn = async (req, res) => {
+  const period = parsePeriod(req);
+  const range = parseExplicitRange(req);
+  const { start, end, summary } = await buildTimesheetSummary(req.user.user_id.toString(), period, range);
 
+  res.status(StatusCodes.OK).json({ success: true, period, start, end, summary });
+};
+
+// GET /timesheets/:id — admin/manager viewing a specific worker's timesheet
+// summary on-screen, ahead of (or instead of) downloading the PDF.
+export const getWorkerTimesheet: MiddlewareFn = async (req, res) => {
+  if (!["admin", "manager"].includes(req.user.role)) {
+    throw new UnauthorizedError("Not allowed to view this worker's timesheet.");
+  }
+
+  const { id } = req.params;
+  const worker = await userModel
+    .findOne({ _id: id, company: req.user.company_id })
+    .select("_id")
+    .lean();
+  if (!worker) throw new NotFoundError("Worker not found.");
+
+  const period = parsePeriod(req);
+  const range = parseExplicitRange(req);
+  const { start, end, summary } = await buildTimesheetSummary(id as string, period, range);
+
+  res.status(StatusCodes.OK).json({ success: true, period, start, end, summary });
+};
+// Shared by the worker's own download and the admin/manager "view a
+// worker's timesheet" download below — same PDF, same math, the only
+// difference is whose id it's called with and who's allowed to call it.
+const streamTimesheetPdf = async (
+  workerId: string,
+  startDate: string,
+  endDate: string,
+  res: Response
+): Promise<void> => {
     const start = dayjs(startDate)
       .startOf("day")
       .toDate();
@@ -407,4 +409,37 @@ export const downloadMyTimesheetPdf: MiddlewareFn =
     pdf.pipe(res);
 
     pdf.end();
-  };
+};
+
+const parsePdfDateRange = (req: Request): { startDate: string; endDate: string } => {
+  const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
+  if (!startDate || !endDate) {
+    throw new BadRequestError("startDate and endDate are required.");
+  }
+  return { startDate, endDate };
+};
+
+export const downloadMyTimesheetPdf: MiddlewareFn = async (req, res) => {
+  const { startDate, endDate } = parsePdfDateRange(req);
+  await streamTimesheetPdf(req.user.user_id.toString(), startDate, endDate, res);
+};
+
+// GET /timesheets/:id/pdf — admin/manager viewing a specific worker's
+// timesheet, e.g. from the worker profile page's "Download Timesheet"
+// action. Same PDF as downloadMyTimesheetPdf, just for someone else's shifts
+// and gated to management rather than "whoever is logged in".
+export const downloadWorkerTimesheetPdf: MiddlewareFn = async (req, res) => {
+  if (!["admin", "manager"].includes(req.user.role)) {
+    throw new UnauthorizedError("Not allowed to view this worker's timesheet.");
+  }
+
+  const { id } = req.params;
+  const worker = await userModel
+    .findOne({ _id: id, company: req.user.company_id })
+    .select("_id")
+    .lean();
+  if (!worker) throw new NotFoundError("Worker not found.");
+
+  const { startDate, endDate } = parsePdfDateRange(req);
+  await streamTimesheetPdf(id as string, startDate, endDate, res);
+};

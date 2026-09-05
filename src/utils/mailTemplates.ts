@@ -382,3 +382,268 @@ export const sendWorkerInvite = async ({
     `,
   });
 };
+
+// ─────────────────────────────────────────────
+// User restrictions
+// ─────────────────────────────────────────────
+
+const RESTRICTION_REASON_LABELS: Record<string, string> = {
+  document_expired: "an expired document",
+  disciplinary: "a disciplinary matter",
+  no_show: "repeated no-shows",
+  left_company: "leaving the company",
+  other: "an account issue",
+};
+
+const RESTRICTION_REMEDY_LABELS: Record<string, string> = {
+  upload_document: "Upload a replacement document to lift this automatically.",
+  contact_manager: "Contact your manager to resolve this.",
+  appeal: "You can submit an appeal from the app.",
+  none: "",
+};
+
+/** Sent when a restriction is created — the reason and the way out, not just a lock. */
+export async function sendRestrictionNotice({
+  email,
+  fullname,
+  reason,
+  message,
+  remedy,
+  canAppeal,
+}: {
+  email: string;
+  fullname: string;
+  reason: string;
+  message: string;
+  remedy: string;
+  canAppeal: boolean;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const remedyLine = RESTRICTION_REMEDY_LABELS[remedy] ?? "";
+  const link = `${process.env.CLIENT_URL}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, your account has been restricted due to ${RESTRICTION_REASON_LABELS[reason] ?? "an account issue"}.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Reason", message)}
+    </table>
+
+    ${remedyLine ? `<p style="margin:20px 0 0;font-size:14px;line-height:1.6;color:#334155;">${remedyLine}</p>` : ""}
+    ${canAppeal ? `<p style="margin:12px 0 0;font-size:13px;color:#94A3B8;">If you think this is a mistake, you can submit an appeal from the app.</p>` : ""}
+
+    ${button(link, "Open work.wrk")}`;
+
+  await sendMail({
+    to: email,
+    subject: "Your account has been restricted",
+    text:
+      `Hi ${firstName},\n\n` +
+      `Your account has been restricted: ${message}\n\n` +
+      (remedyLine ? `${remedyLine}\n` : "") +
+      (canAppeal ? `If you think this is a mistake, you can submit an appeal from the app.\n` : "") +
+      `\nOpen work.wrk: ${link}`,
+    html: layout({ heading: "Your account has been restricted", body }),
+  });
+}
+
+/** Sent when a restriction is lifted, whether by a manager or by an accepted appeal. */
+export async function sendRestrictionLiftedEmail({
+  email,
+  fullname,
+  liftReason,
+}: {
+  email: string;
+  fullname: string;
+  liftReason?: string;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const link = `${process.env.CLIENT_URL}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, the restriction on your account has been lifted. You're all set.
+    </p>
+    ${liftReason ? `<table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">${detailRow("Note", liftReason)}</table>` : ""}
+    ${button(link, "Open work.wrk")}`;
+
+  await sendMail({
+    to: email,
+    subject: "Your account restriction has been lifted",
+    text:
+      `Hi ${firstName},\n\n` +
+      `The restriction on your account has been lifted. You're all set.\n` +
+      (liftReason ? `\nNote: ${liftReason}\n` : "") +
+      `\nOpen work.wrk: ${link}`,
+    html: layout({ heading: "You're back", body }),
+  });
+}
+
+/** Notifies the manager who raised the restriction that the worker has appealed it. */
+export async function sendAppealSubmittedEmail({
+  managerEmail,
+  workerFullname,
+  appealMessage,
+}: {
+  managerEmail: string;
+  workerFullname: string;
+  appealMessage: string;
+}) {
+  const link = `${process.env.CLIENT_URL}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      ${workerFullname} has submitted an appeal against their account restriction.
+    </p>
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Appeal", appealMessage)}
+    </table>
+    ${button(link, "Review appeal")}`;
+
+  await sendMail({
+    to: managerEmail,
+    subject: `${workerFullname} submitted an appeal`,
+    text:
+      `${workerFullname} has submitted an appeal against their account restriction.\n\n` +
+      `Appeal: ${appealMessage}\n\n` +
+      `Review appeal: ${link}`,
+    html: layout({ heading: "New appeal submitted", body }),
+  });
+}
+
+/** Sent either way on a decision — a rejection with no explanation is worse than no appeal process. */
+export async function sendAppealResponseEmail({
+  email,
+  fullname,
+  status,
+  response,
+}: {
+  email: string;
+  fullname: string;
+  status: "accepted" | "rejected";
+  response: string;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const heading = status === "accepted" ? "Your appeal was accepted" : "Your appeal was reviewed";
+  const link = `${process.env.CLIENT_URL}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, your appeal has been ${status}${status === "accepted" ? " — your restriction has been lifted." : "."}
+    </p>
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Response", response)}
+    </table>
+    ${button(link, "Open work.wrk")}`;
+
+  await sendMail({
+    to: email,
+    subject: heading,
+    text:
+      `Hi ${firstName},\n\n` +
+      `Your appeal has been ${status}${status === "accepted" ? " — your restriction has been lifted." : "."}\n\n` +
+      `Response: ${response}\n\n` +
+      `Open work.wrk: ${link}`,
+    html: layout({ heading, body }),
+  });
+}
+
+// ─────────────────────────────────────────────
+// Open shifts
+// ─────────────────────────────────────────────
+
+interface OpenShiftJob {
+  _id: string;
+  title: string;
+  date: Date | string;
+  startTime: string;
+  endTime: string;
+}
+
+/** Sent to the manager who created the job when a worker claims an open shift. */
+export async function sendOpenShiftClaimNotice({
+  managerEmail,
+  workerFullname,
+  job,
+  needsApproval,
+}: {
+  managerEmail: string;
+  workerFullname: string;
+  job: OpenShiftJob;
+  needsApproval: boolean;
+}) {
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const link = `${process.env.CLIENT_URL}/jobs/${job._id}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      ${workerFullname} ${needsApproval ? "wants to pick up" : "picked up"} the open shift below${needsApproval ? " — it needs your approval before it's confirmed." : "."}
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime}`)}
+    </table>
+
+    ${button(link, needsApproval ? "Review claim" : "View job")}`;
+
+  await sendMail({
+    to: managerEmail,
+    subject: needsApproval
+      ? `${workerFullname} wants to claim an open shift`
+      : `${workerFullname} claimed an open shift`,
+    text:
+      `${workerFullname} ${needsApproval ? "wants to pick up" : "picked up"} "${job.title}" on ${when}` +
+      `${needsApproval ? " — it needs your approval before it's confirmed." : "."}\n\n` +
+      `${needsApproval ? "Review claim" : "View job"}: ${link}`,
+    html: layout({ heading: needsApproval ? "A claim needs your approval" : "An open shift was claimed", body }),
+  });
+}
+
+/** Sent to the worker once a manager approves or declines their open-shift claim. */
+export async function sendClaimReviewResultEmail({
+  email,
+  fullname,
+  job,
+  approved,
+}: {
+  email: string;
+  fullname: string;
+  job: OpenShiftJob;
+  approved: boolean;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const link = `${process.env.CLIENT_URL}/worker/jobs/${job._id}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, your manager has ${approved ? "approved" : "declined"} your claim on the shift below.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime}`)}
+    </table>
+
+    ${approved
+      ? `<p style="margin:16px 0 0;font-size:13px;color:#94A3B8;">It's yours — see it in the app.</p>`
+      : `<p style="margin:16px 0 0;font-size:13px;color:#94A3B8;">It's gone back to the open shifts list for someone else to pick up.</p>`
+    }
+
+    ${button(link, "Open work.wrk")}`;
+
+  await sendMail({
+    to: email,
+    subject: approved ? `Your claim on "${job.title}" was approved` : `Your claim on "${job.title}" was declined`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `Your manager has ${approved ? "approved" : "declined"} your claim on "${job.title}" (${when}).\n\n` +
+      `Open work.wrk: ${link}`,
+    html: layout({ heading: approved ? "Your claim was approved" : "Your claim was declined", body }),
+  });
+}
