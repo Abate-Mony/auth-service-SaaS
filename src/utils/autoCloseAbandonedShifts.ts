@@ -12,6 +12,7 @@ import userModel from "../models/userModel.js";
 import { scheduledEndOf, TZ } from "./dates.js";
 import { sendWorkerJobStatusEmail } from "./sendMailsUtils.js";
 import { sendPushToUser } from "./webPush.js";
+import { sendExpoPushToUser } from "./expoPush.js";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { logActivity } from "./logActivity.js";
 
@@ -41,6 +42,14 @@ async function notifyManagerOfAutoClose(
       : Promise.resolve(),
     canPush
       ? sendPushToUser(managerId, {
+        title: "Shift auto clocked-out",
+        body: `${workerFullname} never clocked out of ${job.title} — auto-closed and needs review`,
+        tag: `assignment-auto-closed-${job._id}`,
+        url: `/jobs/${job._id}`,
+      })
+      : Promise.resolve(),
+    canPush
+      ? sendExpoPushToUser(managerId, {
         title: "Shift auto clocked-out",
         body: `${workerFullname} never clocked out of ${job.title} — auto-closed and needs review`,
         tag: `assignment-auto-closed-${job._id}`,

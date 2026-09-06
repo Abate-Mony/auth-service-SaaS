@@ -41,6 +41,10 @@ const UserSchema = new Schema(
       default: "worker",
     },
     phone: { type: String, trim: true, default: "0000-0000-0000" },
+    gender: {
+      type: String,
+      enum: ["Male", "Female", "Other", "Prefer not to say"],
+    },
     createdBy: {
       type: Schema.Types.ObjectId,
       ref: "User",
@@ -96,6 +100,12 @@ const UserSchema = new Schema(
           },
         },
       ],
+      default: [],
+    },
+
+    // Expo push tokens, one per mobile device the worker is logged in on.
+    expoPushTokens: {
+      type: [String],
       default: [],
     },
   },

@@ -15,6 +15,8 @@ import { checkGeofence } from "../utils/geo.js";
 import { sendWorkerJobStatusEmail } from "../utils/sendMailsUtils.js";
 import { sendRecurringSeriesResponse, sendOpenShiftClaimNotice, sendClaimReviewResultEmail } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
+import { sendExpoPushToUser } from "../utils/expoPush.js";
+import { Expo } from "expo-server-sdk";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { sanitizeUser } from "../utils/tokenUtils.js";
 import { buildRestrictionResponse } from "../middleware/restrictionMiddleware.js";
@@ -509,6 +511,16 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                     url: `/jobs/${job!._id}`,
                 })
                 : Promise.resolve(),
+            canPush
+                ? sendExpoPushToUser(managerId, {
+                    title: event === "job_accepted" ? "Shift accepted" : "Shift declined",
+                    body: event === "job_accepted"
+                        ? `${worker!.fullname} accepted ${job!.title} — ${job!.startTime} on ${dayjs(job!.date).tz(tz).format("D MMM")}`
+                        : `${worker!.fullname} declined ${job!.title}${reason ? `: ${reason}` : ""}`,
+                    tag: `assignment-status-${assignment!._id}`,
+                    url: `/jobs/${job!._id}`,
+                })
+                : Promise.resolve(),
         ]);
     }
 
@@ -538,6 +550,14 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 : Promise.resolve(),
             canPush
                 ? sendPushToUser(managerId, {
+                    title: "Overtime needs review",
+                    body: `${worker!.fullname} clocked out ${overtimeMinutes}m late on ${job!.title} — extra time needs approval`,
+                    tag: `assignment-overtime-${assignment!._id}`,
+                    url: `/jobs/${job!._id}`,
+                })
+                : Promise.resolve(),
+            canPush
+                ? sendExpoPushToUser(managerId, {
                     title: "Overtime needs review",
                     body: `${worker!.fullname} clocked out ${overtimeMinutes}m late on ${job!.title} — extra time needs approval`,
                     tag: `assignment-overtime-${assignment!._id}`,
@@ -1166,6 +1186,14 @@ async function notifyManagerOfSeriesResponse({
                 url: `/jobs/recurring/recurring-job-detail/${recurringJobId}`,
             })
             : Promise.resolve(),
+        canPush
+            ? sendExpoPushToUser(managerId, {
+                title: type === "accepted" ? "Shifts accepted" : "Shifts declined",
+                body: `${worker.fullname} ${type} ${count} shift${count === 1 ? "" : "s"} on ${title}`,
+                tag: `recurring-series-${recurringJobId}-${type}`,
+                url: `/jobs/recurring/recurring-job-detail/${recurringJobId}`,
+            })
+            : Promise.resolve(),
     ]);
 }
 
@@ -1302,6 +1330,26 @@ export const savePushSubscription: MiddlewareFn = async (req, res) => {
     await userModel.updateOne(
         { _id: req.user.user_id, "pushSubscriptions.endpoint": { $ne: endpoint } },
         { $push: { pushSubscriptions: { endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } } } }
+    );
+
+    res.status(StatusCodes.OK).json({ success: true });
+};
+
+// Body is { token } — the Expo push token from the mobile app's
+// getExpoPushTokenAsync(). Companion to savePushSubscription, for the React
+// Native app instead of browser Web Push.
+export const saveExpoPushToken: MiddlewareFn = async (req, res) => {
+    const { token } = req.body;
+
+    if (!token || !Expo.isExpoPushToken(token)) {
+        throw new BadRequestError("Invalid Expo push token.");
+    }
+
+    // $addToSet makes this idempotent — re-registering the same device
+    // won't create duplicate entries.
+    await userModel.updateOne(
+        { _id: req.user.user_id },
+        { $addToSet: { expoPushTokens: token } }
     );
 
     res.status(StatusCodes.OK).json({ success: true });

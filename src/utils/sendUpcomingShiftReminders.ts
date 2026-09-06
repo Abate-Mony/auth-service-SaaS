@@ -3,6 +3,7 @@ import JobAssignment from "../models/JobAssignment.js";
 import { scheduledStartOf } from "./dates.js";
 import { sendShiftReminder } from "./mailTemplates.js";
 import { sendPushToUser } from "./webPush.js";
+import { sendExpoPushToUser } from "./expoPush.js";
 
 const REMINDER_WINDOW_MINUTES = 30;
 
@@ -71,6 +72,12 @@ export async function sendUpcomingShiftReminders() {
             title: "Shift starting soon",
             body: `${job.title} starts at ${job.startTime} — ${job.location}`,
             tag: `shift-start-${job._id}`,
+          }),
+          sendExpoPushToUser(worker._id.toString(), {
+            title: "Shift starting soon",
+            body: `${job.title} starts at ${job.startTime} — ${job.location}`,
+            tag: `shift-start-${job._id}`,
+            url: `/worker/jobs/${job._id}`,
           }),
         ]);
         assignment.reminderSentAt = new Date();

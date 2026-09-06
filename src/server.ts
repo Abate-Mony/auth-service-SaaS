@@ -12,6 +12,7 @@ import express from "express";
 import path, { dirname } from "path";
 import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
+import helmet from "helmet";
 import { v2 as cloudinary } from 'cloudinary';
 import authRouter from "./routes/authRouter.js";
 import userRouter from "./routes/userRouter.js";
@@ -39,15 +40,36 @@ import notificationPreferenceRouter
   import analyticsRouter from "./routes/analyticsRouter.js";
   import reportRouter from "./routes/reportRouter.js";
 const app = express();
+// crossOriginResourcePolicy defaults to "same-origin", which would block the
+// frontend (a different subdomain) from loading anything under /public —
+// contentSecurityPolicy is also off since this is a pure JSON API with no
+// HTML views of its own to protect.
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  contentSecurityPolicy: false,
+}));
 app.use(express.json());
 // TEMP: every-second interval to stress-test generateOccurrences' race-condition fix. Revert to "0 1 * * *" before committing/deploying.
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const filepath = path.resolve(__dirname, "../public/");
 console.log(`this is the file path here :`, filepath);
+
+// The web app (cookie-based session) is the only client CORS needs to gate —
+// the mobile app authenticates with a Bearer header and sends no Origin, so
+// it's unaffected by this. Reflecting any origin (the old `origin: true`)
+// would let any website make credentialed requests using a logged-in
+// visitor's cookies.
+const ALLOWED_ORIGINS = [
+  "https://timeshift.inprn.com",
+  "https://localhost:5173",
+  "http://localhost:5173",
+  "http://192.168.1.81:5000"
+];
+
 app.use(
   cors({
-    origin: true,
+    origin: ALLOWED_ORIGINS,
     credentials: true,
   })
 );

@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, reviewAssignmentOvertime, reviewOpenShiftClaim, savePushSubscription, startWorkerBreak, updateWorkerJobStatus } from "../controllers/workerController.js"
+import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, updateWorkerJobStatus } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 import { requireNotRestricted } from "../middleware/restrictionMiddleware.js";
@@ -27,6 +27,7 @@ router.route("/:id/break/start").patch(authorizePermissions("worker"), startWork
 router.route("/:id/break/end").patch(authorizePermissions("worker"), endWorkerBreak);
 router.route("/:id").get(authorizePermissions("worker"), getJob)
 router.route("/push-subscription").post(authorizePermissions("worker"), savePushSubscription);
+router.route("/expo-push-token").post(authorizePermissions("worker"), saveExpoPushToken);
 router.route("/assignments/:assignmentId/overtime")
     .patch(authorizePermissions("admin", "manager"), reviewAssignmentOvertime);
 router.route("/assignments/:assignmentId/claim-review")

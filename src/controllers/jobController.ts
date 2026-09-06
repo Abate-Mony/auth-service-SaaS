@@ -13,6 +13,7 @@ import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity } from "../utils/logActivity.js";
 import { sendShiftAssigned, sendRecurringShiftAssigned } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
+import { sendExpoPushToUser } from "../utils/expoPush.js";
 import dayjs from "../utils/dayjsSetup.js";
 import { TZ } from "../utils/dates.js";
 
@@ -325,6 +326,12 @@ console.log("this is the req.body : ", req.body)
                             tag: `recurring-assigned-${recurringJob._id}`,
                             url: "/worker/jobs",
                         }),
+                        sendExpoPushToUser(w._id.toString(), {
+                            title: "Added to a recurring shift",
+                            body: `${templateJob.title} — ${daysLabel}, ${generatedJobs.length} shifts scheduled`,
+                            tag: `recurring-assigned-${recurringJob._id}`,
+                            url: "/worker/jobs",
+                        }),
                     ])
                 )
             ).catch(err => console.error(`Failed to send recurring shift-assigned notification(s) for recurringJob ${recurringJob._id}:`, err));
@@ -394,6 +401,12 @@ console.log("this is the req.body : ", req.body)
                         // Tagged per job (distinct from the shift-start-reminder
                         // tag namespace) so re-saving/updating doesn't stack duplicates.
                         sendPushToUser(w._id.toString(), {
+                            title: "New shift assigned",
+                            body: `${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}, ${job.startTime} at ${job.location}`,
+                            tag: `shift-assigned-${job._id}`,
+                            url: `/worker/jobs/${job._id}`,
+                        }),
+                        sendExpoPushToUser(w._id.toString(), {
                             title: "New shift assigned",
                             body: `${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}, ${job.startTime} at ${job.location}`,
                             tag: `shift-assigned-${job._id}`,
@@ -835,6 +848,12 @@ console.log("this is the start time and end time : ", req.body)
                         },
                     }),
                     sendPushToUser(u._id.toString(), {
+                        title: "New shift assigned",
+                        body: `${updatedJob.title} — ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}, ${updatedJob.startTime} at ${updatedJob.location}`,
+                        tag: `shift-assigned-${updatedJob._id}`,
+                        url: `/worker/jobs/${updatedJob._id}`,
+                    }),
+                    sendExpoPushToUser(u._id.toString(), {
                         title: "New shift assigned",
                         body: `${updatedJob.title} — ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}, ${updatedJob.startTime} at ${updatedJob.location}`,
                         tag: `shift-assigned-${updatedJob._id}`,

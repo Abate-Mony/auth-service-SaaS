@@ -1,7 +1,7 @@
 // @ts-ignore
 import { StatusCodes } from "http-status-codes";
 import mongoose from "mongoose";
-import { NotFoundError, UnauthenticatedError, UnauthorizedError } from "../errors/customErrors.js";
+import { BadRequestError, NotFoundError, UnauthenticatedError, UnauthorizedError } from "../errors/customErrors.js";
 import { getReqUser, MiddlewareFn } from "../interfaces/expresstype.js";
 import JobAssignment from "../models/JobAssignment.js";
 import userModel from "../models/userModel.js";
@@ -24,6 +24,37 @@ export const currentUser: MiddlewareFn = async (req, res) => {
   // console.log("this is the login user", Iuser, user);
   res.status(StatusCodes.OK).json({ user: Iuser });
 };
+
+const GENDER_OPTIONS = ["Male", "Female", "Other", "Prefer not to say"];
+
+// Self-service profile edit — any authenticated user updating their own
+// fullname/email/phone/gender. Not the same as admin/manager editing a
+// worker's record elsewhere; this only ever touches req.user.user_id.
+export const updateCurrentUser: MiddlewareFn = async (req, res) => {
+  const { user_id } = req.user;
+  const { fullname, email, phone, gender } = req.body;
+
+  if (gender !== undefined && gender !== null && !GENDER_OPTIONS.includes(gender)) {
+    throw new BadRequestError("Invalid gender value.");
+  }
+
+  const update: Record<string, unknown> = {};
+  if (fullname !== undefined) update.fullname = fullname;
+  if (email !== undefined) update.email = String(email).toLowerCase().trim();
+  if (phone !== undefined) update.phone = phone;
+  if (gender !== undefined) update.gender = gender;
+
+  if (update.email) {
+    const existing = await userModel.findOne({ email: update.email, _id: { $ne: user_id } }).select("_id");
+    if (existing) throw new BadRequestError("That email is already in use.");
+  }
+
+  const user = await userModel.findByIdAndUpdate(user_id, update, { new: true, runValidators: true });
+  if (!user) throw new UnauthenticatedError("login again");
+
+  res.status(StatusCodes.OK).json({ user: sanitizeUser(user) });
+};
+
 export const getAllUser: MiddlewareFn = async (
   req,
   res
