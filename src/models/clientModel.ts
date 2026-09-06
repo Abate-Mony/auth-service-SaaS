@@ -56,6 +56,21 @@ const ClientSchema = new Schema(
     defaultChargeRate: { type: Number, default: 0, min: 0 },
     paymentTermsDays: { type: Number, default: 30, min: 0 },
 
+    // ── Billing policy ────────────────────────────────────────────────
+    // The default cadence used when picking a service period for this
+    // client's invoices. "manual" means no default period at all — a
+    // manager always chooses one. This is a default for the eligible-work
+    // picker, never a restriction: manual one-off invoices stay possible
+    // for every client regardless of this setting.
+    billingFrequency: {
+      type: String,
+      enum: ["per_job", "weekly", "fortnightly", "monthly", "manual"],
+      default: "monthly",
+    },
+    // 0 = Sunday ... 6 = Saturday, same convention as Job/Date.getDay().
+    billingDayOfWeek: { type: Number, min: 0, max: 6 },
+    billingDayOfMonth: { type: Number, min: 1, max: 31 },
+
     // ── State ─────────────────────────────────────────────────────────
     // status = the commercial relationship; isDeleted = created by mistake.
     // Queries listing clients filter on both.

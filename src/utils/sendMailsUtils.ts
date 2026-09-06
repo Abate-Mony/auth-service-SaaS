@@ -25,6 +25,7 @@ export async function sendMail(opts: {
     text: string;
     html: string;
     companyName?:string
+    attachments?: { filename: string; content: Buffer }[];
 }) {
     const resend = getResend();
 
@@ -34,6 +35,7 @@ export async function sendMail(opts: {
         subject: opts.subject,
         text: opts.text,
         html: opts.html,
+        attachments: opts.attachments,
     });
 
     if (error) {

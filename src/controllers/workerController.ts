@@ -814,7 +814,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             const clockOutReason = allowedReasons.includes(rawReason) ? rawReason : undefined;
             const clockOutNote = typeof req.body?.clockOutNote === "string" ? req.body.clockOutNote.trim() : "";
 
-            const overtimeThreshold = company?.lateClockOutThresholdMinutes ?? 15;
+            const overtimeThreshold = company?.lateClockOutThresholdMinutes ?? 1; //change to 15
             const overtimeMinutes = Math.max(0, workedMinutes - job.minutes);
             const requiresReview = overtimeMinutes > overtimeThreshold;
 

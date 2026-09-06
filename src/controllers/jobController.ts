@@ -605,12 +605,36 @@ export const getJob: MiddlewareFn = async (
     // Flatten the populated worker onto the assignment itself — the caller
     // wants { fullname, email, ... } directly, not nested under `worker`.
     // `fullname` is already denormalised on the assignment; only `email`
-    // actually needs pulling out of the populated doc.
-    const workers = assignments.map(({ worker, ...rest }) => ({
-        ...rest,
-        email: (worker as any)?.email,
-    }));
-    console.log("this is workers : ", workers)
+    // actually needs pulling out of the populated doc. `worker` itself (the
+    // User id) still needs to survive under its own key though — it's what
+    // the frontend's workerSchema requires and what JobDetailPage's
+    // "view worker profile" links navigate with; destructuring it out to
+    // read .email must not mean dropping it from the response.
+    //
+    // hoursWorked isn't a stored field (only the workedMinutes virtual,
+    // which .lean() can't see) — computed here the same approvedMinutes-first
+    // way every other controller in this app does it, so the frontend's
+    // "trust hoursWorked once checked out" reads (JobDetailPage, the manual
+    // invoice form's auto-populate) get a real number instead of always 0.
+    const workers = assignments.map(({ worker, ...rest }: any) => {
+        const grossMinutes =
+            rest.checkedInAt && rest.checkedOutAt
+                ? Math.round((new Date(rest.checkedOutAt).getTime() - new Date(rest.checkedInAt).getTime()) / 60_000)
+                : 0;
+        const breakMinutes = (rest.breaks ?? []).reduce((sum: number, b: any) => {
+            if (!b.startedAt || !b.endedAt) return sum;
+            return sum + Math.round((new Date(b.endedAt).getTime() - new Date(b.startedAt).getTime()) / 60_000);
+        }, 0);
+        const workedMinutes = Math.max(0, grossMinutes - breakMinutes);
+        const payableMinutes = rest.approvedMinutes != null ? rest.approvedMinutes : workedMinutes;
+
+        return {
+            ...rest,
+            worker: worker?._id,
+            email: worker?.email,
+            hoursWorked: Math.round((payableMinutes / 60) * 100) / 100,
+        };
+    });
 
     res.status(StatusCodes.OK).json({
         success: true,
@@ -776,12 +800,23 @@ console.log("this is the start time and end time : ", req.body)
     // Client charge defaults are a creation-time convenience only — this
     // does NOT re-apply defaultChargeRate/defaultChargeType when the
     // client changes, so an existing custom rate is never silently overwritten.
+    //
+    // Only re-resolves the client when it's actually changing. The edit
+    // form always resubmits the current client id (or "" if none) whether
+    // or not the manager touched it, so re-validating unconditionally meant
+    // a client going inactive after the fact silently blocked editing every
+    // other field on any job that already referenced it.
     if (req.body.client !== undefined) {
-        if (req.body.client === null) {
-            updateFields.client = null;
-        } else {
-            const clientDoc = await resolveJobClient(req.body.client, companyId);
-            updateFields.client = clientDoc?._id ?? null;
+        const currentClientId = job.client ? job.client.toString() : null;
+        const requestedClientId = req.body.client === null || req.body.client === "" ? null : req.body.client;
+
+        if (requestedClientId !== currentClientId) {
+            if (requestedClientId === null) {
+                updateFields.client = null;
+            } else {
+                const clientDoc = await resolveJobClient(requestedClientId, companyId);
+                updateFields.client = clientDoc?._id ?? null;
+            }
         }
     }
 

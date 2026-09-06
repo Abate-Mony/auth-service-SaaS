@@ -81,6 +81,24 @@ const JobSchema = new Schema(
         chargeRate: { type: Number, default: 0, min: 0 },   // per hour, when hourly
         chargeAmount: { type: Number, default: 0, min: 0 }, // total, when fixed
 
+        // ── Billing state ─────────────────────────────────────────────────
+        // Governs invoicing for FIXED-price jobs only — the whole job is one
+        // billable unit there. Hourly jobs are billed per JobAssignment
+        // instead (see JobAssignment.billingStatus), since billing there is
+        // per-worker-hour: two workers on one job are two separate billable
+        // amounts, not one. Ignored for jobs with no client.
+        billingStatus: {
+            type: String,
+            enum: ["not_billable", "pending", "ready", "invoiced"],
+            default: "not_billable",
+            index: true,
+        },
+        invoice: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Invoice",
+            default: null,
+        },
+
         // ── Recurrence ────────────────────────────────────────────────────
         recurringJob: {
             type: mongoose.Schema.Types.ObjectId,

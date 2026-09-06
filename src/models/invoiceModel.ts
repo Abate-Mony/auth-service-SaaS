@@ -27,6 +27,15 @@ const InvoiceLineItemSchema = new Schema(
       default: null,
     },
 
+    // Set for hourly line items — the specific worker's shift this amount
+    // was calculated from. Not set for fixed/adjustment lines, which are
+    // job-level rather than per-assignment.
+    assignment: {
+      type: Schema.Types.ObjectId,
+      ref: "JobAssignment",
+      default: null,
+    },
+
     // For hourly billing
     minutes: {
       type: Number,
@@ -186,6 +195,19 @@ const InvoiceSchema = new Schema(
       {
         type: Schema.Types.ObjectId,
         ref: "Job",
+      },
+    ],
+
+    /**
+     * Which specific worker shifts contributed billed time — the
+     * time/pay-source counterpart to `jobs` above (the operational
+     * source). Only hourly line items populate this; a fixed-price job
+     * has no per-assignment breakdown to trace.
+     */
+    assignments: [
+      {
+        type: Schema.Types.ObjectId,
+        ref: "JobAssignment",
       },
     ],
 
@@ -424,6 +446,10 @@ InvoiceSchema.index({
 
 InvoiceSchema.index({
   jobs: 1,
+});
+
+InvoiceSchema.index({
+  assignments: 1,
 });
 
 // ─────────────────────────────────────────────────────────────

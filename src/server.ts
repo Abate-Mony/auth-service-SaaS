@@ -36,6 +36,7 @@ import notificationPreferenceRouter
   import invitationRouter from "./routes/invitationRouter.js";
   import recurringJobRouter from "./routes/recurringJobRouter.js";
   import clientRouter from "./routes/clientRouter.js";
+  import invoiceRouter from "./routes/invoiceRouter.js";
   import userRestrictionRouter from "./routes/userRestrictionRouter.js";
   import analyticsRouter from "./routes/analyticsRouter.js";
   import reportRouter from "./routes/reportRouter.js";
@@ -124,6 +125,7 @@ app.use("/api/v1/calendar", authenticateUser, loadRestriction, calendarRouter)
 app.use("/api/v1/invitations", invitationRouter)
 app.use("/api/v1/recurring-jobs", authenticateUser, loadRestriction, recurringJobRouter)
 app.use("/api/v1/clients", authenticateUser, loadRestriction, clientRouter)
+app.use("/api/v1/invoices", authenticateUser, loadRestriction, invoiceRouter)
 // Applies authenticateUser and loadRestriction itself (see userRestrictionRouter)
 // since GET /me and POST /me/appeal must stay reachable at every access level.
 app.use("/api/v1/restrictions", userRestrictionRouter)

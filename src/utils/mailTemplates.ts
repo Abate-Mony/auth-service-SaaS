@@ -551,6 +551,65 @@ export async function sendAppealResponseEmail({
 }
 
 // ─────────────────────────────────────────────
+// Invoices
+// ─────────────────────────────────────────────
+
+export async function sendInvoiceEmail({
+  to,
+  companyName,
+  clientContactName,
+  invoiceNumber,
+  total,
+  currency,
+  dueDate,
+  pdfBuffer,
+}: {
+  to: string;
+  companyName: string;
+  clientContactName?: string;
+  invoiceNumber: string;
+  total: number;
+  currency: string;
+  dueDate: Date | string;
+  pdfBuffer: Buffer;
+}) {
+  const symbol = currency === "USD" ? "$" : currency === "EUR" ? "€" : "£";
+  const amount = `${symbol}${total.toFixed(2)}`;
+  const due = dayjs(dueDate).tz(TZ).format("D MMMM YYYY");
+  const greeting = clientContactName ? clientContactName.split(" ")[0] : "there";
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${greeting}, ${companyName} has sent you a new invoice. It's attached to this email as a PDF.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Invoice", invoiceNumber)}
+      ${detailRow("Amount due", amount)}
+      ${detailRow("Due date", due)}
+    </table>
+
+    <p style="margin:20px 0 0;font-size:13px;color:#94A3B8;">
+      Please reach out to ${companyName} directly with any questions about this invoice.
+    </p>`;
+
+  await sendMail({
+    to,
+    subject: `Invoice ${invoiceNumber} from ${companyName}`,
+    text:
+      `Hi ${greeting},\n\n` +
+      `${companyName} has sent you a new invoice. It's attached to this email as a PDF.\n\n` +
+      `Invoice: ${invoiceNumber}\n` +
+      `Amount due: ${amount}\n` +
+      `Due date: ${due}\n\n` +
+      `Please reach out to ${companyName} directly with any questions about this invoice.`,
+    html: layout({ heading: `Invoice ${invoiceNumber}`, body }),
+    companyName,
+    attachments: [{ filename: `${invoiceNumber}.pdf`, content: pdfBuffer }],
+  });
+}
+
+// ─────────────────────────────────────────────
 // Open shifts
 // ─────────────────────────────────────────────
 

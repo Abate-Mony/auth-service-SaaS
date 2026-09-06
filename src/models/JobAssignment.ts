@@ -70,6 +70,23 @@ const JobAssignmentSchema = new Schema(
 
     payRate: { type: Number, default: 0, min: 0 },
 
+    // ── Billing state ─────────────────────────────────────────────────
+    // Governs invoicing for HOURLY-priced jobs — each worker's completed,
+    // approved-time shift is its own billable unit (confirmed billing
+    // model: per worker-hour, not per shift-hour). Fixed-price jobs are
+    // billed at the Job level instead (see Job.billingStatus).
+    billingStatus: {
+      type: String,
+      enum: ["not_billable", "pending", "ready", "invoiced"],
+      default: "not_billable",
+      index: true,
+    },
+    invoice: {
+      type: Schema.Types.ObjectId,
+      ref: "Invoice",
+      default: null,
+    },
+
     isDeleted: { type: Boolean, default: false },
 
     // Set once the "shift starts in 30 minutes" email goes out, so the
