@@ -15,6 +15,7 @@ import { sendPushToUser } from "./webPush.js";
 import { sendExpoPushToUser } from "./expoPush.js";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { logActivity } from "./logActivity.js";
+import { maybeCompleteJob } from "./maybeCompleteJob.js";
 
 let running = false;
 
@@ -135,6 +136,10 @@ export async function autoCloseAbandonedShifts() {
           actor: null,
           metadata: { workedMinutes, overtimeMinutes, closeAfterHours },
         });
+
+        await maybeCompleteJob(assignment.job).catch(err =>
+          console.error(`Failed to check job completion for job ${assignment.job}:`, err)
+        );
 
         const manager = await userModel.findOne({ _id: job.createdBy }).select("email");
         const worker = await userModel.findById(assignment.worker).select("fullname");

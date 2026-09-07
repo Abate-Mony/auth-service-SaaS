@@ -21,6 +21,7 @@ import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { sanitizeUser } from "../utils/tokenUtils.js";
 import { buildRestrictionResponse } from "../middleware/restrictionMiddleware.js";
 import { RestrictableAction } from "../models/userRestrictionModel.js";
+import { maybeCompleteJob } from "../utils/maybeCompleteJob.js";
 
 // Which restriction the worker-status route enforces depends on the status
 // being requested, not the route itself — "declined" has no restrictable
@@ -814,7 +815,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             const clockOutReason = allowedReasons.includes(rawReason) ? rawReason : undefined;
             const clockOutNote = typeof req.body?.clockOutNote === "string" ? req.body.clockOutNote.trim() : "";
 
-            const overtimeThreshold = company?.lateClockOutThresholdMinutes ?? 1; //change to 15
+            const overtimeThreshold = company?.lateClockOutThresholdMinutes ?? 15;
             const overtimeMinutes = Math.max(0, workedMinutes - job.minutes);
             const requiresReview = overtimeMinutes > overtimeThreshold;
 
@@ -871,6 +872,14 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     }
 
     await assignment.save();
+
+    // Only a "completed"/"declined" transition can possibly finish off the
+    // whole job — no point checking on every accept/start.
+    if (status === "completed" || status === "declined") {
+        await maybeCompleteJob(assignment.job).catch(err =>
+            console.error(`Failed to check job completion for job ${assignment.job}:`, err)
+        );
+    }
 
     res.status(StatusCodes.OK).json({
         success: true,

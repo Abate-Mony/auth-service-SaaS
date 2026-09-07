@@ -11,8 +11,10 @@ import Company from "../models/company.js";
 import { generateInvoicePdf } from "../utils/invoicePdf.js";
 import { sendInvoiceEmail } from "../utils/mailTemplates.js";
 import { getEligibleWork, resolveSelectedWork } from "../services/invoice/eligibility.js";
+import { computeCurrentBillingPeriod } from "../services/invoice/billingPeriod.js";
 import { calculateVat, getInvoiceDueDate, round2 } from "../services/invoice/calculations.js";
 import dayjs from "../utils/dayjsSetup.js";
+import { toUtcDay } from "../utils/dates.js";
 
 // Same escaping precedent as clientController's search — regex
 // metacharacters in user input would otherwise be interpreted as regex
@@ -153,15 +155,26 @@ const serializeInvoice = (inv: any) => ({
         amount: li.amount,
         job: li.job ? String(li.job) : null,
         assignment: li.assignment ? String(li.assignment) : null,
+        // Shift snapshot — absent on adjustment lines and on legacy items
+        // created before this existed (the frontend falls back to a
+        // generic "other charges" row when date/location aren't present).
+        date: li.date ?? null,
+        startTime: li.startTime ?? null,
+        endTime: li.endTime ?? null,
+        location: li.location ?? null,
+        workerName: li.workerName ?? null,
     })),
 });
 
 // GET /invoices?search=&status=&sort=&page=
 export const getAllInvoices: MiddlewareFn = async (req, res) => {
-    const { search, status, sort = "desc", page = "1", limit = "20" } = req.query as Record<string, string>;
+    const {
+        search, status, sort = "issueDate_desc", page = "1", limit = "20",
+        client, start, end,
+    } = req.query as Record<string, string | undefined>;
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit ?? "20", 10) || 20));
     const skip = (pageNum - 1) * limitNum;
 
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
@@ -176,6 +189,27 @@ export const getAllInvoices: MiddlewareFn = async (req, res) => {
         }
     }
 
+    if (client) {
+        if (!mongoose.Types.ObjectId.isValid(client)) {
+            throw new BadRequestError("Invalid client id.");
+        }
+        match.client = new mongoose.Types.ObjectId(client);
+    }
+
+    // issueDate is a real Date field (not normalised like Job.date), but
+    // both bounds are still whole calendar days — same toUtcDay-based
+    // $gte/$lte pattern as jobController.ts's getAllJobs.
+    if (start || end) {
+        const dateFilter: Record<string, Date> = {};
+        try {
+            if (start) dateFilter.$gte = toUtcDay(start);
+            if (end) dateFilter.$lte = toUtcDay(end);
+        } catch {
+            throw new BadRequestError("Invalid start or end date");
+        }
+        match.issueDate = dateFilter;
+    }
+
     if (search?.trim()) {
         const safe = escapeRegExp(search.trim());
         match.$or = [
@@ -184,9 +218,21 @@ export const getAllInvoices: MiddlewareFn = async (req, res) => {
         ];
     }
 
+    const SORT_OPTIONS: Record<string, Record<string, 1 | -1>> = {
+        issueDate_desc: { issueDate: -1 },
+        issueDate_asc: { issueDate: 1 },
+        dueDate_asc: { dueDate: 1 },
+        dueDate_desc: { dueDate: -1 },
+        total_desc: { total: -1 },
+        total_asc: { total: 1 },
+        // Pre-existing values, kept working for any caller still sending them.
+        asc: { issueDate: 1 },
+        desc: { issueDate: -1 },
+    };
+
     const [invoices, total] = await Promise.all([
         Invoice.find(match)
-            .sort({ issueDate: sort === "asc" ? 1 : -1 })
+            .sort(SORT_OPTIONS[sort ?? "issueDate_desc"] ?? SORT_OPTIONS.issueDate_desc)
             .skip(skip)
             .limit(limitNum)
             .lean(),
@@ -214,7 +260,19 @@ export const getInvoice: MiddlewareFn = async (req, res) => {
     const invoice = await Invoice.findOne({ _id: id, company: companyId, isDeleted: false }).lean();
     if (!invoice) throw new NotFoundError("Invoice not found.");
 
-    res.status(StatusCodes.OK).json({ success: true, invoice: serializeInvoice(invoice) });
+    // Live-joined, not snapshotted — company details changing after an
+    // invoice goes out is a far rarer, lower-stakes case than a Client's
+    // (which clientSnapshot exists specifically to guard against), so this
+    // stays a straightforward join rather than another schema/migration
+    // decision. Only fields that actually exist on Company are sent; the
+    // frontend skips whichever come back empty.
+    const company = await Company.findById(companyId).select("name phone country website").lean();
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        invoice: serializeInvoice(invoice),
+        company: company ? { name: company.name, phone: company.phone, country: company.country, website: company.website } : null,
+    });
 };
 
 export const createInvoice: MiddlewareFn = async (req, res) => {
@@ -264,13 +322,31 @@ export const createInvoice: MiddlewareFn = async (req, res) => {
         }
     }
 
-    // This manual path doesn't check the job's billingStatus first (an
-    // intentional scope limit — see the deliverables report), but it does
-    // mark the job invoiced going forward, so the eligible-work picker
-    // never offers it again and the two creation paths stay consistent.
-    job.billingStatus = "invoiced" as any;
-    (job as any).invoice = invoice!._id;
-    await job.save();
+    // This manual path doesn't check billingStatus first (an intentional
+    // scope limit — see the deliverables report), but it does mark the
+    // work invoiced going forward, so the eligible-work picker never offers
+    // it again and both creation paths stay consistent. Which record gets
+    // marked depends on chargeType, same split as everywhere else: a fixed
+    // job is one billable unit (the Job itself), an hourly job is billed
+    // per completed JobAssignment — marking the Job there would leave the
+    // assignments looking uninvoiced, so the eligible-work picker (and any
+    // "which invoice covers this" UI) would miss it entirely.
+    if (job.chargeType === "fixed") {
+        job.billingStatus = "invoiced" as any;
+        (job as any).invoice = invoice!._id;
+        await job.save();
+    } else {
+        const assignments = await JobAssignment.find({ job: job._id, isDeleted: false, status: "completed" }).select("_id");
+        if (assignments.length) {
+            const assignmentIds = assignments.map(a => a._id);
+            await JobAssignment.updateMany(
+                { _id: { $in: assignmentIds } },
+                { $set: { billingStatus: "invoiced", invoice: invoice!._id } }
+            );
+            invoice!.assignments = assignmentIds as any;
+            await invoice!.save();
+        }
+    }
 
     res.status(StatusCodes.CREATED).json({ success: true, invoice: serializeInvoice(invoice!.toObject()) });
 };
@@ -364,7 +440,7 @@ export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
         throw new BadRequestError("This client has no billing email on file — add one before sending.");
     }
 
-    const company = await Company.findById(companyId).lean();
+    const company = await Company.findById(companyId).select("name phone").lean();
     const companyName = company?.name ?? "work.wrk";
 
     const addr = invoice.clientSnapshot?.address;
@@ -375,12 +451,22 @@ export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
     const doc = generateInvoicePdf({
         invoiceNumber: invoice.invoiceNumber,
         companyName,
+        companyPhone: company?.phone || undefined,
         clientName: invoice.clientSnapshot?.name ?? "",
         clientAddress: clientAddress || undefined,
+        clientVatNumber: invoice.clientSnapshot?.vatNumber || undefined,
         issueDate: invoice.issueDate,
         dueDate: invoice.dueDate,
+        servicePeriod: invoice.servicePeriod?.start && invoice.servicePeriod?.end ? invoice.servicePeriod : undefined,
+        purchaseOrderNumber: invoice.purchaseOrderNumber || undefined,
         lineItems: invoice.lineItems.map(li => ({
             description: li.description,
+            type: (li.type ?? "hourly") as "hourly" | "fixed" | "adjustment",
+            date: li.date,
+            startTime: li.startTime,
+            endTime: li.endTime,
+            location: li.location,
+            workerName: li.workerName,
             hours: Number(((li.minutes ?? 0) / 60).toFixed(2)),
             rate: li.rate,
             amount: li.amount,
@@ -481,6 +567,67 @@ export const getEligibleWorkHandler: MiddlewareFn = async (req, res) => {
     res.status(StatusCodes.OK).json({ success: true, ...result });
 };
 
+const billingInfoQuerySchema = z
+    .object({ client: z.string().refine(v => mongoose.Types.ObjectId.isValid(v), "Invalid client id.") })
+    .strict();
+
+// GET /invoices/billing-info?client=<id> — powers the "billing schedule"
+// panel on the create-invoice page: the client's cadence, the currently
+// open period for it (null for per_job/manual clients), and the period the
+// last real invoice covered, so a manager can see at a glance whether
+// they'd be generating early or catching up.
+export const getClientBillingInfoHandler: MiddlewareFn = async (req, res) => {
+    const { client: clientId } = parseOrThrow(billingInfoQuerySchema, req.query);
+    const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
+
+    const client = await Client.findOne({ _id: clientId, company: companyId, isDeleted: false })
+        .select("billingFrequency billingDayOfWeek billingDayOfMonth paymentTermsDays")
+        .lean();
+    if (!client) throw new NotFoundError("Client not found.");
+
+    const currentPeriod = computeCurrentBillingPeriod(
+        client.billingFrequency,
+        client.billingDayOfWeek,
+        client.billingDayOfMonth
+    );
+
+    const lastInvoice = await Invoice.findOne({
+        company: companyId,
+        client: client._id,
+        isDeleted: false,
+        status: { $ne: "cancelled" },
+        "servicePeriod.start": { $exists: true },
+    })
+        .sort({ issueDate: -1 })
+        .select("invoiceNumber issueDate servicePeriod")
+        .lean();
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        billingFrequency: client.billingFrequency,
+        billingDayOfWeek: client.billingDayOfWeek,
+        billingDayOfMonth: client.billingDayOfMonth,
+        paymentTermsDays: client.paymentTermsDays,
+        currentPeriod,
+        lastInvoice: lastInvoice
+            ? {
+                  invoiceNumber: lastInvoice.invoiceNumber,
+                  issueDate: lastInvoice.issueDate,
+                  servicePeriod: lastInvoice.servicePeriod,
+              }
+            : null,
+    });
+};
+
+const adjustmentInputSchema = z.object({
+    description: z.string().trim().min(1, "Adjustment description is required").max(200),
+    // "discount" just means the amount is subtracted rather than added —
+    // the sign lives on the stored amount either way, this only decides
+    // which direction to apply the number the manager typed.
+    type: z.enum(["charge", "discount"]).default("charge"),
+    amount: z.number().positive("Adjustment amount must be greater than 0"),
+});
+
 const createDraftSchema = z
     .object({
         client: z.string().refine(v => mongoose.Types.ObjectId.isValid(v), "Invalid client id."),
@@ -490,6 +637,7 @@ const createDraftSchema = z
         }),
         jobIds: z.array(z.string()).optional(),
         assignmentIds: z.array(z.string()).optional(),
+        adjustments: z.array(adjustmentInputSchema).optional(),
         issueDate: z.string().optional(),
         dueDate: z.string().optional(),
         notes: z.string().optional(),
@@ -520,23 +668,47 @@ export const createInvoiceDraft: MiddlewareFn = async (req, res) => {
         assignmentIds: data.assignmentIds,
     });
 
-    const lineItems = resolved.items.map(item => ({
-        description: item.assignmentId
-            ? `${item.title} — ${item.workerName ?? "Worker"} (${dayjs(item.date).format("D MMM")})`
-            : `${item.title} (${dayjs(item.date).format("D MMM")})`,
+    const workLineItems = resolved.items.map(item => ({
+        description: item.title,
         type: item.chargeType,
         job: item.jobId,
         assignment: item.assignmentId ?? null,
+        date: item.date,
+        startTime: item.startTime,
+        endTime: item.endTime,
+        location: item.location,
+        workerName: item.workerName ?? null,
         minutes: item.approvedMinutes ?? 0,
         quantity: item.quantity,
         rate: item.rate,
         amount: item.amount,
     }));
 
+    const adjustmentLineItems = (data.adjustments ?? []).map(adj => {
+        const signedAmount = round2(adj.type === "discount" ? -Math.abs(adj.amount) : Math.abs(adj.amount));
+        return {
+            description: adj.description,
+            type: "adjustment" as const,
+            job: null,
+            assignment: null,
+            quantity: 1,
+            rate: signedAmount,
+            amount: signedAmount,
+        };
+    });
+
+    const lineItems = [...workLineItems, ...adjustmentLineItems];
+
     const subtotal = round2(lineItems.reduce((sum, li) => sum + li.amount, 0));
+    if (subtotal < 0) {
+        throw new BadRequestError("Adjustments can't bring the invoice below £0 — reduce the discount amount.");
+    }
     const vatRate = data.vatRate ?? 0;
     const vatAmount = calculateVat(subtotal, vatRate);
     const total = round2(subtotal + vatAmount);
+    if (total < 0) {
+        throw new BadRequestError("Adjustments can't bring the invoice below £0 — reduce the discount amount.");
+    }
 
     const issueDate = data.issueDate ? new Date(data.issueDate) : new Date();
     const dueDate = data.dueDate

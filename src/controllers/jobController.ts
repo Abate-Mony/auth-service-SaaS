@@ -431,8 +431,10 @@ export const getAllJobs: MiddlewareFn = async (
         sort = "newest",
         page = "1", limit: limitQuery = "100",
         client,
-        unassigned
-    } = req.query;
+        unassigned,
+        start,
+        end,
+    } = req.query as Record<string, string | undefined>;
     const limit = Number(limitQuery) || 10;
 
     const query: Record<string, unknown> = {
@@ -440,6 +442,21 @@ export const getAllJobs: MiddlewareFn = async (
         // createdBy: req.user.user_id
         company: req.user.company_id
     };
+
+    // job.date is always normalised to UTC midnight (toUtcDay), so plain
+    // $gte/$lte bounds are exact — same pattern as workerController.ts's
+    // getMyJobs. Inclusive on both ends: "end" is a whole calendar day.
+    if (start || end) {
+        const dateFilter: Record<string, Date> = {};
+        try {
+            console.log("this is the start and end date : ", start, end)
+            if (start) dateFilter.$gte = toUtcDay(start);
+            if (end) dateFilter.$lte = toUtcDay(end);
+        } catch {
+            throw new BadRequestError("Invalid start or end date");
+        }
+        query.date = dateFilter;
+    }
     if (unassigned && unassigned !== "false") {
         // Jobs with zero active assignments — exclude any job id that has
         // at least one non-deleted JobAssignment linked to it.

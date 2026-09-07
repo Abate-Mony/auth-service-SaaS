@@ -36,6 +36,17 @@ const InvoiceLineItemSchema = new Schema(
       default: null,
     },
 
+    // ── Shift snapshot (job/assignment-sourced lines only) ──────────────
+    // Historical display data — date/time/location as they were at
+    // invoice creation, not looked up from the live Job later. Absent on
+    // adjustment lines, and on legacy line items created before this
+    // existed (those fall back to a generic "other charges" rendering).
+    date: { type: Date, default: null },
+    startTime: { type: String, default: null },
+    endTime: { type: String, default: null },
+    location: { type: String, trim: true, default: null },
+    workerName: { type: String, trim: true, default: null },
+
     // For hourly billing
     minutes: {
       type: Number,
@@ -53,16 +64,18 @@ const InvoiceLineItemSchema = new Schema(
     // Store in pounds for now.
     // If you want stricter money handling later,
     // migrate to integer pence.
+    //
+    // No min:0 here — a discount adjustment is a legitimate negative
+    // amount (e.g. "Goodwill discount -£30.00"), and rate mirrors amount
+    // for adjustment lines.
     rate: {
       type: Number,
       required: true,
-      min: 0,
     },
 
     amount: {
       type: Number,
       required: true,
-      min: 0,
     },
   },
   {

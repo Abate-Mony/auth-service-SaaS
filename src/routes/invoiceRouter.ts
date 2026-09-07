@@ -5,6 +5,7 @@ import {
     createInvoiceDraft,
     deleteInvoice,
     getAllInvoices,
+    getClientBillingInfoHandler,
     getEligibleWorkHandler,
     getInvoice,
     markInvoicePaid,
@@ -21,6 +22,7 @@ const router = Router();
 // Registered before the generic "/:id" GET below — otherwise Express would
 // match "/eligible-work" against ":id" and call getInvoice instead.
 router.get("/eligible-work", authorizePermissions("admin", "manager"), getEligibleWorkHandler);
+router.get("/billing-info", authorizePermissions("admin", "manager"), getClientBillingInfoHandler);
 router.post("/draft", authorizePermissions("admin", "manager"), createInvoiceDraft);
 
 router

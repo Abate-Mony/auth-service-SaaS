@@ -26,6 +26,7 @@ export interface EligibleWorkItem {
   date: Date;
   startTime: string;
   endTime: string;
+  location: string;
   chargeType: "hourly" | "fixed";
   workerName?: string;
   approvedMinutes?: number;
@@ -34,12 +35,26 @@ export interface EligibleWorkItem {
   amount: number;
 }
 
+// A completed shift that isn't billable yet — its overtime hasn't been
+// reviewed, so there's no safe "approved" figure to bill. Surfaced
+// separately so a manager can see why a job they expect isn't in the list,
+// rather than it just silently missing.
+export interface PendingReviewItem {
+  jobId: string;
+  assignmentId: string;
+  title: string;
+  date: Date;
+  workerName: string;
+  reason: "overtime_pending";
+}
+
 interface LeanJobForBilling {
   _id: mongoose.Types.ObjectId;
   title: string;
   date: Date;
   startTime: string;
   endTime: string;
+  location: string;
   status: string;
   chargeType: "hourly" | "fixed";
   chargeRate: number;
@@ -57,6 +72,7 @@ interface LeanAssignmentForBilling {
   checkedOutAt?: Date | null;
   breaks?: { startedAt?: Date | null; endedAt?: Date | null }[];
   billingStatus: string;
+  overtimeStatus?: string;
 }
 
 const workedMinutesOf = (a: LeanAssignmentForBilling): number => {
@@ -80,6 +96,7 @@ interface RawEligibleSources {
   client: InstanceType<typeof Client>;
   fixedJobs: LeanJobForBilling[];
   hourlyAssignments: { assignment: LeanAssignmentForBilling; job: LeanJobForBilling }[];
+  pendingReviewAssignments: { assignment: LeanAssignmentForBilling; job: LeanJobForBilling }[];
 }
 
 /**
@@ -111,7 +128,7 @@ const queryEligibleSources = async (
     status: { $ne: "draft" },
     date: { $gte: start, $lte: end },
   })
-    .select("title date startTime endTime status chargeType chargeRate chargeAmount billingStatus")
+    .select("title date startTime endTime location status chargeType chargeRate chargeAmount billingStatus")
     .lean<LeanJobForBilling[]>();
 
   const jobIds = jobs.map(j => j._id);
@@ -119,7 +136,7 @@ const queryEligibleSources = async (
 
   const assignments = jobIds.length
     ? await JobAssignment.find({ job: { $in: jobIds }, isDeleted: false, status: "completed" })
-        .select("job fullname status approvedMinutes checkedInAt checkedOutAt breaks billingStatus")
+        .select("job fullname status approvedMinutes checkedInAt checkedOutAt breaks billingStatus overtimeStatus")
         .lean<LeanAssignmentForBilling[]>()
     : [];
   const assignmentIds = assignments.map(a => a._id);
@@ -150,12 +167,20 @@ const queryEligibleSources = async (
       !invoicedJobIds.has(j._id.toString())
   );
 
-  const hourlyAssignments = assignments
+  const notYetInvoiced = assignments
     .filter(a => a.billingStatus !== "invoiced" && !invoicedAssignmentIds.has(a._id.toString()))
     .map(a => ({ assignment: a, job: jobById.get(a.job.toString()) }))
     .filter((x): x is { assignment: LeanAssignmentForBilling; job: LeanJobForBilling } => !!x.job && x.job.chargeType === "hourly");
 
-  return { client, fixedJobs, hourlyAssignments };
+  // Overtime still awaiting manager review has no safe "approved" figure to
+  // bill yet — held out of the billable list entirely (not just capped)
+  // until it's resolved, so a manager can't accidentally invoice ahead of
+  // the review. Surfaced separately (see pendingReviewAssignments) instead
+  // of just disappearing.
+  const hourlyAssignments = notYetInvoiced.filter(x => x.assignment.overtimeStatus !== "pending");
+  const pendingReviewAssignments = notYetInvoiced.filter(x => x.assignment.overtimeStatus === "pending");
+
+  return { client, fixedJobs, hourlyAssignments, pendingReviewAssignments };
 };
 
 const toItem = (source: RawEligibleSources): EligibleWorkItem[] => {
@@ -168,6 +193,7 @@ const toItem = (source: RawEligibleSources): EligibleWorkItem[] => {
       date: job.date,
       startTime: job.startTime,
       endTime: job.endTime,
+      location: job.location,
       chargeType: "fixed",
       quantity: 1,
       rate: job.chargeAmount,
@@ -184,6 +210,7 @@ const toItem = (source: RawEligibleSources): EligibleWorkItem[] => {
       date: job.date,
       startTime: job.startTime,
       endTime: job.endTime,
+      location: job.location,
       chargeType: "hourly",
       workerName: assignment.fullname,
       approvedMinutes: minutes,
@@ -201,6 +228,15 @@ export const getEligibleWork = async (companyId: string, clientId: string, start
   const source = await queryEligibleSources(companyId, clientId, start, end);
   const items = toItem(source);
 
+  const pendingReview: PendingReviewItem[] = source.pendingReviewAssignments.map(({ assignment, job }) => ({
+    jobId: job._id.toString(),
+    assignmentId: assignment._id.toString(),
+    title: job.title,
+    date: job.date,
+    workerName: assignment.fullname,
+    reason: "overtime_pending",
+  }));
+
   const jobIds = new Set(items.map(i => i.jobId));
   const assignmentIds = items.filter(i => i.assignmentId).map(i => i.assignmentId as string);
   const totalMinutes = items.reduce((sum, i) => sum + (i.approvedMinutes ?? 0), 0);
@@ -217,6 +253,7 @@ export const getEligibleWork = async (companyId: string, clientId: string, start
     },
     period: { start, end },
     items,
+    pendingReview,
     summary: {
       jobs: jobIds.size,
       assignments: assignmentIds.length,
@@ -264,7 +301,7 @@ export const resolveSelectedWork = async (
     );
   }
 
-  const items = toItem({ client: source.client, fixedJobs: selectedFixedJobs, hourlyAssignments: selectedHourly });
+  const items = toItem({ client: source.client, fixedJobs: selectedFixedJobs, hourlyAssignments: selectedHourly, pendingReviewAssignments: [] });
 
   return {
     client: source.client,
