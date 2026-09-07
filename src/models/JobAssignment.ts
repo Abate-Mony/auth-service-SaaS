@@ -42,11 +42,13 @@ const JobAssignmentSchema = new Schema(
 
     // ── Overtime / late clock-out review ──────────────────────────────
     // actualMinutes: raw checkedIn→checkedOut time, minus breaks — what
-    // really happened, for the record.
-    // approvedMinutes: what payroll should actually pay for. Equals
-    // actualMinutes unless the shift ran significantly past its scheduled
-    // end, in which case it's capped at the scheduled amount until a
-    // manager reviews and approves/adjusts the extra time.
+    // really happened, for the record. Never capped by the job's scheduled
+    // duration (job.minutes is the schedule, not a ceiling on reality).
+    // approvedMinutes: what payroll should actually pay for. Set to
+    // actualMinutes at clock-out, whether or not the shift ran long —
+    // overtimeStatus "pending" only flags it for a manager's attention.
+    // Only that manager's own decision (reviewAssignmentOvertime's "reject"
+    // or "adjust") should ever move this below actualMinutes.
     actualMinutes: { type: Number, default: null },
     approvedMinutes: { type: Number, default: null },
     overtimeMinutes: { type: Number, default: 0 },

@@ -26,8 +26,10 @@ router.route("/:id/status")
 router.route("/:id/break/start").patch(authorizePermissions("worker"), startWorkerBreak);
 router.route("/:id/break/end").patch(authorizePermissions("worker"), endWorkerBreak);
 router.route("/:id").get(authorizePermissions("worker"), getJob)
-router.route("/push-subscription").post(authorizePermissions("worker"), savePushSubscription);
-router.route("/expo-push-token").post(authorizePermissions("worker"), saveExpoPushToken);
+// Managers/admins need these too — they're the ones who actually get the
+// overtime-review, auto-close and job-completed push notifications.
+router.route("/push-subscription").post(authorizePermissions("worker", "admin", "manager"), savePushSubscription);
+router.route("/expo-push-token").post(authorizePermissions("worker", "admin", "manager"), saveExpoPushToken);
 router.route("/assignments/:assignmentId/overtime")
     .patch(authorizePermissions("admin", "manager"), reviewAssignmentOvertime);
 router.route("/assignments/:assignmentId/claim-review")

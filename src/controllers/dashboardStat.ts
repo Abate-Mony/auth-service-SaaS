@@ -81,6 +81,8 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
     recentActivityJobs,
     unstaffedJob,
     companySettings,
+    pendingOvertimeCount,
+    pendingOvertimeAssignments,
   ] = await Promise.all([
     jobModel.countDocuments({ company: companyIdStr, date: { $gte: todayStart, $lte: todayEnd } }),
 
@@ -148,6 +150,26 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
     }),
 
     Company.findById(companyId).select("weeklyHoursTarget").lean(),
+
+    // Company-wide overtime review queue — every worker who clocked out past
+    // the review threshold, regardless of which job they were on or whether
+    // that job has since auto-completed (overtimeStatus is independent of
+    // job.status, see maybeCompleteJob).
+    JobAssignment.countDocuments({
+      company: companyId,
+      isDeleted: false,
+      overtimeStatus: "pending",
+    }),
+
+    JobAssignment.find({
+      company: companyId,
+      isDeleted: false,
+      overtimeStatus: "pending",
+    })
+      .populate("worker", "fullname")
+      .populate("job", "title")
+      .sort({ checkedOutAt: -1 })
+      .limit(5),
   ]);
 
   // ActivityLog has no company field of its own — scoped here through the
@@ -214,5 +236,15 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
     todaysJobs: todaysJobsList,
     recentActivity,
     attentionNeeded: unstaffedJob ? { jobId: unstaffedJob._id, title: unstaffedJob.title } : null,
+    pendingOvertime: {
+      count: pendingOvertimeCount,
+      items: pendingOvertimeAssignments.map((a: any) => ({
+        assignmentId: a._id,
+        jobId: a.job?._id,
+        jobTitle: a.job?.title,
+        workerName: a.worker?.fullname,
+        overtimeMinutes: a.overtimeMinutes,
+      })),
+    },
   });
 };

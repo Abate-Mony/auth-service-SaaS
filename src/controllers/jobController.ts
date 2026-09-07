@@ -428,7 +428,10 @@ export const getAllJobs: MiddlewareFn = async (
         search,
         status,
         priority,
-        sort = "newest",
+        // Matches the Jobs page Select's own default display ("Sort: Date
+        // ↓") — without this the two would silently disagree until the
+        // manager actually touched the control.
+        sort = "date_desc",
         page = "1", limit: limitQuery = "100",
         client,
         unassigned,
@@ -484,21 +487,54 @@ export const getAllJobs: MiddlewareFn = async (
         query.priority = priority;
     }
 
-    const sortOptions: Record<string, string> = {
+    // Plain string fields Mongo can sort natively. date_desc/date_asc sort by
+    // the job's actual shift date — more useful for a jobs list than
+    // createdAt, which newest/oldest (kept for back-compat) still use.
+    const NATIVE_SORTS: Record<string, string> = {
         newest: "-createdAt",
         oldest: "createdAt",
         a_z: "title",
         z_a: "-title",
+        date_desc: "-date",
+        date_asc: "date",
+        title_asc: "title",
+    };
+
+    // priority/status are enums with a meaningful order that isn't
+    // alphabetical (Mongo would put "high" before "low" before "medium"
+    // before "urgent" — not what "sort by priority" means). Ranked and
+    // sorted in memory instead of natively.
+    const RANK_SORTS: Record<string, { field: "priority" | "status"; order: Record<string, number>; direction: 1 | -1 }> = {
+        priority_desc: { field: "priority", order: { low: 0, medium: 1, high: 2, urgent: 3 }, direction: -1 },
+        status_asc: { field: "status", order: { draft: 0, published: 1, completed: 2, cancelled: 3 }, direction: 1 },
     };
 
     const currentPage = Number(page);
     const skip = (currentPage - 1) * limit;
+    const rankSort = sort ? RANK_SORTS[sort] : undefined;
 
-    let jobs = await Job.find(query)
-        .populate("client", "name")
-        .sort(sortOptions[sort as string] ?? "-createdAt")
-        .skip(skip)
-        .limit(limit);
+    let jobs: InstanceType<typeof Job>[];
+    let totalJobs: number;
+
+    if (rankSort) {
+        // Fine at this app's scale (one company's jobs) — revisit with an
+        // aggregation $addFields rank if that ever stops being true.
+        const allMatching = await Job.find(query).populate("client", "name");
+        allMatching.sort((a: any, b: any) => {
+            const ra = rankSort.order[a[rankSort.field]] ?? -1;
+            const rb = rankSort.order[b[rankSort.field]] ?? -1;
+            return (ra - rb) * rankSort.direction;
+        });
+        totalJobs = allMatching.length;
+        jobs = allMatching.slice(skip, skip + limit);
+    } else {
+        jobs = await Job.find(query)
+            .populate("client", "name")
+            .sort(NATIVE_SORTS[sort ?? "newest"] ?? "-createdAt")
+            .skip(skip)
+            .limit(limit);
+        totalJobs = await Job.countDocuments(query);
+    }
 
     const assignments = await JobAssignment.find({
         job: {
@@ -533,7 +569,6 @@ export const getAllJobs: MiddlewareFn = async (
     }));
     // console.log("this is the result : ", result.map(r => r.workers))
     console.log("jobs", result)
-    const totalJobs = await Job.countDocuments(query);
     res.status(StatusCodes.OK).json({
         success: true,
         jobs: result,

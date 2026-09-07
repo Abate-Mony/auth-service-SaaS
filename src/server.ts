@@ -40,6 +40,7 @@ import notificationPreferenceRouter
   import userRestrictionRouter from "./routes/userRestrictionRouter.js";
   import analyticsRouter from "./routes/analyticsRouter.js";
   import reportRouter from "./routes/reportRouter.js";
+  import notificationRouter from "./routes/notificationRouter.js";
 const app = express();
 // crossOriginResourcePolicy defaults to "same-origin", which would block the
 // frontend (a different subdomain) from loading anything under /public —
@@ -131,6 +132,7 @@ app.use("/api/v1/invoices", authenticateUser, loadRestriction, invoiceRouter)
 app.use("/api/v1/restrictions", userRestrictionRouter)
 app.use("/api/v1/analytics", authenticateUser, loadRestriction, analyticsRouter)
 app.use("/api/v1/reports", authenticateUser, loadRestriction, reportRouter)
+app.use("/api/v1/notifications", authenticateUser, loadRestriction, notificationRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });

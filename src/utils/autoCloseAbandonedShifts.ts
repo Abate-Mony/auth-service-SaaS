@@ -2,9 +2,10 @@
 // "in-progress" forever, and every minute it stays open is unbilled risk for
 // the company. This runs on the same per-minute cron as the shift reminder:
 // once a shift has been running for company.autoClockOutAfterHours past its
-// scheduled end with no clock-out, force-close it — but cap the pay-affecting
-// approvedMinutes at the scheduled amount and flag it "pending" so a manager
-// has to actively approve the extra time before payroll ever sees it.
+// scheduled end with no clock-out, force-close it — approvedMinutes is set
+// to the real worked time (job.minutes is the schedule, never a cap on what
+// actually happened), and it's flagged "pending" so a manager has to
+// actively review it; only their own decision should ever reduce it.
 import Company from "../models/company.js";
 import Job from "../models/jobModel.js";
 import JobAssignment from "../models/JobAssignment.js";
@@ -16,12 +17,14 @@ import { sendExpoPushToUser } from "./expoPush.js";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { logActivity } from "./logActivity.js";
 import { maybeCompleteJob } from "./maybeCompleteJob.js";
+import { notifyUser } from "./notifyUser.js";
 
 let running = false;
 
 async function notifyManagerOfAutoClose(
   managerId: string,
   managerEmail: string,
+  companyId: unknown,
   workerFullname: string,
   job: { _id: string; title: string; date: Date | string; startTime: string; endTime: string },
   overtimeMinutes: number
@@ -30,6 +33,9 @@ async function notifyManagerOfAutoClose(
     shouldNotify(managerId, "worker_checked_out", "email"),
     shouldNotify(managerId, "worker_checked_out", "push"),
   ]);
+
+  const title = "Shift auto clocked-out";
+  const body = `${workerFullname} never clocked out of ${job.title} — auto-closed and needs review`;
 
   await Promise.all([
     canEmail
@@ -43,20 +49,28 @@ async function notifyManagerOfAutoClose(
       : Promise.resolve(),
     canPush
       ? sendPushToUser(managerId, {
-        title: "Shift auto clocked-out",
-        body: `${workerFullname} never clocked out of ${job.title} — auto-closed and needs review`,
+        title,
+        body,
         tag: `assignment-auto-closed-${job._id}`,
         url: `/jobs/${job._id}`,
       })
       : Promise.resolve(),
     canPush
       ? sendExpoPushToUser(managerId, {
-        title: "Shift auto clocked-out",
-        body: `${workerFullname} never clocked out of ${job.title} — auto-closed and needs review`,
+        title,
+        body,
         tag: `assignment-auto-closed-${job._id}`,
         url: `/jobs/${job._id}`,
       })
       : Promise.resolve(),
+    notifyUser({
+      userId: managerId,
+      companyId,
+      event: "worker_checked_out",
+      title,
+      body,
+      link: `/jobs/${job._id}`,
+    }),
   ]);
 }
 
@@ -119,9 +133,11 @@ export async function autoCloseAbandonedShifts() {
         assignment.autoCompleted = true;
         assignment.actualMinutes = workedMinutes;
         assignment.overtimeMinutes = overtimeMinutes;
-        // Nobody confirmed any of this time — cap what payroll sees at the
-        // scheduled amount and let a manager review the rest.
-        assignment.approvedMinutes = Math.max(0, workedMinutes - overtimeMinutes);
+        // Nobody confirmed any of this time, hence "pending" below — but the
+        // saved figure is still the real clocked duration, not a guess
+        // capped at the schedule. A manager reviewing it can reduce it via
+        // reviewAssignmentOvertime if they decide not to pay for it.
+        assignment.approvedMinutes = workedMinutes;
         assignment.overtimeStatus = "pending";
         assignment.clockOutReason = "auto_closed";
 
@@ -147,6 +163,7 @@ export async function autoCloseAbandonedShifts() {
           await notifyManagerOfAutoClose(
             manager._id.toString(),
             manager.email,
+            assignment.company,
             worker.fullname,
             {
               _id: job._id.toString(),

@@ -12,9 +12,36 @@
 // accepted/in-progress stays published.
 import Job from "../models/jobModel.js";
 import JobAssignment from "../models/JobAssignment.js";
+import userModel from "../models/userModel.js";
 import { logActivity } from "./logActivity.js";
+import { shouldNotify } from "../services/notificationPreferenceService.js";
+import { sendPushToUser } from "./webPush.js";
+import { sendExpoPushToUser } from "./expoPush.js";
+import { notifyUser } from "./notifyUser.js";
 
 const TERMINAL_ASSIGNMENT_STATUSES = ["completed", "declined", "cancelled"];
+
+async function notifyManagerJobCompleted(job: { _id: unknown; title: string; createdBy: unknown; company: unknown }) {
+  const manager = await userModel.findOne({ _id: job.createdBy as string }).select("email");
+  if (!manager) return;
+
+  const managerId = manager._id.toString();
+  const canPush = await shouldNotify(managerId, "job_completed", "push");
+
+  const title = "Job completed";
+  const body = `${job.title} is finished — every assigned worker has clocked out.`;
+  const link = `/jobs/${job._id}`;
+
+  await Promise.all([
+    canPush
+      ? sendPushToUser(managerId, { title, body, tag: `job-completed-${job._id}`, url: link })
+      : Promise.resolve(),
+    canPush
+      ? sendExpoPushToUser(managerId, { title, body, tag: `job-completed-${job._id}`, url: link })
+      : Promise.resolve(),
+    notifyUser({ userId: managerId, companyId: job.company, event: "job_completed", title, body, link }),
+  ]);
+}
 
 /**
  * Call this right after any assignment on a job reaches a terminal status —
@@ -24,7 +51,7 @@ const TERMINAL_ASSIGNMENT_STATUSES = ["completed", "declined", "cancelled"];
  * actually ready.
  */
 export async function maybeCompleteJob(jobId: unknown): Promise<void> {
-  const job = await Job.findOne({ _id: jobId as string, isDeleted: false, isTemplate: false }).select("status");
+  const job = await Job.findOne({ _id: jobId as string, isDeleted: false, isTemplate: false }).select("status title createdBy company");
   if (!job || job.status !== "published") return;
 
   const assignments = await JobAssignment.find({ job: jobId as string, isDeleted: false }).select("status");
@@ -46,4 +73,12 @@ export async function maybeCompleteJob(jobId: unknown): Promise<void> {
     changes: [{ field: "status", from: "published", to: "completed" }],
     metadata: { reason: "all assigned workers finished" },
   });
+
+  // Every assigned worker has now finished (whether or not any of them got
+  // individually flagged for overtime review) — the manager should hear
+  // about the job itself wrapping up, not just infer it from separate
+  // per-worker notifications.
+  await notifyManagerJobCompleted({ _id: job._id, title: job.title, createdBy: job.createdBy, company: job.company }).catch(err =>
+    console.error(`Failed to notify manager of job completion for job ${job._id}:`, err)
+  );
 }

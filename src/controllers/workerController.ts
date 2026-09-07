@@ -22,6 +22,7 @@ import { sanitizeUser } from "../utils/tokenUtils.js";
 import { buildRestrictionResponse } from "../middleware/restrictionMiddleware.js";
 import { RestrictableAction } from "../models/userRestrictionModel.js";
 import { maybeCompleteJob } from "../utils/maybeCompleteJob.js";
+import { notifyUser } from "../utils/notifyUser.js";
 
 // Which restriction the worker-status route enforces depends on the status
 // being requested, not the route itself — "declined" has no restrictable
@@ -91,30 +92,30 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
         }
     }
 
- const lookupJob: mongoose.PipelineStage.Lookup = {
-    $lookup: {
-        from: "jobs",
-        let: { jobId: "$job" },
-        pipeline: [
-            {
-                $match: {
-                    $expr: {
-                        $eq: ["$_id", "$$jobId"]
-                    },
+    const lookupJob: mongoose.PipelineStage.Lookup = {
+        $lookup: {
+            from: "jobs",
+            let: { jobId: "$job" },
+            pipeline: [
+                {
+                    $match: {
+                        $expr: {
+                            $eq: ["$_id", "$$jobId"]
+                        },
 
-                    isDeleted: false,
+                        isDeleted: false,
 
-                    // Draft jobs are internal to managers/admins.
-                    // Workers should not see them until published.
-                    status: {
-                        $ne: "draft"
+                        // Draft jobs are internal to managers/admins.
+                        // Workers should not see them until published.
+                        status: {
+                            $ne: "draft"
+                        }
                     }
-                }
-            },
-        ],
-        as: "job",
-    },
-};
+                },
+            ],
+            as: "job",
+        },
+    };
     const unwindJob: mongoose.PipelineStage.Unwind = { $unwind: "$job" };
     const projectRow: mongoose.PipelineStage.Project = {
         $project: {
@@ -225,143 +226,143 @@ const ASSIGNMENT_STATUSES = ["pending", "accepted", "declined", "in-progress", "
 // completed work (all-time), and earnings for the current calendar month.
 // Add more facets here as new stats are needed.
 export const getWorkerDashboardStats: MiddlewareFn = async (req, res) => {
-  const workerId = new mongoose.Types.ObjectId(req.user.user_id);
+    const workerId = new mongoose.Types.ObjectId(req.user.user_id);
 
-  const monthStart = dayjs().startOf("month").toDate();
-  const monthEnd = dayjs().endOf("month").toDate();
+    const monthStart = dayjs().startOf("month").toDate();
+    const monthEnd = dayjs().endOf("month").toDate();
 
-  const [result] = await JobAssignment.aggregate([
-    {
-      $match: {
-        worker: workerId,
-        isDeleted: false,
-      },
-    },
-
-    {
-      $facet: {
-        statusCounts: [
-          {
-            $group: {
-              _id: "$status",
-              count: { $sum: 1 },
-            },
-          },
-        ],
-
-        monthlyStats: [
-          {
+    const [result] = await JobAssignment.aggregate([
+        {
             $match: {
-              status: "completed",
-              completedAt: {
-                $gte: monthStart,
-                $lte: monthEnd,
-              },
+                worker: workerId,
+                isDeleted: false,
             },
-          },
+        },
 
-          {
-            $addFields: {
-              payableMinutes: {
-                $ifNull: [
-                  "$approvedMinutes",
-                  {
-                    $ifNull: [
-                      "$actualMinutes",
-                      0,
-                    ],
-                  },
-                ],
-              },
-            },
-          },
-
-          {
-            $group: {
-              _id: null,
-
-              completedJobs: {
-                $sum: 1,
-              },
-
-              totalMinutes: {
-                $sum: "$payableMinutes",
-              },
-
-              averagePayRate: {
-                $avg: "$payRate",
-              },
-
-              totalEarnings: {
-                $sum: {
-                  $multiply: [
+        {
+            $facet: {
+                statusCounts: [
                     {
-                      $divide: [
-                        "$payableMinutes",
-                        60,
-                      ],
+                        $group: {
+                            _id: "$status",
+                            count: { $sum: 1 },
+                        },
                     },
-                    "$payRate",
-                  ],
-                },
-              },
+                ],
+
+                monthlyStats: [
+                    {
+                        $match: {
+                            status: "completed",
+                            completedAt: {
+                                $gte: monthStart,
+                                $lte: monthEnd,
+                            },
+                        },
+                    },
+
+                    {
+                        $addFields: {
+                            payableMinutes: {
+                                $ifNull: [
+                                    "$approvedMinutes",
+                                    {
+                                        $ifNull: [
+                                            "$actualMinutes",
+                                            0,
+                                        ],
+                                    },
+                                ],
+                            },
+                        },
+                    },
+
+                    {
+                        $group: {
+                            _id: null,
+
+                            completedJobs: {
+                                $sum: 1,
+                            },
+
+                            totalMinutes: {
+                                $sum: "$payableMinutes",
+                            },
+
+                            averagePayRate: {
+                                $avg: "$payRate",
+                            },
+
+                            totalEarnings: {
+                                $sum: {
+                                    $multiply: [
+                                        {
+                                            $divide: [
+                                                "$payableMinutes",
+                                                60,
+                                            ],
+                                        },
+                                        "$payRate",
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                ],
             },
-          },
-        ],
-      },
-    },
-  ]);
+        },
+    ]);
 
-  const jobStats = Object.fromEntries(
-    ASSIGNMENT_STATUSES.map((status) => [
-      status,
-      0,
-    ])
-  ) as Record<
-    typeof ASSIGNMENT_STATUSES[number],
-    number
-  >;
+    const jobStats = Object.fromEntries(
+        ASSIGNMENT_STATUSES.map((status) => [
+            status,
+            0,
+        ])
+    ) as Record<
+        typeof ASSIGNMENT_STATUSES[number],
+        number
+    >;
 
-  for (const row of result.statusCounts) {
-    jobStats[
-      row._id as typeof ASSIGNMENT_STATUSES[number]
-    ] = row.count;
-  }
+    for (const row of result.statusCounts) {
+        jobStats[
+            row._id as typeof ASSIGNMENT_STATUSES[number]
+        ] = row.count;
+    }
 
-  const monthly = result.monthlyStats[0] ?? {};
+    const monthly = result.monthlyStats[0] ?? {};
 
-  const totalJobs = Object.values(jobStats).reduce(
-    (total, count) => total + count,
-    0
-  );
+    const totalJobs = Object.values(jobStats).reduce(
+        (total, count) => total + count,
+        0
+    );
 
-  res.status(StatusCodes.OK).json({
-    success: true,
+    res.status(StatusCodes.OK).json({
+        success: true,
 
-    jobStats,
+        jobStats,
 
-    monthly: {
-      earnings: Number(
-        (monthly.totalEarnings ?? 0).toFixed(2)
-      ),
+        monthly: {
+            earnings: Number(
+                (monthly.totalEarnings ?? 0).toFixed(2)
+            ),
 
-      totalMinutes:
-        monthly.totalMinutes ?? 0,
+            totalMinutes:
+                monthly.totalMinutes ?? 0,
 
-      hoursWorked: Number(
-        ((monthly.totalMinutes ?? 0) / 60).toFixed(2)
-      ),
+            hoursWorked: Number(
+                ((monthly.totalMinutes ?? 0) / 60).toFixed(2)
+            ),
 
-      completedJobs:
-        monthly.completedJobs ?? 0,
+            completedJobs:
+                monthly.completedJobs ?? 0,
 
-      averagePayRate: Number(
-        (monthly.averagePayRate ?? 0).toFixed(2)
-      ),
-    },
+            averagePayRate: Number(
+                (monthly.averagePayRate ?? 0).toFixed(2)
+            ),
+        },
 
-    totalJobs,
-  });
+        totalJobs,
+    });
 };
 
 export const getJob: MiddlewareFn = async (req, res) => {
@@ -492,6 +493,11 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             shouldNotify(managerId, event, "push"),
         ]);
 
+        const title = event === "job_accepted" ? "Shift accepted" : "Shift declined";
+        const body = event === "job_accepted"
+            ? `${worker!.fullname} accepted ${job!.title} — ${job!.startTime} on ${dayjs(job!.date).tz(tz).format("D MMM")}`
+            : `${worker!.fullname} declined ${job!.title}${reason ? `: ${reason}` : ""}`;
+
         await Promise.all([
             canEmail
                 ? sendWorkerJobStatusEmail({
@@ -504,24 +510,28 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 : Promise.resolve(),
             canPush
                 ? sendPushToUser(managerId, {
-                    title: event === "job_accepted" ? "Shift accepted" : "Shift declined",
-                    body: event === "job_accepted"
-                        ? `${worker!.fullname} accepted ${job!.title} — ${job!.startTime} on ${dayjs(job!.date).tz(tz).format("D MMM")}`
-                        : `${worker!.fullname} declined ${job!.title}${reason ? `: ${reason}` : ""}`,
+                    title,
+                    body,
                     tag: `assignment-status-${assignment!._id}`,
                     url: `/jobs/${job!._id}`,
                 })
                 : Promise.resolve(),
             canPush
                 ? sendExpoPushToUser(managerId, {
-                    title: event === "job_accepted" ? "Shift accepted" : "Shift declined",
-                    body: event === "job_accepted"
-                        ? `${worker!.fullname} accepted ${job!.title} — ${job!.startTime} on ${dayjs(job!.date).tz(tz).format("D MMM")}`
-                        : `${worker!.fullname} declined ${job!.title}${reason ? `: ${reason}` : ""}`,
+                    title,
+                    body,
                     tag: `assignment-status-${assignment!._id}`,
                     url: `/jobs/${job!._id}`,
                 })
                 : Promise.resolve(),
+            notifyUser({
+                userId: managerId,
+                companyId: assignment!.company,
+                event,
+                title,
+                body,
+                link: `/jobs/${job!._id}`,
+            }),
         ]);
     }
 
@@ -539,6 +549,9 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             shouldNotify(managerId, "worker_checked_out", "push"),
         ]);
 
+        const title = "Overtime needs review";
+        const body = `${worker!.fullname} clocked out ${overtimeMinutes}m late on ${job!.title} — extra time needs approval`;
+
         await Promise.all([
             canEmail
                 ? sendWorkerJobStatusEmail({
@@ -551,20 +564,28 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 : Promise.resolve(),
             canPush
                 ? sendPushToUser(managerId, {
-                    title: "Overtime needs review",
-                    body: `${worker!.fullname} clocked out ${overtimeMinutes}m late on ${job!.title} — extra time needs approval`,
+                    title,
+                    body,
                     tag: `assignment-overtime-${assignment!._id}`,
                     url: `/jobs/${job!._id}`,
                 })
                 : Promise.resolve(),
             canPush
                 ? sendExpoPushToUser(managerId, {
-                    title: "Overtime needs review",
-                    body: `${worker!.fullname} clocked out ${overtimeMinutes}m late on ${job!.title} — extra time needs approval`,
+                    title,
+                    body,
                     tag: `assignment-overtime-${assignment!._id}`,
                     url: `/jobs/${job!._id}`,
                 })
                 : Promise.resolve(),
+            notifyUser({
+                userId: managerId,
+                companyId: assignment!.company,
+                event: "worker_checked_out",
+                title,
+                body,
+                link: `/jobs/${job!._id}`,
+            }),
         ]);
     }
 
@@ -805,25 +826,26 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             const workedMinutes = Math.max(0, grossMinutes - breakMinutes);
 
             // ── overtime review ─────────────────────────────────────────
-            // actualMinutes is the record of what really happened.
-            // approvedMinutes is what payroll pays — capped at the scheduled
-            // amount whenever the overrun is big enough to need a manager's
-            // sign-off, so a forgotten clock-out (or a genuinely long shift)
-            // never bills the company automatically.
+            // actualMinutes and approvedMinutes both start out as the real
+            // clocked time — job.minutes is the *schedule*, never a cap on
+            // what actually happened or what gets paid. requiresReview only
+            // flags the assignment for a manager's attention; only that
+            // manager's own decision (reviewAssignmentOvertime's "reject" or
+            // "adjust") should ever reduce approvedMinutes below the real
+            // worked time.
             const rawReason = req.body?.clockOutReason;
             const allowedReasons = ["on_time", "job_took_longer", "manager_asked_to_stay", "other"];
             const clockOutReason = allowedReasons.includes(rawReason) ? rawReason : undefined;
             const clockOutNote = typeof req.body?.clockOutNote === "string" ? req.body.clockOutNote.trim() : "";
 
-            const overtimeThreshold = company?.lateClockOutThresholdMinutes ?? 15;
+            const overtimeThreshold = 0 
+            //  company?.lateClockOutThresholdMinutes ?? 15;
             const overtimeMinutes = Math.max(0, workedMinutes - job.minutes);
             const requiresReview = overtimeMinutes > overtimeThreshold;
 
             assignment.actualMinutes = workedMinutes;
             assignment.overtimeMinutes = overtimeMinutes;
-            assignment.approvedMinutes = requiresReview
-                ? Math.max(0, workedMinutes - overtimeMinutes)
-                : workedMinutes;
+            assignment.approvedMinutes = workedMinutes;
             assignment.overtimeStatus = requiresReview ? "pending" : "none";
             if (clockOutReason) assignment.clockOutReason = clockOutReason as any;
             if (clockOutNote) assignment.clockOutNote = clockOutNote;
@@ -1172,14 +1194,17 @@ async function notifyManagerOfSeriesResponse({
     ]);
 
     const sortedDates = [...jobDates].sort((a, b) => a.getTime() - b.getTime());
-    const title = schedule.templateJob?.title ?? "Recurring shift";
+    const jobTitle = schedule.templateJob?.title ?? "Recurring shift";
+    const notificationTitle = type === "accepted" ? "Shifts accepted" : "Shifts declined";
+    const body = `${worker.fullname} ${type} ${count} shift${count === 1 ? "" : "s"} on ${jobTitle}`;
+    const link = `/jobs/recurring/recurring-job-detail/${recurringJobId}`;
 
     await Promise.all([
         canEmail
             ? sendRecurringSeriesResponse({
                 manager: { email: manager.email },
                 worker: { fullname: worker.fullname },
-                job: { title },
+                job: { title: jobTitle },
                 recurringJobId,
                 type,
                 count,
@@ -1189,20 +1214,28 @@ async function notifyManagerOfSeriesResponse({
             : Promise.resolve(),
         canPush
             ? sendPushToUser(managerId, {
-                title: type === "accepted" ? "Shifts accepted" : "Shifts declined",
-                body: `${worker.fullname} ${type} ${count} shift${count === 1 ? "" : "s"} on ${title}`,
+                title: notificationTitle,
+                body,
                 tag: `recurring-series-${recurringJobId}-${type}`,
-                url: `/jobs/recurring/recurring-job-detail/${recurringJobId}`,
+                url: link,
             })
             : Promise.resolve(),
         canPush
             ? sendExpoPushToUser(managerId, {
-                title: type === "accepted" ? "Shifts accepted" : "Shifts declined",
-                body: `${worker.fullname} ${type} ${count} shift${count === 1 ? "" : "s"} on ${title}`,
+                title: notificationTitle,
+                body,
                 tag: `recurring-series-${recurringJobId}-${type}`,
-                url: `/jobs/recurring/recurring-job-detail/${recurringJobId}`,
+                url: link,
             })
             : Promise.resolve(),
+        notifyUser({
+            userId: managerId,
+            companyId: schedule.company,
+            event,
+            title: notificationTitle,
+            body,
+            link,
+        }),
     ]);
 }
 
