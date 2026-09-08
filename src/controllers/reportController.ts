@@ -7,6 +7,8 @@ import jobModel from "../models/jobModel.js";
 import JobAssignment from "../models/JobAssignment.js";
 import userModel from "../models/userModel.js";
 import Company from "../models/company.js";
+import Invoice from "../models/invoiceModel.js";
+import Client from "../models/clientModel.js";
 import { TZ } from "../utils/dates.js";
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
@@ -349,4 +351,162 @@ export const getReportsPerformance: MiddlewareFn = async (req, res) => {
     .sort((a, b) => b.hours - a.hours);
 
   res.status(StatusCodes.OK).json({ success: true, workers });
+};
+
+type LeanProfitabilityJob = { _id: string; date: Date; client: string | null };
+type LeanInvoice = {
+  _id: string;
+  client: string | null;
+  clientSnapshot?: { name?: string };
+  subtotal?: number;
+  issueDate?: Date;
+  paidAt?: Date | null;
+};
+
+/**
+ * GET /api/v1/reports/profitability?start=&end=&basis=invoiced|collected&clientId=
+ *
+ * Revenue from real invoices, labour cost from real approved worked time —
+ * split by client, not just a company-wide total. Two revenue bases answer
+ * two different questions: "invoiced" is anything billed in the period
+ * (issueDate) regardless of payment — how profitable the work was;
+ * "collected" is cash that actually arrived in the period (paidAt) — how
+ * much money came in. A draft invoice isn't revenue yet; a cancelled one
+ * never was.
+ *
+ * Deliberately stops at gross profit. This app has no visibility into
+ * office rent, insurance, software subscriptions, etc. — it can't honestly
+ * claim to know net profit, so it doesn't call this "net" anything.
+ */
+export const getReportsProfitability: MiddlewareFn = async (req, res) => {
+  const companyId = req.user.company_id.toString();
+  const { start, end } = parseRange(req);
+  const basis = req.query.basis === "collected" ? "collected" : "invoiced";
+  const clientIdFilter =
+    typeof req.query.clientId === "string" && req.query.clientId ? req.query.clientId : undefined;
+
+  const invoiceMatch: Record<string, unknown> = { company: companyId, isDeleted: false };
+  if (clientIdFilter) invoiceMatch.client = clientIdFilter;
+
+  const invoices =
+    basis === "collected"
+      ? await Invoice.find({ ...invoiceMatch, status: "paid", paidAt: { $gte: start, $lte: end } })
+          .select("client clientSnapshot subtotal paidAt")
+          .lean<LeanInvoice[]>()
+      : await Invoice.find({ ...invoiceMatch, status: { $in: ["sent", "paid"] }, issueDate: { $gte: start, $lte: end } })
+          .select("client clientSnapshot subtotal issueDate")
+          .lean<LeanInvoice[]>();
+
+  // Labour cost is tied to when the work happened, not when (or whether)
+  // it's been invoiced — a cost is incurred the moment it's worked.
+  const jobMatch: Record<string, unknown> = {
+    company: companyId,
+    isDeleted: false,
+    isTemplate: false,
+    status: { $ne: "draft" },
+    date: { $gte: start, $lte: end },
+  };
+  if (clientIdFilter) jobMatch.client = clientIdFilter;
+
+  const jobs = await jobModel.find(jobMatch).select("date client").lean<LeanProfitabilityJob[]>();
+  const jobIds = jobs.map(j => j._id);
+  const jobById = new Map(jobs.map(j => [j._id.toString(), j]));
+
+  const assignments = jobIds.length
+    ? await JobAssignment.find({ job: { $in: jobIds }, isDeleted: false, status: "completed" })
+        .select("job approvedMinutes payRate")
+        .lean<{ job: string; approvedMinutes?: number | null; payRate?: number }[]>()
+    : [];
+
+  const clientIds = new Set<string>([
+    ...invoices.filter(i => i.client).map(i => i.client!.toString()),
+    ...jobs.filter(j => j.client).map(j => j.client!.toString()),
+  ]);
+  const clientDocs = clientIds.size
+    ? await Client.find({ _id: { $in: [...clientIds] } }).select("name").lean()
+    : [];
+  const clientNameById = new Map(clientDocs.map(c => [c._id.toString(), c.name]));
+
+  const byClient = new Map<string, { clientName: string; revenue: number; labourCost: number }>();
+  const getEntry = (id: string, name: string) => {
+    const existing = byClient.get(id);
+    if (existing) return existing;
+    const fresh = { clientName: name, revenue: 0, labourCost: 0 };
+    byClient.set(id, fresh);
+    return fresh;
+  };
+
+  for (const inv of invoices) {
+    if (!inv.client) continue;
+    const id = inv.client.toString();
+    const entry = getEntry(id, inv.clientSnapshot?.name ?? clientNameById.get(id) ?? "Unknown client");
+    entry.revenue += inv.subtotal ?? 0;
+  }
+
+  for (const a of assignments) {
+    const job = jobById.get(a.job.toString());
+    if (!job?.client) continue;
+    const id = job.client.toString();
+    const entry = getEntry(id, clientNameById.get(id) ?? "Unknown client");
+    entry.labourCost += ((a.approvedMinutes ?? 0) / 60) * (a.payRate ?? 0);
+  }
+
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const byClientRows = [...byClient.entries()]
+    .map(([clientId, v]) => {
+      const profit = v.revenue - v.labourCost;
+      return {
+        clientId,
+        clientName: v.clientName,
+        revenue: round2(v.revenue),
+        labourCost: round2(v.labourCost),
+        profit: round2(profit),
+        marginPercent: v.revenue > 0 ? round2((profit / v.revenue) * 100) : 0,
+      };
+    })
+    .sort((a, b) => b.revenue - a.revenue);
+
+  const totalRevenue = byClientRows.reduce((s, r) => s + r.revenue, 0);
+  const totalLabourCost = byClientRows.reduce((s, r) => s + r.labourCost, 0);
+  const totalProfit = totalRevenue - totalLabourCost;
+
+  // ── Daily trend across the selected range ───────────────────────────────
+  const dayCount = Math.max(0, dayjs(end).diff(dayjs(start), "day") + 1);
+  const days = Array.from({ length: dayCount }, (_, i) => dayjs(start).add(i, "day"));
+  const trendRevenue = new Array(days.length).fill(0);
+  const trendLabourCost = new Array(days.length).fill(0);
+  const dayIndexFor = (d: Date) => days.findIndex(day => day.isSame(dayjs(d), "day"));
+
+  for (const inv of invoices) {
+    const dateField = basis === "collected" ? inv.paidAt : inv.issueDate;
+    if (!dateField) continue;
+    const idx = dayIndexFor(dateField);
+    if (idx >= 0) trendRevenue[idx] += inv.subtotal ?? 0;
+  }
+  for (const a of assignments) {
+    const job = jobById.get(a.job.toString());
+    if (!job) continue;
+    const idx = dayIndexFor(job.date);
+    if (idx < 0) continue;
+    trendLabourCost[idx] += ((a.approvedMinutes ?? 0) / 60) * (a.payRate ?? 0);
+  }
+
+  const trend = days.map((d, i) => ({
+    label: d.format("D MMM"),
+    revenue: round2(trendRevenue[i]),
+    profit: round2(trendRevenue[i] - trendLabourCost[i]),
+  }));
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    basis,
+    summary: {
+      revenue: round2(totalRevenue),
+      labourCost: round2(totalLabourCost),
+      grossProfit: round2(totalProfit),
+      marginPercent: totalRevenue > 0 ? round2((totalProfit / totalRevenue) * 100) : 0,
+    },
+    trend,
+    byClient: byClientRows,
+  });
 };

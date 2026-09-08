@@ -429,9 +429,11 @@ export const getAllJobs: MiddlewareFn = async (
         status,
         priority,
         // Matches the Jobs page Select's own default display ("Sort: Date
-        // ↓") — without this the two would silently disagree until the
-        // manager actually touched the control.
-        sort = "date_desc",
+        // ↑") — without this the two would silently disagree until the
+        // manager actually touched the control. Ascending (soonest shift
+        // first) rather than descending: opening the list should surface
+        // what's coming up next, not bury it under far-future jobs.
+        sort = "date_asc",
         page = "1", limit: limitQuery = "100",
         client,
         unassigned,
