@@ -7,6 +7,7 @@ import Client from "../models/clientModel.js";
 import Job from "../models/jobModel.js";
 import Invoice from "../models/invoiceModel.js";
 import { toUtcDay } from "../utils/dates.js";
+import { formatAddress } from "../utils/formatAddress.js";
 
 // Regex metacharacters in a search term would otherwise be interpreted as
 // regex syntax rather than literal text (and a pathological pattern could
@@ -142,7 +143,7 @@ export const getAllClients: MiddlewareFn = async (req, res) => {
         },
     ]);
 
-    const clients = result?.data ?? [];
+    const clients = (result?.data ?? []).map((c: any) => ({ ...c, formattedAddress: formatAddress(c.address) }));
     const total = result?.totalCount?.[0]?.count ?? 0;
 
     res.status(StatusCodes.OK).json({
@@ -217,7 +218,7 @@ export const getClient: MiddlewareFn = async (req, res) => {
 
     res.status(StatusCodes.OK).json({
         success: true,
-        client,
+        client: { ...client, formattedAddress: formatAddress(client.address) },
         stats: {
             totalJobs,
             upcomingJobs,
@@ -243,7 +244,10 @@ export const createClient: MiddlewareFn = async (req, res) => {
         throw err;
     }
 
-    res.status(StatusCodes.CREATED).json({ success: true, client });
+    res.status(StatusCodes.CREATED).json({
+        success: true,
+        client: { ...client.toObject(), formattedAddress: formatAddress(client.address) },
+    });
 };
 
 export const updateClient: MiddlewareFn = async (req, res) => {
@@ -266,7 +270,10 @@ export const updateClient: MiddlewareFn = async (req, res) => {
 
     if (!client) throw new NotFoundError("Client not found.");
 
-    res.status(StatusCodes.OK).json({ success: true, client });
+    res.status(StatusCodes.OK).json({
+        success: true,
+        client: { ...client.toObject(), formattedAddress: formatAddress(client.address) },
+    });
 };
 
 // Soft-delete only — refused outright if any job or invoice still
@@ -307,5 +314,8 @@ export const archiveClient: MiddlewareFn = async (req, res) => {
     );
     if (!client) throw new NotFoundError("Client not found.");
 
-    res.status(StatusCodes.OK).json({ success: true, client });
+    res.status(StatusCodes.OK).json({
+        success: true,
+        client: { ...client.toObject(), formattedAddress: formatAddress(client.address) },
+    });
 };

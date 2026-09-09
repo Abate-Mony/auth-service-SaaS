@@ -51,6 +51,7 @@ export const PLAN_LIMITS: Record<Plan, number> = {
  */
 export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
   "reject-job",
+  "cancel-job",
   "late-start",
   "geofence-warning",
   "overtime-review",

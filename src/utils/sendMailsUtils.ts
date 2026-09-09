@@ -92,6 +92,18 @@ export async function sendWorkerJobStatusEmail({
       action: "View job & assign worker",
     },
 
+    "cancel-job": {
+      subject: `Shift cancelled: ${job.title}`,
+
+      heading: "A worker cancelled an accepted shift",
+
+      message:
+        `${fullname} cancelled their accepted shift on "${job.title}" at ${actionTime}. ` +
+        `You may need to assign another worker.`,
+
+      action: "View job & assign worker",
+    },
+
     "late-start": {
       subject: `Late check-in: ${fullname}`,
 
@@ -147,7 +159,7 @@ export async function sendWorkerJobStatusEmail({
   // ─────────────────────────────────────────────
 
   const reasonRow =
-    type === "reject-job" && reason
+    (type === "reject-job" || type === "cancel-job") && reason
       ? `
         <tr>
           <td style="${labelStyle}">

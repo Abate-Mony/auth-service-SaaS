@@ -10,7 +10,7 @@ import recurringJobModel from "../models/recurringJobModel.js";
 import userModel from "../models/userModel.js";
 import { toUtcDay } from "../utils/dates.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
-import { logActivity } from "../utils/logActivity.js";
+import { logActivity, logActivityMany } from "../utils/logActivity.js";
 import { sendShiftAssigned, sendRecurringShiftAssigned } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
 import { sendExpoPushToUser } from "../utils/expoPush.js";
@@ -747,16 +747,18 @@ export const updateJob: MiddlewareFn = async (req, res) => {
             }
         }
     }
+    
 
     // Both are optional on the request — a caller editing only e.g. workers
     // or notes shouldn't have to resend the existing shift time. Only a
     // request that actually tries to change one of them needs both present.
     const startTime = req.body.startTime ?? job.startTime;
     const endTime = req.body.endTime ?? job.endTime;
-console.log("this is the start time and end time : ", req.body)
+// console.log("this is the start time and end time : ", req.body)
     if (!startTime || !endTime) {
         throw new BadRequestError("Start time and end time are required.");
     }
+    
 
     // `workers` being entirely absent means "leave assignments alone" (e.g.
     // the caller is only editing the title) — an explicit [] is what clears
@@ -810,11 +812,27 @@ console.log("this is the start time and end time : ", req.body)
             usersToAssign = selectedUsers.filter(
                 u => !currentWorkerIds.includes(u._id.toString())
             );
-            // change it later to isdelted=true
             if (assignmentsToRemove.length) {
+                const removedAt = new Date();
                 await JobAssignment.updateMany(
                     { _id: { $in: assignmentsToRemove.map(a => a._id) } },
-                    { isDeleted: true }
+                    {
+                        isDeleted: true,
+                        cancelledAt: removedAt,
+                        cancelledBy: currentUserId,
+                        cancellationType: "manager",
+                    }
+                );
+
+                await logActivityMany(
+                    assignmentsToRemove.map(a => ({
+                        job: job._id,
+                        jobDate: job.date,
+                        assignment: a._id,
+                        worker: a.worker,
+                        type: "worker_unassigned",
+                        actor: currentUserId,
+                    }))
                 );
             }
 
@@ -902,6 +920,52 @@ console.log("this is the start time and end time : ", req.body)
     //     as before.
     const oldStatus = job.status;
     const newStatus = updateFields.status ?? oldStatus;
+
+    // A cancelled job takes its still-live assignments down with it — nobody
+    // is actually going to work a shift the job itself called off. Terminal
+    // assignments (already completed/declined/cancelled) are left exactly as
+    // they are; a worker who'd already finished or bowed out keeps that record.
+    if (newStatus === "cancelled" && oldStatus !== "cancelled") {
+        const cancelledAt = new Date();
+        const liveAssignments = await JobAssignment.find({
+            job: updatedJob._id,
+            isDeleted: false,
+            status: { $nin: ["completed", "declined", "cancelled"] },
+        }).select("_id worker");
+
+        if (liveAssignments.length) {
+            await JobAssignment.updateMany(
+                { _id: { $in: liveAssignments.map(a => a._id) } },
+                {
+                    $set: {
+                        status: "cancelled",
+                        cancelledAt,
+                        cancelledBy: currentUserId,
+                        cancellationType: "job",
+                    },
+                }
+            );
+
+            await logActivityMany(
+                liveAssignments.map(a => ({
+                    job: updatedJob._id,
+                    jobDate: updatedJob.date,
+                    assignment: a._id,
+                    worker: a.worker,
+                    type: "assignment_cancelled",
+                    actor: currentUserId,
+                    metadata: { reason: "job_cancelled" },
+                }))
+            );
+        }
+
+        await logActivity({
+            job: updatedJob._id,
+            jobDate: updatedJob.date,
+            type: "job_cancelled",
+            actor: currentUserId,
+        });
+    }
 
     let workersToNotify: { _id: mongoose.Types.ObjectId; email: string; fullname: string }[] = [];
     if (newStatus === "draft") {

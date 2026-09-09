@@ -4,6 +4,7 @@ export type USER_ROLES  = 'admin' | 'user'|"moderator" | "worker" | "manager";
 export type JobStatusNotificationType =
   | "accept-job"
   | "reject-job"
+  | "cancel-job"
   | "start-job"
   | "late-start"
   | "geofence-warning"

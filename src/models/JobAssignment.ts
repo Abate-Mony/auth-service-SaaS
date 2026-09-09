@@ -14,6 +14,21 @@ const JobAssignmentSchema = new Schema(
       default: "pending",
       index: true,
     },
+    // adde new field to track the company associated with the job assignment
+    // needs migration later to populate this field for existing job assignments
+    cancelledAt: Date,
+
+    cancelledBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+
+
+    cancellationType: {
+      type: String,
+      enum: ["manager", "worker", "job"],
+    },
+//new fiels end here 
     company: {
       type: Schema.Types.ObjectId,
       ref: "Company",

@@ -425,7 +425,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
     const { status, reason } = req.body;
 
-    const allowedStatuses = ["accepted", "declined", "in-progress", "completed"];
+    const allowedStatuses = ["accepted", "declined", "in-progress", "completed", "cancelled"];
     if (!allowedStatuses.includes(status)) {
         throw new BadRequestError("Invalid status");
     }
@@ -480,59 +480,76 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     // notification preferences (falls back to system defaults if they
     // haven't set any — see notificationPreferenceService.shouldNotify).
     async function notifyManagerOfStatusChange(
+        // "cancelled" (a worker backing out of a shift they'd already
+        // accepted) reuses the "job_declined" preference gate — same
+        // actionable "you may need to cover this" outcome, not worth a
+        // whole separate per-user notification-preference toggle for.
         event: "job_accepted" | "job_declined",
-        emailType: "accept-job" | "reject-job",
+        emailType: "accept-job" | "reject-job" | "cancel-job",
         reason?: string
     ) {
-        const manager = await userModel.findOne({ _id: job!.createdBy! }).select("email");
-        if (!manager) return;
+        // Broadcasts to every admin/manager at the company — a declined or
+        // cancelled shift needs covering, and whoever happens to be free to
+        // deal with it shouldn't depend on who originally created the job.
+        // (Could narrow this back to just job.createdBy later if that turns
+        // out too noisy — not doing that here.)
+        const recipients = await userModel
+            .find({ company: assignment!.company, role: { $in: ["admin", "manager"] }, isActive: true })
+            .select("email");
+        if (!recipients.length) return;
 
-        const managerId = manager._id.toString();
-        const [canEmail, canPush] = await Promise.all([
-            shouldNotify(managerId, event, "email"),
-            shouldNotify(managerId, event, "push"),
-        ]);
-
-        const title = event === "job_accepted" ? "Shift accepted" : "Shift declined";
-        const body = event === "job_accepted"
+        const title = emailType === "accept-job" ? "Shift accepted" : emailType === "cancel-job" ? "Shift cancelled" : "Shift declined";
+        const body = emailType === "accept-job"
             ? `${worker!.fullname} accepted ${job!.title} — ${job!.startTime} on ${dayjs(job!.date).tz(tz).format("D MMM")}`
-            : `${worker!.fullname} declined ${job!.title}${reason ? `: ${reason}` : ""}`;
+            : emailType === "cancel-job"
+                ? `${worker!.fullname} cancelled their accepted shift on ${job!.title}${reason ? `: ${reason}` : ""}`
+                : `${worker!.fullname} declined ${job!.title}${reason ? `: ${reason}` : ""}`;
 
-        await Promise.all([
-            canEmail
-                ? sendWorkerJobStatusEmail({
-                    type: emailType,
-                    adminEmail: manager.email,
-                    worker: { fullname: worker!.fullname },
-                    job: emailJobRequirement,
-                    reason,
-                })
-                : Promise.resolve(),
-            canPush
-                ? sendPushToUser(managerId, {
-                    title,
-                    body,
-                    tag: `assignment-status-${assignment!._id}`,
-                    url: `/jobs/${job!._id}`,
-                })
-                : Promise.resolve(),
-            canPush
-                ? sendExpoPushToUser(managerId, {
-                    title,
-                    body,
-                    tag: `assignment-status-${assignment!._id}`,
-                    url: `/jobs/${job!._id}`,
-                })
-                : Promise.resolve(),
-            notifyUser({
-                userId: managerId,
-                companyId: assignment!.company,
-                event,
-                title,
-                body,
-                link: `/jobs/${job!._id}`,
-            }),
-        ]);
+        await Promise.all(
+            recipients.map(async recipient => {
+                const recipientId = recipient._id.toString();
+                const [canEmail, canPush] = await Promise.all([
+                    shouldNotify(recipientId, event, "email"),
+                    shouldNotify(recipientId, event, "push"),
+                ]);
+
+                await Promise.all([
+                    canEmail
+                        ? sendWorkerJobStatusEmail({
+                            type: emailType,
+                            adminEmail: recipient.email,
+                            worker: { fullname: worker!.fullname },
+                            job: emailJobRequirement,
+                            reason,
+                        })
+                        : Promise.resolve(),
+                    canPush
+                        ? sendPushToUser(recipientId, {
+                            title,
+                            body,
+                            tag: `assignment-status-${assignment!._id}`,
+                            url: `/jobs/${job!._id}`,
+                        })
+                        : Promise.resolve(),
+                    canPush
+                        ? sendExpoPushToUser(recipientId, {
+                            title,
+                            body,
+                            tag: `assignment-status-${assignment!._id}`,
+                            url: `/jobs/${job!._id}`,
+                        })
+                        : Promise.resolve(),
+                    notifyUser({
+                        userId: recipientId,
+                        companyId: assignment!.company,
+                        event,
+                        title,
+                        body,
+                        link: `/jobs/${job!._id}`,
+                    }),
+                ]);
+            })
+        );
     }
 
     // Fire-and-forget: flags an over-running shift for the manager to
@@ -627,6 +644,13 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             assignment.status = "declined";
             assignment.declinedAt = now;
             assignment.cancellationReason = (reason ?? "").trim();
+            // cancelledAt/By/Type double as general "who/when ended this
+            // assignment early" audit fields, not just for status:"cancelled"
+            // — a decline is the worker doing exactly that, just landing on
+            // its own dedicated status instead.
+            assignment.cancelledAt = now;
+            assignment.cancelledBy = workerId as any;
+            assignment.cancellationType = "worker";
 
             notifyManagerOfStatusChange("job_declined", "reject-job", assignment.cancellationReason).catch(err =>
                 console.error(`Failed to notify manager of declined assignment ${assignment._id}:`, err)
@@ -644,6 +668,42 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                     responseMinutes: Math.round(
                         (now.getTime() - new Date(assignment.createdAt).getTime()) / 60_000
                     ),
+                    // How much notice the manager has to backfill
+                    hoursNotice: Math.round((scheduledStart.getTime() - now.getTime()) / 3_600_000),
+                },
+            });
+            break;
+        }
+
+        // A worker backing out after already accepting — distinct from
+        // "declined", which only ever applies to a still-pending invite
+        // they haven't responded to yet.
+        case "cancelled": {
+            if (assignment.status !== "accepted") {
+                throw new BadRequestError(
+                    "You can only cancel a shift you've accepted but haven't started yet."
+                );
+            }
+
+            assignment.status = "cancelled";
+            assignment.cancellationReason = (reason ?? "").trim();
+            assignment.cancelledAt = now;
+            assignment.cancelledBy = workerId as any;
+            assignment.cancellationType = "worker";
+
+            notifyManagerOfStatusChange("job_declined", "cancel-job", assignment.cancellationReason).catch(err =>
+                console.error(`Failed to notify manager of cancelled assignment ${assignment._id}:`, err)
+            );
+
+            await logActivity({
+                job: assignment.job,
+                jobDate: job.date,
+                assignment: assignment._id,
+                worker: assignment.worker,
+                type: "assignment_cancelled",
+                actor: workerId,
+                metadata: {
+                    reason: assignment.cancellationReason || null,
                     // How much notice the manager has to backfill
                     hoursNotice: Math.round((scheduledStart.getTime() - now.getTime()) / 3_600_000),
                 },
@@ -895,9 +955,9 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
 
     await assignment.save();
 
-    // Only a "completed"/"declined" transition can possibly finish off the
-    // whole job — no point checking on every accept/start.
-    if (status === "completed" || status === "declined") {
+    // Only a transition to one of the terminal statuses can possibly finish
+    // off the whole job — no point checking on every accept/start.
+    if (status === "completed" || status === "declined" || status === "cancelled") {
         await maybeCompleteJob(assignment.job).catch(err =>
             console.error(`Failed to check job completion for job ${assignment.job}:`, err)
         );
