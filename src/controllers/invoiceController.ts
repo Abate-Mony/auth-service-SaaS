@@ -441,7 +441,7 @@ export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
     }
 
     const company = await Company.findById(companyId).select("name phone").lean();
-    const companyName = company?.name ?? "work.wrk";
+    const companyName = company?.name ?? "INPRN";
 
     const addr = invoice.clientSnapshot?.address;
     const clientAddress = addr

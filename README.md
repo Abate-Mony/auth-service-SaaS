@@ -1,6 +1,6 @@
-# TimeShift
+# INPRN
 
-TimeShift is a modern workforce management platform designed to simplify scheduling, workforce coordination, attendance tracking, and communication between administrators, managers, and employees.
+INPRN is a modern workforce management platform designed to simplify scheduling, workforce coordination, attendance tracking, and communication between administrators, managers, and employees.
 
 The platform allows organisations to create jobs, assign workers, monitor attendance, manage staff availability, and provide employees with a dedicated portal to manage their work.
 
@@ -76,7 +76,7 @@ Backend
 Clone the repository
 
 ```bash
-git clone https://github.com/your-company/timeshift.git
+git clone https://github.com/your-company/inprn.git
 ```
 
 Install dependencies
@@ -221,4 +221,4 @@ DELETE /api/v1/jobs/:id
 
 Private Project
 
-© TimeShift
+© INPRN

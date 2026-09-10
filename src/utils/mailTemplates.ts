@@ -25,7 +25,7 @@ function layout({ heading, body }: { heading: string; body: string }) {
 
       <div style="padding:18px 28px;background:#F8FAFC;border-top:1px solid #F1F5F9;">
         <p style="margin:0;font-size:12px;color:#94A3B8;">
-          You're receiving this because you're on a team using work.wrk.
+          You're receiving this because you're on a team using INPRN.
         </p>
       </div>
 
@@ -305,7 +305,7 @@ export async function sendVerificationEmail({
 
   const body = `
     <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
-      Hi ${firstName}, confirm your email address to finish setting up your work.wrk account.
+      Hi ${firstName}, confirm your email address to finish setting up your INPRN account.
     </p>
 
     ${button(link, "Verify email")}
@@ -319,7 +319,7 @@ export async function sendVerificationEmail({
     subject: "Verify your email address",
     text:
       `Hi ${firstName},\n\n` +
-      `Confirm your email address to finish setting up your work.wrk account.\n\n` +
+      `Confirm your email address to finish setting up your INPRN account.\n\n` +
       `Verify email: ${link}\n\n` +
       `This link expires in 24 hours. If you didn't create this account, you can ignore this email.`,
     html: layout({ heading: "Verify your email address", body }),
@@ -340,7 +340,7 @@ export async function sendPasswordResetEmail({
 
   const body = `
     <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
-      Hi ${firstName}, we got a request to reset your work.wrk password.
+      Hi ${firstName}, we got a request to reset your INPRN password.
     </p>
 
     ${button(link, "Reset password")}
@@ -355,7 +355,7 @@ export async function sendPasswordResetEmail({
     subject: "Reset your password",
     text:
       `Hi ${firstName},\n\n` +
-      `We got a request to reset your work.wrk password.\n\n` +
+      `We got a request to reset your INPRN password.\n\n` +
       `Reset password: ${link}\n\n` +
       `This link expires in 30 minutes. If you didn't request this, you can ignore this email.`,
     html: layout({ heading: "Reset your password", body }),
@@ -369,13 +369,13 @@ export const sendWorkerInvite = async ({
 
   await sendMail({
     to: email,
-    subject: `You've been added to ${companyName} on work.wrk`,
-    text: `Hi ${fullname}, ${companyName} has added you to work.wrk. Set your password: ${link}`,
+    subject: `You've been added to ${companyName} on INPRN`,
+    text: `Hi ${fullname}, ${companyName} has added you to INPRN. Set your password: ${link}`,
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #0F172A;">
-        <h2 style="color: #1E3A5F;">Welcome to work.wrk</h2>
+        <h2 style="color: #1E3A5F;">Welcome to INPRN</h2>
         <p>Hi ${fullname},</p>
-        <p><strong>${companyName}</strong> has added you to work.wrk, where you'll see your shifts, accept or decline jobs, and clock in and out.</p>
+        <p><strong>${companyName}</strong> has added you to INPRN, where you'll see your shifts, accept or decline jobs, and clock in and out.</p>
         <a href="${link}" style="display: inline-block; background: #1E3A5F; color: #fff; padding: 12px 24px; border-radius: 12px; text-decoration: none; font-weight: bold; margin: 20px 0;">Set your password</a>
         <p style="font-size: 13px; color: #64748B;">This link expires in 7 days.</p>
       </div>
@@ -434,7 +434,7 @@ export async function sendRestrictionNotice({
     ${remedyLine ? `<p style="margin:20px 0 0;font-size:14px;line-height:1.6;color:#334155;">${remedyLine}</p>` : ""}
     ${canAppeal ? `<p style="margin:12px 0 0;font-size:13px;color:#94A3B8;">If you think this is a mistake, you can submit an appeal from the app.</p>` : ""}
 
-    ${button(link, "Open work.wrk")}`;
+    ${button(link, "Open INPRN")}`;
 
   await sendMail({
     to: email,
@@ -444,7 +444,7 @@ export async function sendRestrictionNotice({
       `Your account has been restricted: ${message}\n\n` +
       (remedyLine ? `${remedyLine}\n` : "") +
       (canAppeal ? `If you think this is a mistake, you can submit an appeal from the app.\n` : "") +
-      `\nOpen work.wrk: ${link}`,
+      `\nOpen INPRN: ${link}`,
     html: layout({ heading: "Your account has been restricted", body }),
   });
 }
@@ -467,7 +467,7 @@ export async function sendRestrictionLiftedEmail({
       Hi ${firstName}, the restriction on your account has been lifted. You're all set.
     </p>
     ${liftReason ? `<table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">${detailRow("Note", liftReason)}</table>` : ""}
-    ${button(link, "Open work.wrk")}`;
+    ${button(link, "Open INPRN")}`;
 
   await sendMail({
     to: email,
@@ -476,7 +476,7 @@ export async function sendRestrictionLiftedEmail({
       `Hi ${firstName},\n\n` +
       `The restriction on your account has been lifted. You're all set.\n` +
       (liftReason ? `\nNote: ${liftReason}\n` : "") +
-      `\nOpen work.wrk: ${link}`,
+      `\nOpen INPRN: ${link}`,
     html: layout({ heading: "You're back", body }),
   });
 }
@@ -536,7 +536,7 @@ export async function sendAppealResponseEmail({
     <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
       ${detailRow("Response", response)}
     </table>
-    ${button(link, "Open work.wrk")}`;
+    ${button(link, "Open INPRN")}`;
 
   await sendMail({
     to: email,
@@ -545,7 +545,7 @@ export async function sendAppealResponseEmail({
       `Hi ${firstName},\n\n` +
       `Your appeal has been ${status}${status === "accepted" ? " — your restriction has been lifted." : "."}\n\n` +
       `Response: ${response}\n\n` +
-      `Open work.wrk: ${link}`,
+      `Open INPRN: ${link}`,
     html: layout({ heading, body }),
   });
 }
@@ -694,7 +694,7 @@ export async function sendClaimReviewResultEmail({
       : `<p style="margin:16px 0 0;font-size:13px;color:#94A3B8;">It's gone back to the open shifts list for someone else to pick up.</p>`
     }
 
-    ${button(link, "Open work.wrk")}`;
+    ${button(link, "Open INPRN")}`;
 
   await sendMail({
     to: email,
@@ -702,7 +702,7 @@ export async function sendClaimReviewResultEmail({
     text:
       `Hi ${firstName},\n\n` +
       `Your manager has ${approved ? "approved" : "declined"} your claim on "${job.title}" (${when}).\n\n` +
-      `Open work.wrk: ${link}`,
+      `Open INPRN: ${link}`,
     html: layout({ heading: approved ? "Your claim was approved" : "Your claim was declined", body }),
   });
 }
