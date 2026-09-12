@@ -279,10 +279,34 @@ export const createInvoice: MiddlewareFn = async (req, res) => {
     const data = parseOrThrow(createInvoiceSchema, req.body);
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
 
-    const [client, job] = await Promise.all([
+    const [client, job, company] = await Promise.all([
         resolveClient(data.client, companyId, req.user.user_id.toString()),
         resolveJob(data.job, companyId),
+        Company.findById(companyId).select("currency"),
     ]);
+
+    // The eligible-work draft flow gets its double-invoicing guard for free
+    // from an atomic locking updateMany — this manual path doesn't go
+    // through that at all, so it needs its own explicit check. Not a
+    // perfectly atomic guard against a genuine concurrent race (that would
+    // need the same pre-generated-id + conditional-update pattern), but it
+    // closes the realistic case: re-submitting this form for a job that's
+    // already been billed, manually or via the eligible-work flow.
+    if (job.chargeType === "fixed") {
+        if (job.billingStatus === "invoiced") {
+            throw new BadRequestError("This job has already been invoiced.");
+        }
+    } else {
+        const alreadyInvoicedCount = await JobAssignment.countDocuments({
+            job: job._id,
+            isDeleted: false,
+            status: "completed",
+            billingStatus: "invoiced",
+        });
+        if (alreadyInvoicedCount > 0) {
+            throw new BadRequestError("This job's completed shifts have already been invoiced.");
+        }
+    }
 
     const lineItems = buildLineItems(data.lineItems);
     const subtotal = Number(lineItems.reduce((sum, li) => sum + li.amount, 0).toFixed(2));
@@ -311,6 +335,7 @@ export const createInvoice: MiddlewareFn = async (req, res) => {
                 vatRate: 0,
                 vatAmount: 0,
                 total: subtotal,
+                currency: company?.currency ?? "GBP",
                 notes: data.notes ?? "",
             });
             break;
@@ -395,7 +420,12 @@ export const updateInvoice: MiddlewareFn = async (req, res) => {
         const subtotal = Number(lineItems.reduce((sum, li) => sum + li.amount, 0).toFixed(2));
         invoice.lineItems = lineItems as any;
         invoice.subtotal = subtotal;
-        invoice.total = subtotal + (invoice.vatAmount ?? 0);
+        // Recompute VAT from the new subtotal too — reusing the stale
+        // vatAmount here would leave it inconsistent with vatRate × the new
+        // subtotal (masked today since new invoices default to 0% VAT, but
+        // wrong the moment one doesn't).
+        invoice.vatAmount = calculateVat(subtotal, invoice.vatRate ?? 0);
+        invoice.total = round2(subtotal + invoice.vatAmount);
     }
 
     await invoice.save();
@@ -512,13 +542,22 @@ export const deleteInvoice: MiddlewareFn = async (req, res) => {
     const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
     if (!invoice) throw new NotFoundError("Invoice not found.");
 
+    // Only a draft can be deleted outright — nothing external (the client,
+    // payment records) depends on it yet. A sent or paid invoice must be
+    // cancelled instead (cancelInvoiceHandler), which keeps a visible
+    // record with a reason rather than making it disappear. Deleting a PAID
+    // invoice specifically would silently unlock its billed work for
+    // re-invoicing with no surviving record the money was ever collected.
+    if (invoice.status !== "draft") {
+        throw new BadRequestError("Only draft invoices can be deleted — cancel a sent or paid invoice instead.");
+    }
+
     invoice.isDeleted = true;
     await invoice.save();
 
-    // A deleted invoice is gone for good — its locked work must come back,
-    // or it would be permanently unbillable (stuck pointing at an invoice
-    // that no longer exists). Unlike cancel, this applies no matter what
-    // status the invoice was in.
+    // A deleted draft's locked work must come back, or it would be
+    // permanently unbillable (stuck pointing at an invoice that no longer
+    // exists).
     await Promise.all([
         (invoice.jobs ?? []).length
             ? Job.updateMany({ _id: { $in: invoice.jobs } }, { $set: { billingStatus: "pending", invoice: null } })
@@ -557,8 +596,12 @@ export const getEligibleWorkHandler: MiddlewareFn = async (req, res) => {
     const { client, start, end } = parseOrThrow(eligibleWorkQuerySchema, req.query);
     const companyId = req.user.company_id.toString();
 
-    const startDate = dayjs(start).startOf("day").toDate();
-    const endDate = dayjs(end).endOf("day").toDate();
+    // Job.date is always normalised to UTC midnight — comparing against a
+    // server-local-time day boundary here would shift the window by the
+    // server's UTC offset and could silently include/exclude a job dated on
+    // the first or last day of the range.
+    const startDate = toUtcDay(start);
+    const endDate = toUtcDay(end);
     if (dayjs(endDate).isBefore(startDate)) {
         throw new BadRequestError("end cannot be before start.");
     }
@@ -655,18 +698,23 @@ export const createInvoiceDraft: MiddlewareFn = async (req, res) => {
     const data = parseOrThrow(createDraftSchema, req.body);
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
 
-    const periodStart = dayjs(data.servicePeriod.start).startOf("day").toDate();
-    const periodEnd = dayjs(data.servicePeriod.end).endOf("day").toDate();
+    // Same UTC-day reasoning as getEligibleWorkHandler above — Job.date is
+    // always UTC midnight, so the period boundary must be too.
+    const periodStart = toUtcDay(data.servicePeriod.start);
+    const periodEnd = toUtcDay(data.servicePeriod.end);
     if (dayjs(periodEnd).isBefore(periodStart)) {
         throw new BadRequestError("Service period end cannot be before start.");
     }
 
     // Re-queries and recalculates from scratch — the frontend's selection is
     // only ever "which ids", never trusted for the amounts.
-    const resolved = await resolveSelectedWork(companyId.toString(), data.client, periodStart, periodEnd, {
-        jobIds: data.jobIds,
-        assignmentIds: data.assignmentIds,
-    });
+    const [resolved, company] = await Promise.all([
+        resolveSelectedWork(companyId.toString(), data.client, periodStart, periodEnd, {
+            jobIds: data.jobIds,
+            assignmentIds: data.assignmentIds,
+        }),
+        Company.findById(companyId).select("currency"),
+    ]);
 
     const workLineItems = resolved.items.map(item => ({
         description: item.title,
@@ -701,13 +749,17 @@ export const createInvoiceDraft: MiddlewareFn = async (req, res) => {
 
     const subtotal = round2(lineItems.reduce((sum, li) => sum + li.amount, 0));
     if (subtotal < 0) {
-        throw new BadRequestError("Adjustments can't bring the invoice below £0 — reduce the discount amount.");
+        throw new BadRequestError(
+            `Adjustments can't bring the invoice below ${company?.currency === "USD" ? "$" : company?.currency === "EUR" ? "€" : "£"}0 — reduce the discount amount.`
+        );
     }
     const vatRate = data.vatRate ?? 0;
     const vatAmount = calculateVat(subtotal, vatRate);
     const total = round2(subtotal + vatAmount);
     if (total < 0) {
-        throw new BadRequestError("Adjustments can't bring the invoice below £0 — reduce the discount amount.");
+        throw new BadRequestError(
+            `Adjustments can't bring the invoice below ${company?.currency === "USD" ? "$" : company?.currency === "EUR" ? "€" : "£"}0 — reduce the discount amount.`
+        );
     }
 
     const issueDate = data.issueDate ? new Date(data.issueDate) : new Date();
@@ -794,6 +846,7 @@ export const createInvoiceDraft: MiddlewareFn = async (req, res) => {
                     vatRate,
                     vatAmount,
                     total,
+                    currency: company?.currency ?? "GBP",
                     notes: data.notes ?? "",
                 });
                 break;

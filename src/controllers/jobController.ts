@@ -11,6 +11,7 @@ import userModel from "../models/userModel.js";
 import { toUtcDay } from "../utils/dates.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity, logActivityMany } from "../utils/logActivity.js";
+import { assertCanCreateJob, assertFeatureEnabledForCompany } from "../utils/planLimits.js";
 import { sendShiftAssigned, sendRecurringShiftAssigned } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
 import { sendExpoPushToUser } from "../utils/expoPush.js";
@@ -116,7 +117,6 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
          openToClaims,
          requiresApproval,
     } = req.body;
-console.log("this is the req.body : ", req.body)
 
     // Only these two are ever settable at creation — "completed"/"cancelled"
     // aren't valid starting states, so anything but an explicit "draft"
@@ -132,13 +132,25 @@ console.log("this is the req.body : ", req.body)
     }
 
     const currentUserId = getReqUser(req).user_id;
+    const companyId = getReqUser(req).company_id;
+
+    // A draft was never actually scheduled work — it doesn't count against
+    // the plan's monthly job cap until it's published (see planLimits.ts).
+    if (jobStatus !== "draft") {
+        await assertCanCreateJob(companyId);
+    }
+    if (isRecurring) {
+        await assertFeatureEnabledForCompany(companyId, "recurringJobs");
+    }
+    if (openToClaims === true) {
+        await assertFeatureEnabledForCompany(companyId, "openShifts");
+    }
 
     // ── Resolve and validate assigned workers ────────────────────────────────
     let workers: any[] = [];
     if (req.body.workers) {
         try {
             workers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
-            console.log("this is the workers : ", workers)
         } catch {
             throw new BadRequestError("Invalid workers payload");
         }
@@ -165,9 +177,6 @@ console.log("this is the req.body : ", req.body)
     const finalChargeType = chargeType !== undefined ? chargeType : clientDoc?.defaultChargeType ?? "hourly";
 
     // Allowlisted — never spread req.body, or clients can set isTemplate/status/createdBy
-    console.log("requested_user body", req.body)
-//      geofenceMode: 'enforce',
-// [1]   geofenceRadiusMeters: 150,
     const baseJobFields = {
         title,
         description,
@@ -196,7 +205,6 @@ console.log("this is the req.body : ", req.body)
          ...(openToClaims !== undefined ? { openToClaims } : {}),
          ...(requiresApproval !== undefined ? { requiresApproval } : {}),
     };
-    // throw new BadRequestError("testing")
 
     // ── Recurring job ──────────────────────────────────────────────────────
     if (isRecurring) {
@@ -454,7 +462,6 @@ export const getAllJobs: MiddlewareFn = async (
     if (start || end) {
         const dateFilter: Record<string, Date> = {};
         try {
-            console.log("this is the start and end date : ", start, end)
             if (start) dateFilter.$gte = toUtcDay(start);
             if (end) dateFilter.$lte = toUtcDay(end);
         } catch {
@@ -553,7 +560,6 @@ export const getAllJobs: MiddlewareFn = async (
         worker: (worker as any)?._id,
     }));
 
-    // console.log("flat-worker",assignments)
     const assignmentMap = flatAssignments.reduce((acc, assignment) => {
         const key = assignment.job.toString();
 
@@ -569,8 +575,6 @@ export const getAllJobs: MiddlewareFn = async (
         ...job.toObject(),
         workers: assignmentMap[job._id.toString()] ?? [],
     }));
-    // console.log("this is the result : ", result.map(r => r.workers))
-    console.log("jobs", result)
     res.status(StatusCodes.OK).json({
         success: true,
         jobs: result,
@@ -581,8 +585,11 @@ export const getAllJobs: MiddlewareFn = async (
 };
 export const duplicateJob: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
+    const companyId = getReqUser(req).company_id;
 
-    const job = await Job.findOne({ _id: id, isDeleted: false });
+    // Company-scoped so one tenant can't duplicate (and thereby read the
+    // full contents of) another tenant's job by guessing an id.
+    const job = await Job.findOne({ _id: id, isDeleted: false, company: companyId.toString() });
 
     if (!job) {
         throw new BadRequestError("Cannot find job with this id");
@@ -611,6 +618,11 @@ export const duplicateJob: MiddlewareFn = async (req, res) => {
         recurringJob: null,
         isTemplate: false,
 
+        // Explicitly the requester's own company — never trust the spread
+        // copy of the source job's own field for this, even though it's
+        // already guaranteed to match now that the fetch above is scoped.
+        company: companyId.toString(),
+
         // Current user becomes creator
         createdBy: req.user.user_id,
     });
@@ -626,7 +638,7 @@ export const duplicateJob: MiddlewareFn = async (req, res) => {
                 worker: ja.worker,
                 createdBy: req.user.user_id,
                 payRate: ja.payRate,
-                company: ja.company,
+                company: companyId,
                 fullname: ja.fullname,
             })),
             { ordered: false }
@@ -646,8 +658,7 @@ export const getJob: MiddlewareFn = async (
     const job = await Job.findOne({
         _id: req.params.id,
         isDeleted: false,
-
-        // companyId: getReqUser(req).companyId,
+        company: getReqUser(req).company_id.toString(),
     }).populate("client", "name status contacts phone billingEmail address defaultChargeType defaultChargeRate")
     const assignments = await JobAssignment.find({
         job: req.params.id,
@@ -709,9 +720,13 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     const currentUserId = getReqUser(req).user_id;
     const companyId = getReqUser(req).company_id;
 
-    const job = await Job.findOne({ _id: req.params.id, isDeleted: false });
+    const job = await Job.findOne({ _id: req.params.id, isDeleted: false, company: companyId.toString() });
     if (!job) {
         throw new BadRequestError("Job not found.");
+    }
+
+    if (req.body.openToClaims === true && !job.openToClaims) {
+        await assertFeatureEnabledForCompany(companyId, "openShifts");
     }
 
     // A draft was never live — nobody could have worked it — so it stays
@@ -754,7 +769,6 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     // request that actually tries to change one of them needs both present.
     const startTime = req.body.startTime ?? job.startTime;
     const endTime = req.body.endTime ?? job.endTime;
-// console.log("this is the start time and end time : ", req.body)
     if (!startTime || !endTime) {
         throw new BadRequestError("Start time and end time are required.");
     }
@@ -767,7 +781,6 @@ export const updateJob: MiddlewareFn = async (req, res) => {
   
 
         if (req.body.workers !== undefined) {
-            console.log("this is the workers ", req.body.workers)
             let workers: any[];
             try {
                 workers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
@@ -1033,7 +1046,9 @@ export const updateJob: MiddlewareFn = async (req, res) => {
 export const deleteJob: MiddlewareFn = async (req, res): Promise<void> => {
 
     const job = await Job.findOneAndUpdate(
-        { _id: req.params.id, isDeleted: false }, // don't "delete" an already-deleted job
+        // don't "delete" an already-deleted job; company-scoped so one
+        // tenant can never soft-delete another's job by guessing an id.
+        { _id: req.params.id, isDeleted: false, company: getReqUser(req).company_id.toString() },
         { isDeleted: true },
         { new: true }
     );

@@ -51,11 +51,9 @@ app.use(helmet({
   contentSecurityPolicy: false,
 }));
 app.use(express.json());
-// TEMP: every-second interval to stress-test generateOccurrences' race-condition fix. Revert to "0 1 * * *" before committing/deploying.
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const filepath = path.resolve(__dirname, "../public/");
-console.log(`this is the file path here :`, filepath);
 
 // The web app (cookie-based session) is the only client CORS needs to gate —
 // the mobile app authenticates with a Bearer header and sends no Origin, so
@@ -167,7 +165,7 @@ const start = async (): Promise<void> => {
       autoCloseAbandonedShifts();
     });
   } catch (err) {
-    console.log(err);
+    console.error(err);
   }
 };
 start();

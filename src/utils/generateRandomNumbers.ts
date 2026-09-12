@@ -36,8 +36,6 @@ function generateRandomString({
       const randomIndex = Math.floor(Math.random() * 9) + 1;
       result += randomIndex;
     }
-    // result = Number(result);
-    console.log("this is the id in the function", result);
     return Number(result);
   }
 }
@@ -66,9 +64,6 @@ async function generateUniqueRandomString({
   //   return randomString;
 }
 
-// Example usage
-// const randomString = generateRandomString();
-//   console.log(randomString); // Output: a random string of 6 characters
 export {
   generateRandomString, generateUniqueRandomString as generateUniqueCharacter
 };

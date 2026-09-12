@@ -23,6 +23,7 @@ import { buildRestrictionResponse } from "../middleware/restrictionMiddleware.js
 import { RestrictableAction } from "../models/userRestrictionModel.js";
 import { maybeCompleteJob } from "../utils/maybeCompleteJob.js";
 import { notifyUser } from "../utils/notifyUser.js";
+import { assertCanAddWorker, assertFeatureEnabledForCompany } from "../utils/planLimits.js";
 
 // Which restriction the worker-status route enforces depends on the status
 // being requested, not the route itself — "declined" has no restrictable
@@ -49,6 +50,12 @@ export const createWorker: MiddlewareFn = async (req, res) => {
         throw new BadRequestError("Email already exists")
     }
 
+    // The plan's worker cap is specifically about the workforce, not the
+    // people managing it — creating a manager never counts against it.
+    if (role === "worker") {
+        await assertCanAddWorker(User.company);
+    }
+
     const hashedPassword = await hashPassword(password);
 
     const worker = await userModel.create({
@@ -67,7 +74,6 @@ export const createWorker: MiddlewareFn = async (req, res) => {
 };
 
 export const getMyJobs: MiddlewareFn = async (req, res) => {
-    const startTime = new Date()
     const workerId = new mongoose.Types.ObjectId(req.user.user_id);
     const { search, status, page = "1", limit = "10", start, end } = req.query;
 
@@ -167,8 +173,6 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
         status: row.status, // assignment status wins over job.status, same behavior as your original .map
         workerJobDetails: row.workerJobDetails,
     }));
-    const time_querying = dayjs().diff(startTime, "seconds", true)
-    console.log("time quering is : ", time_querying)
     res.status(StatusCodes.OK).json({
         jobs,
         page: pageNum,
@@ -886,26 +890,30 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             const workedMinutes = Math.max(0, grossMinutes - breakMinutes);
 
             // ── overtime review ─────────────────────────────────────────
-            // actualMinutes and approvedMinutes both start out as the real
-            // clocked time — job.minutes is the *schedule*, never a cap on
-            // what actually happened or what gets paid. requiresReview only
-            // flags the assignment for a manager's attention; only that
-            // manager's own decision (reviewAssignmentOvertime's "reject" or
-            // "adjust") should ever reduce approvedMinutes below the real
-            // worked time.
+            // actualMinutes is the record of what really happened.
+            // approvedMinutes is what payroll pays — capped at the scheduled
+            // amount whenever the overrun is big enough to need a manager's
+            // sign-off, so a forgotten clock-out (or a genuinely long shift)
+            // never bills/pays automatically. Only a manager's own decision
+            // (reviewAssignmentOvertime's approve/reject/adjust) raises it
+            // back up. Every other consumer of approvedMinutes — client
+            // billing eligibility, payroll/profitability reports — trusts
+            // that this is already the safe figure; it must never just be
+            // the raw worked time while overtimeStatus is still "pending".
             const rawReason = req.body?.clockOutReason;
             const allowedReasons = ["on_time", "job_took_longer", "manager_asked_to_stay", "other"];
             const clockOutReason = allowedReasons.includes(rawReason) ? rawReason : undefined;
             const clockOutNote = typeof req.body?.clockOutNote === "string" ? req.body.clockOutNote.trim() : "";
 
-            const overtimeThreshold = 0 
-            //  company?.lateClockOutThresholdMinutes ?? 15;
+            const overtimeThreshold = company?.lateClockOutThresholdMinutes ?? 15;
             const overtimeMinutes = Math.max(0, workedMinutes - job.minutes);
             const requiresReview = overtimeMinutes > overtimeThreshold;
 
             assignment.actualMinutes = workedMinutes;
             assignment.overtimeMinutes = overtimeMinutes;
-            assignment.approvedMinutes = workedMinutes;
+            assignment.approvedMinutes = requiresReview
+                ? Math.max(0, workedMinutes - overtimeMinutes)
+                : workedMinutes;
             assignment.overtimeStatus = requiresReview ? "pending" : "none";
             if (clockOutReason) assignment.clockOutReason = clockOutReason as any;
             if (clockOutNote) assignment.clockOutNote = clockOutNote;

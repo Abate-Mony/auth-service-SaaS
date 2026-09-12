@@ -12,12 +12,16 @@ export const getMyNotifications: MiddlewareFn = async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
 
-  const [notifications, total] = await Promise.all([
+  const [notifications, total, unreadCount] = await Promise.all([
     Notification.find({ user: userId })
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit),
     Notification.countDocuments({ user: userId }),
+    // Unread across everything, not just this page — a badge that reset to
+    // "0 unread" once you'd paged past the first 20 would be worse than
+    // useless, so this is a real count, not derived from `notifications`.
+    Notification.countDocuments({ user: userId, isRead: false }),
   ]);
 
   res.status(StatusCodes.OK).json({
@@ -26,6 +30,7 @@ export const getMyNotifications: MiddlewareFn = async (req, res) => {
     page,
     totalPages: Math.max(1, Math.ceil(total / limit)),
     total,
+    unreadCount,
   });
 };
 

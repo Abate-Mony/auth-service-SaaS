@@ -171,7 +171,6 @@ export const validateInvitation: MiddlewareFn = async (req, res) => {
     const invitation = await Invitation.findOne({ tokenHash: hash })
         .populate("company", "name")
         .populate("invitedBy", "fullname");
-    console.log("invitation : ", invitation)
     if (!invitation) {
         res.status(StatusCodes.OK).json({ success: true, status: "invalid", invitation: null });
         return;

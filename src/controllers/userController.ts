@@ -21,7 +21,6 @@ export const currentUser: MiddlewareFn = async (req, res) => {
   Iuser = {
     ...Iuser,
   };
-  // console.log("this is the login user", Iuser, user);
   res.status(StatusCodes.OK).json({ user: Iuser });
 };
 
@@ -61,8 +60,6 @@ export const getAllUser: MiddlewareFn = async (
 ): Promise<void> => {
   const { search, role } = req.query;
   const currentUser = req.user;
-  console.log("this is the role",role)
-  // if(role)
   const queryObject: any = {
     _id: { $ne: currentUser.user_id },
     // isActive: true,
@@ -93,7 +90,6 @@ export const getAllUser: MiddlewareFn = async (
         email: { $regex: search, $options: "i" },
       },
     ];
-    // console.log(Number(search))
 
     queryObject.$or = [...userSearch];
   }
@@ -354,6 +350,5 @@ export const getStaticUser: MiddlewareFn = async (req, res) => {
     ...Iuser,
     fullname: Iuser.name,
   };
-  // console.log("this is the login user", Iuser, user);
   res.status(StatusCodes.OK).json({ user: Iuser });
 };

@@ -150,7 +150,11 @@ export const getRestrictions: MiddlewareFn = async (req, res) => {
     } = req.query as Record<string, string>;
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    // The frontend's Team page fetches active restrictions with limit=200
+    // in one request rather than paging through — this cap has to be at
+    // least that, or a company with more than the old 100-cap's worth of
+    // active restrictions would silently lose some off that page.
+    const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 20));
     const skip = (pageNum - 1) * limitNum;
 
     const match: Record<string, any> = { company: req.user.company_id };

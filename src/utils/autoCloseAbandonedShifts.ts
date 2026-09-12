@@ -133,11 +133,13 @@ export async function autoCloseAbandonedShifts() {
         assignment.autoCompleted = true;
         assignment.actualMinutes = workedMinutes;
         assignment.overtimeMinutes = overtimeMinutes;
-        // Nobody confirmed any of this time, hence "pending" below — but the
-        // saved figure is still the real clocked duration, not a guess
-        // capped at the schedule. A manager reviewing it can reduce it via
-        // reviewAssignmentOvertime if they decide not to pay for it.
-        assignment.approvedMinutes = workedMinutes;
+        // Nobody confirmed any of this time — capped at the scheduled
+        // amount, same rule as a normal clock-out's overtime review (see
+        // workerController.ts). This is the case that needs the cap most:
+        // an abandoned shift's "actual" duration could be many hours if a
+        // worker simply forgot to clock out, and none of that should be
+        // auto-approved for pay before a manager looks at it.
+        assignment.approvedMinutes = Math.max(0, workedMinutes - overtimeMinutes);
         assignment.overtimeStatus = "pending";
         assignment.clockOutReason = "auto_closed";
 

@@ -20,14 +20,6 @@ const withValidationErrors = (validateValues) => {
           .array()
           .map((error) => error.msg);
 
-        const firstMessage = errorMessages[0];
-        console.log(Object.getPrototypeOf(firstMessage));
-        // if (errorMessages[0].startsWith('no job')) {
-        //   throw new NotFoundError(errorMessages);
-        // }
-        // if (errorMessages[0].startsWith('not authorized')) {
-        //   throw new UnauthorizedError('not authorized to access this route');
-        // }
         throw new BadRequestError(errorMessages.join(","));
       }
       next();

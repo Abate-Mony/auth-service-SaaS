@@ -186,9 +186,17 @@ export const generateInvoicePdf = ({
         y += 13;
       }
 
+      // Hours shown here are derived from the actual charged amount, not
+      // the raw stored quantity — that quantity is independently rounded to
+      // 2dp elsewhere (eligibility.ts) and can be a penny off when
+      // multiplied back out against the rate (e.g. 50 minutes at £18/hour
+      // is a real £15.00, but 50/60 rounds to "0.83h", and 0.83 × £18 is
+      // £14.94). Deriving from amount/rate instead guarantees this line
+      // always reads consistently with the amount printed next to it.
+      const displayHours = item.type === "hourly" && item.rate > 0 ? Math.round((item.amount / item.rate) * 100) / 100 : item.hours;
       const billingLine =
         item.type === "hourly"
-          ? `${item.startTime && item.endTime ? `${item.startTime}–${item.endTime} · ` : ""}${item.hours}h × ${fmtMoney(item.rate, currency)}/hour`
+          ? `${item.startTime && item.endTime ? `${item.startTime}–${item.endTime} · ` : ""}${displayHours}h × ${fmtMoney(item.rate, currency)}/hour`
           : "Fixed job charge";
       doc.font("Helvetica").fontSize(9).fillColor(COLOR_BODY).text(billingLine, LEFT, y, { width: pageWidth - 100 });
       y += 13;

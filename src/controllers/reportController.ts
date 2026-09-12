@@ -9,7 +9,8 @@ import userModel from "../models/userModel.js";
 import Company from "../models/company.js";
 import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
-import { TZ } from "../utils/dates.js";
+import { TZ, toUtcDay } from "../utils/dates.js";
+import { assertFeatureEnabledForCompany } from "../utils/planLimits.js";
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
 // Same "worked minutes, net of breaks" / "payable minutes" arithmetic as
@@ -67,12 +68,20 @@ const parseRange = (req: Request): { start: Date; end: Date } => {
   const { start, end } = req.query as { start?: string; end?: string };
   if (!start || !end) throw new BadRequestError("start and end query params are required");
 
-  const startDate = dayjs(start).startOf("day");
-  const endDate = dayjs(end).endOf("day");
-  if (!startDate.isValid() || !endDate.isValid()) throw new BadRequestError("Invalid start or end date");
-  if (endDate.isBefore(startDate)) throw new BadRequestError("end cannot be before start");
+  // Job.date is always normalised to UTC midnight (see utils/dates.ts) —
+  // a server-local-time day boundary here would shift by the server's UTC
+  // offset and could silently include/exclude a job on the first or last
+  // day of the requested range.
+  let startDate: Date, endDate: Date;
+  try {
+    startDate = toUtcDay(start);
+    endDate = toUtcDay(end);
+  } catch {
+    throw new BadRequestError("Invalid start or end date");
+  }
+  if (dayjs(endDate).isBefore(startDate)) throw new BadRequestError("end cannot be before start");
 
-  return { start: startDate.toDate(), end: endDate.toDate() };
+  return { start: startDate, end: endDate };
 };
 
 // Every report tab starts from the same "which jobs, which assignments"
@@ -328,6 +337,7 @@ export const getReportsTimesheets: MiddlewareFn = async (req, res) => {
  */
 export const getReportsPerformance: MiddlewareFn = async (req, res) => {
   const companyId = req.user.company_id.toString();
+  await assertFeatureEnabledForCompany(companyId, "advancedReports");
   const { start, end } = parseRange(req);
 
   const { assignments } = await getJobsAndAssignments(companyId, start, end);
@@ -380,6 +390,7 @@ type LeanInvoice = {
  */
 export const getReportsProfitability: MiddlewareFn = async (req, res) => {
   const companyId = req.user.company_id.toString();
+  await assertFeatureEnabledForCompany(companyId, "advancedReports");
   const { start, end } = parseRange(req);
   const basis = req.query.basis === "collected" ? "collected" : "invoiced";
   const clientIdFilter =

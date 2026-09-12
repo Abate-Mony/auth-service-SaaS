@@ -1,5 +1,5 @@
 import mongoose, { InferSchemaType, Schema } from "mongoose";
-import { BUSINESS_TYPES, COMPANY_SIZES, PLAN_LIMITS } from "../utils/constant.js";
+import { BUSINESS_TYPES, COMPANY_SIZES } from "../utils/constant.js";
 import { ICompany } from "../interface/model/company.js";
 
 export interface ICompanyModel extends mongoose.Document, ICompany { }
@@ -48,9 +48,14 @@ const CompanySchema = new Schema(
       default: "free",
       index: true,
     },
+    // A per-company override, not the plan's own cap (that lives in
+    // PLAN_LIMITS, keyed by `plan`) — most companies never set this, and
+    // planLimits.ts's getEffectiveMaxWorkers() falls back to the plan's
+    // default. Exists for negotiated Enterprise limits that don't match the
+    // standard tier numbers.
     maxWorkers: {
       type: Number,
-      default: PLAN_LIMITS.free,
+      default: null,
     },
 
     // ── Time & attendance ──────────────────────────────────────────────

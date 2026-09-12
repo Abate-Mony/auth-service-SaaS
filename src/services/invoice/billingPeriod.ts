@@ -29,7 +29,11 @@ export const computeCurrentBillingPeriod = (
   billingDayOfMonth: number | undefined,
   anchor: Date = new Date()
 ): BillingPeriod | null => {
-  const a = dayjs(anchor);
+  // UTC, not server-local time — Job.date is always UTC midnight (see
+  // utils/dates.ts), and this period gets compared against it. Local time
+  // here would shift "today" (and every period boundary derived from it)
+  // by the server's UTC offset.
+  const a = dayjs.utc(anchor);
 
   switch (frequency) {
     case "weekly": {

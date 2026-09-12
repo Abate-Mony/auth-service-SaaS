@@ -123,7 +123,6 @@ export const login: MiddlewareFn = async (req, res) => {
 
 export const mobileLogin: MiddlewareFn = async (req, res) => {
   const { email, password } = req.body;
-console.log("this is the email and password : ", email, password)
   const user = await User.findOne({ email }).select("+password");
 
   const isValidUser =
