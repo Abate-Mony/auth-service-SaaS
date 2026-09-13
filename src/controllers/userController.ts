@@ -119,9 +119,12 @@ export const getAllUser: MiddlewareFn = async (
     // nothing against the ObjectId-typed `company` field.
     company: new mongoose.Types.ObjectId(req.user.company_id.toString()),
   };
-  if (currentUser.role === "admin") {
-    // Admin sees everyone but themselves, optionally narrowed to just one role
-    queryObject.role = role === "worker" || role === "manager" ? role : { $in: ["manager", "worker"] };
+  if (currentUser.role === "admin" || currentUser.role === "owner") {
+    // Admin/owner sees everyone but themselves, optionally narrowed to just
+    // one role. Includes "owner" and "admin" too — multiple admins (and the
+    // one owner) can now coexist in a company since admins became invitable.
+    const visibleRoles = ["owner", "admin", "manager", "worker"];
+    queryObject.role = visibleRoles.includes(role as string) ? role : { $in: visibleRoles };
   } else if (currentUser.role === "manager") {
     // Managers only see workers — not each other, not the admin — regardless
     // of what `role` was requested

@@ -1,7 +1,7 @@
 import { JobStatusNotificationType } from "./types.js";
 
 export type productStatesType = "pending" | "recieve" | "sent";
-export type UserroleTypes = "admin" | "user" | "moderator" | "worker";
+export type UserroleTypes = "owner" | "admin" | "user" | "moderator" | "worker";
 interface IUserTypes {
   [key: string | number]: UserroleTypes;
 }
@@ -9,6 +9,7 @@ interface IProductStates {
   [key: string | number]: productStatesType;
 }
 export const USER_ROLES: IUserTypes = {
+  owner: "owner",
   admin: "admin",
   user: "worker",
   moderator: "moderator",

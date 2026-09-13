@@ -1,6 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 
-export type InvitationRole = "worker" | "manager";
+export type InvitationRole = "worker" | "manager"| "admin";
 export type InvitationStatus = "pending" | "accepted" | "expired" | "revoked";
 
 // Hand-written rather than InferSchemaType'd — this codebase has already
@@ -33,7 +33,7 @@ const InvitationSchema = new Schema<InvitationDoc>(
     email: { type: String, required: true, lowercase: true, trim: true, index: true },
     fullname: { type: String, trim: true },
     phone: { type: String, trim: true },
-    role: { type: String, enum: ["worker", "manager"], required: true },
+    role: { type: String, enum: ["worker", "manager", "admin"], required: true },
     invitedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
 
     // Only the hash is ever stored — same pattern as refreshToken /

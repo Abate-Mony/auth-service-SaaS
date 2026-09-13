@@ -23,10 +23,11 @@ const UserSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: "Company",
       required: function (this: any) {
-        // Required for managers and workers. 
-        // Admins might not have it strictly on step 1 of registration, 
-        // but it should be attached immediately after the company is created.
-        return this.role !== "admin";
+        // Required for managers and workers.
+        // Owners and admins might not have it strictly on step 1 of
+        // registration (an owner IS the one creating the company), but it
+        // should be attached immediately after the company is created.
+        return this.role !== "admin" && this.role !== "owner";
       },
     },
 
@@ -38,7 +39,7 @@ const UserSchema = new Schema(
 
     role: {
       type: String,
-      enum: ["admin", "manager", "worker"],
+      enum: ["owner", "admin", "manager", "worker"],
       default: "worker",
     },
     phone: { type: String, trim: true, default: "0000-0000-0000" },
@@ -49,7 +50,7 @@ const UserSchema = new Schema(
     createdBy: {
       type: Schema.Types.ObjectId,
       ref: "User",
-      required: function (this: any) { return this.role !== "admin" },
+      required: function (this: any) { return this.role !== "admin" && this.role !== "owner" },
     },
     isVerified: {
       type: Boolean,

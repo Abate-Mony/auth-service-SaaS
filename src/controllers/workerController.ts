@@ -40,7 +40,7 @@ export const createWorker: MiddlewareFn = async (req, res) => {
     const User = await userModel.findOne({ _id: req.user.user_id })
     if (!User) throw new BadRequestError("could not find user but this is impossible ")
 
-    if (["admin"].includes(role)) {
+    if (["admin", "owner"].includes(role)) {
         throw new BadRequestError("Invalid role. Only 'worker or manager' role can be created.");
     }
 

@@ -18,7 +18,7 @@ import { sendInvitationEmail } from "../utils/mailTemplates.js";
 import { issueTokens } from "./authControler.js";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const INVITATION_ROLES: InvitationRole[] = ["worker", "manager"];
+const INVITATION_ROLES: InvitationRole[] = ["worker", "manager","admin"];
 
 const normalizeEmail = (email: unknown): string => {
     if (typeof email !== "string" || !email.trim()) {
@@ -33,9 +33,18 @@ const normalizeEmail = (email: unknown): string => {
 
 const validateRole = (role: unknown): InvitationRole => {
     if (!INVITATION_ROLES.includes(role as InvitationRole)) {
-        throw new BadRequestError("Role must be 'worker' or 'manager'.", "INVITATION_INVALID");
+        throw new BadRequestError("Role must be 'worker', 'manager' or 'admin'.", "INVITATION_INVALID");
     }
     return role as InvitationRole;
+};
+
+// Managers can only bring on workers; only an admin can invite another
+// manager or another admin — the invite-time equivalent of the role
+// restriction workerController.createWorker enforces for direct creation.
+const assertCanAssignRole = (requesterRole: string, role: InvitationRole) => {
+    if (requesterRole === "manager" && role !== "worker") {
+        throw new UnauthorizedError("Managers can only invite workers.", "INSUFFICIENT_PERMISSION");
+    }
 };
 
 const validateSiteIds = (sites: unknown): mongoose.Types.ObjectId[] | undefined => {
@@ -68,12 +77,7 @@ export const createInvitation: MiddlewareFn = async (req, res) => {
     const email = normalizeEmail(req.body.email);
     const role = validateRole(req.body.role);
 
-    // No granular per-company permission system exists yet — the only rule
-    // enforced here is the one explicitly called for: a manager can invite
-    // workers but not other managers.
-    if (req.user.role === "manager" && role === "manager") {
-        throw new UnauthorizedError("Managers cannot invite other managers.", "INSUFFICIENT_PERMISSION");
-    }
+    assertCanAssignRole(req.user.role, role);
 
     const fullname = typeof req.body.fullname === "string" ? req.body.fullname.trim() || undefined : undefined;
     const phone = typeof req.body.phone === "string" ? req.body.phone.trim() || undefined : undefined;
@@ -431,8 +435,8 @@ export const updateInvitation: MiddlewareFn = async (req, res) => {
         throw new BadRequestError("Only pending invitations can be edited.", "INVITATION_NOT_PENDING");
     }
 
-    if (req.body.role !== undefined && req.user.role === "manager" && req.body.role === "manager") {
-        throw new UnauthorizedError("Managers cannot invite other managers.", "INSUFFICIENT_PERMISSION");
+    if (req.body.role !== undefined) {
+        assertCanAssignRole(req.user.role, validateRole(req.body.role));
     }
 
     for (const key of UPDATE_INVITATION_ALLOWED_FIELDS) {

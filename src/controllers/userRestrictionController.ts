@@ -93,8 +93,8 @@ export const createRestriction: MiddlewareFn = async (req, res) => {
 
     const targetUser = await userModel.findOne({ _id: data.user, company: companyId }).select("role email fullname");
     if (!targetUser) throw new NotFoundError("User not found.");
-    if (targetUser.role === "admin") {
-        throw new BadRequestError("Admins cannot be restricted.");
+    if (targetUser.role === "admin" || targetUser.role === "owner") {
+        throw new BadRequestError("Admins and owners cannot be restricted.");
     }
 
     const expiresAt = data.expiresAt ? new Date(data.expiresAt) : undefined;

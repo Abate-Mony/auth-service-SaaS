@@ -259,11 +259,11 @@ export async function sendInvitationEmail({
   fullname?: string;
   companyName: string;
   inviterName: string;
-  role: "worker" | "manager";
+  role: "worker" | "manager" | "admin";
   invitationToken: string;
 }) {
   const greeting = fullname ? fullname.split(" ")[0] : "there";
-  const roleLabel = role === "manager" ? "Manager" : "Worker";
+  const roleLabel = role === "admin" ? "Admin" : role === "manager" ? "Manager" : "Worker";
   const link = `${process.env.CLIENT_URL}/invite/accept?token=${encodeURIComponent(invitationToken)}`;
 
   const body = `

@@ -32,9 +32,18 @@ export const authenticateUser: MiddlewareFn = (req, _res, next) => {
 // req.user.role to one of the allowed roles. role is typed as a plain
 // string on IReqUser (mirroring the Mongoose schema), so it's asserted to
 // USER_ROLES here - the schema's enum guarantees the runtime value matches.
+//
+// "owner" is a strict superset of "admin" (the company founder, with every
+// admin permission plus a few owner-only ones later) rather than a sibling
+// role like manager/worker are to each other. Rather than appending "owner"
+// to every one of the ~50 authorizePermissions("admin", ...) call sites
+// across the route files, that hierarchy is enforced once, here: any route
+// that allows "admin" implicitly allows "owner" too.
 export const authorizePermissions = (...roles: USER_ROLES[]) => {
   return (req: Request, res: Response, next: NextFunction): void => {
-    if (!roles.includes(req.user!.role as USER_ROLES)) {
+    const userRole = req.user!.role as USER_ROLES;
+    const allowed = roles.includes(userRole) || (userRole === "owner" && roles.includes("admin"));
+    if (!allowed) {
       throw new UnauthorizedError("Unauthorized to access this route");
     }
     next();

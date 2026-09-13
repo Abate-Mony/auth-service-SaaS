@@ -9,7 +9,9 @@
     "build": "tsc",
     "dev": "concurrently \"tsc -w\" \"nodemon dist/server.js\"",
     "migrate:clients": "node dist/scripts/migrateClientsToEntities.js",
-    "migrate:clients:dry-run": "node dist/scripts/migrateClientsToEntities.js --dry-run"
+    "migrate:clients:dry-run": "node dist/scripts/migrateClientsToEntities.js --dry-run",
+    "migrate:company-owners": "node dist/scripts/backfillCompanyOwners.js",
+    "migrate:company-owners:dry-run": "node dist/scripts/backfillCompanyOwners.js --dry-run"
   },
   "keywords": [],
   "author": "",

@@ -164,13 +164,16 @@ export const register: MiddlewareFn = async (req, res) => {
 
   const hashedPassword = await hashPassword(password);
 
-  // 2. Create Admin User
+  // 2. Create the company's Owner. Signup always founds a brand-new
+  // company, so whoever's registering here is the owner, not just an
+  // admin — Company.owner (set below) is the authoritative record of this,
+  // but the user's own role mirrors it for authorizePermissions checks.
   const user = await User.create({
     fullname,
     email,
     password: hashedPassword,
     phone: phone || "0000-0000-0000",
-    role: "admin",
+    role: "owner",
   });
 
   // 3. Create Company with manual rollback on failure
