@@ -47,12 +47,14 @@ function workedMinutesOf(a: {
   return Math.max(0, gross - breakMins);
 }
 
-export const getDashboardStats: MiddlewareFn = async (req, res) => {
-  const currentUser = getReqUser(req);
-  const companyId = currentUser.company_id;
+// Extracted so the AI dashboard-insights endpoint (aiController.ts) can
+// reuse the exact same company-scoped numbers the dashboard itself shows,
+// instead of the AI service running its own parallel queries that could
+// drift from what the manager is actually looking at.
+export async function computeDashboardStats(companyId: unknown) {
   // Job.company is schema-typed String (a pre-existing quirk elsewhere in
   // this codebase), unlike User/JobAssignment's ObjectId — cast separately.
-  const companyIdStr = companyId.toString();
+  const companyIdStr = (companyId as { toString(): string }).toString();
 
   const now = new Date();
   const todayStart = startOfDay(now);
@@ -125,7 +127,7 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
       checkedInAt: { $ne: null },
       checkedOutAt: null,
     })
-      .populate("worker", "fullname")
+      .populate("worker", "fullname profilePhoto")
       .populate("job", "title location startTime endTime")
       .sort({ checkedInAt: -1 })
       .limit(5),
@@ -204,7 +206,7 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
           ((jobsCompletedThisMonth - jobsCompletedLastMonth) / jobsCompletedLastMonth) * 100
         );
 
-  res.status(StatusCodes.OK).json({
+  return {
     stats: {
       todaysJobs: {
         count: todaysJobsCount,
@@ -246,5 +248,11 @@ export const getDashboardStats: MiddlewareFn = async (req, res) => {
         overtimeMinutes: a.overtimeMinutes,
       })),
     },
-  });
+  };
+}
+
+export const getDashboardStats: MiddlewareFn = async (req, res) => {
+  const currentUser = getReqUser(req);
+  const data = await computeDashboardStats(currentUser.company_id);
+  res.status(StatusCodes.OK).json(data);
 };

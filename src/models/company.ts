@@ -1,6 +1,7 @@
 import mongoose, { InferSchemaType, Schema } from "mongoose";
 import { BUSINESS_TYPES, COMPANY_SIZES } from "../utils/constant.js";
 import { ICompany } from "../interface/model/company.js";
+import { FileRefSchema } from "./shared/fileRefSchema.js";
 
 export interface ICompanyModel extends mongoose.Document, ICompany { }
 
@@ -42,6 +43,7 @@ const CompanySchema = new Schema(
       type: Boolean,
       default: true,
     },
+    logo: { type: FileRefSchema, default: null },
     plan: {
       type: String,
       enum: ["free", "starter", "professional", "enterprise"],

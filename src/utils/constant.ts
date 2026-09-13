@@ -41,6 +41,8 @@ export interface PlanFeatures {
   recurringJobs: boolean;
   openShifts: boolean;
   advancedReports: boolean;
+  aiJobAssistant: boolean;
+  aiDashboardInsights: boolean;
 }
 
 export interface PlanDefinition {
@@ -54,22 +56,22 @@ export const PLAN_LIMITS: Record<Plan, PlanDefinition> = {
   free: {
     maxWorkers: 3,
     maxJobsPerMonth: 10,
-    features: { gpsVerification: false, recurringJobs: false, openShifts: false, advancedReports: false },
+    features: { gpsVerification: false, recurringJobs: false, openShifts: false, advancedReports: false, aiJobAssistant: false, aiDashboardInsights: false },
   },
   starter: {
     maxWorkers: 15,
     maxJobsPerMonth: 100,
-    features: { gpsVerification: true, recurringJobs: false, openShifts: false, advancedReports: false },
+    features: { gpsVerification: true, recurringJobs: false, openShifts: false, advancedReports: false, aiJobAssistant: false, aiDashboardInsights: false },
   },
   professional: {
     maxWorkers: 50,
     maxJobsPerMonth: -1,
-    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true },
+    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true, aiJobAssistant: true, aiDashboardInsights: true },
   },
   enterprise: {
     maxWorkers: -1,
     maxJobsPerMonth: -1,
-    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true },
+    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true, aiJobAssistant: true, aiDashboardInsights: true },
   },
 };
 
@@ -81,6 +83,8 @@ export const PLAN_FEATURE_LABELS: Record<keyof PlanFeatures, string> = {
   recurringJobs: "Recurring job templates",
   openShifts: "Open shifts & approval workflows",
   advancedReports: "Advanced reports & analytics",
+  aiJobAssistant: "AI job-creation assistant",
+  aiDashboardInsights: "AI dashboard insights",
 };
 
 // Marketing/pricing-page copy for a plan — deliberately NOT where the
@@ -158,6 +162,7 @@ export const PLAN_CATALOG: Record<Plan, PlanCatalogEntry> = {
 export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
   "reject-job",
   "cancel-job",
+  "release-job",
   "late-start",
   "geofence-warning",
   "overtime-review",

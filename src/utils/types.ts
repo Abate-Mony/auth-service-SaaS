@@ -5,6 +5,7 @@ export type JobStatusNotificationType =
   | "accept-job"
   | "reject-job"
   | "cancel-job"
+  | "release-job"
   | "start-job"
   | "late-start"
   | "geofence-warning"

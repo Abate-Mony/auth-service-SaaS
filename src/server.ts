@@ -23,6 +23,8 @@ import cors from "cors";
 import { authenticateUser } from "./middleware/authMiddleware.js";
 import { loadRestriction } from "./middleware/restrictionMiddleware.js";
 import jobRouter from "./routes/jobRouter.js";
+import aiRouter from "./routes/aiRouter.js";
+import documentRouter from "./routes/documentRouter.js";
 import workerRouter from "./routes/workerRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
 import companyRouter from "./routes/companyRouter.js"
@@ -36,6 +38,7 @@ import notificationPreferenceRouter
   import invitationRouter from "./routes/invitationRouter.js";
   import recurringJobRouter from "./routes/recurringJobRouter.js";
   import clientRouter from "./routes/clientRouter.js";
+  import siteRouter from "./routes/siteRouter.js";
   import invoiceRouter from "./routes/invoiceRouter.js";
   import userRestrictionRouter from "./routes/userRestrictionRouter.js";
   import analyticsRouter from "./routes/analyticsRouter.js";
@@ -124,6 +127,7 @@ app.use("/api/v1/calendar", authenticateUser, loadRestriction, calendarRouter)
 app.use("/api/v1/invitations", invitationRouter)
 app.use("/api/v1/recurring-jobs", authenticateUser, loadRestriction, recurringJobRouter)
 app.use("/api/v1/clients", authenticateUser, loadRestriction, clientRouter)
+app.use("/api/v1/sites", authenticateUser, loadRestriction, siteRouter)
 app.use("/api/v1/invoices", authenticateUser, loadRestriction, invoiceRouter)
 // Applies authenticateUser and loadRestriction itself (see userRestrictionRouter)
 // since GET /me and POST /me/appeal must stay reachable at every access level.
@@ -131,6 +135,8 @@ app.use("/api/v1/restrictions", userRestrictionRouter)
 app.use("/api/v1/analytics", authenticateUser, loadRestriction, analyticsRouter)
 app.use("/api/v1/reports", authenticateUser, loadRestriction, reportRouter)
 app.use("/api/v1/notifications", authenticateUser, loadRestriction, notificationRouter)
+app.use("/api/v1/ai", authenticateUser, loadRestriction, aiRouter)
+app.use("/api/v1/documents", authenticateUser, loadRestriction, documentRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });

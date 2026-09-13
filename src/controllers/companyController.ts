@@ -5,6 +5,7 @@ import { getReqUser, MiddlewareFn } from "../interfaces/expresstype.js";
 import Company from "../models/company.js";
 import { assertFeatureEnabledForCompany } from "../utils/planLimits.js";
 import { PLANS, PLAN_LIMITS, PLAN_CATALOG, PLAN_FEATURE_LABELS, type PlanFeatures } from "../utils/constant.js";
+import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloudinaryUpload.js";
 
 // Kept in one place so GET and PATCH always agree on exactly which fields
 // count as "settings" (as opposed to company profile fields like name/owner).
@@ -77,6 +78,49 @@ const companySettingsSchema = z
     })
     .partial() // PATCH — every field optional, unknown keys rejected below
     .strict();
+
+// Company branding, not an operational setting — kept separate from
+// COMPANY_SETTINGS_FIELDS (geofence/pay/scheduling policy) on purpose.
+// Admin-only: a company's logo is a shared, account-wide asset.
+export const uploadCompanyLogo: MiddlewareFn = async (req, res) => {
+    const companyId = getReqUser(req).company_id;
+    const file = (req as any).file;
+    if (!file) throw new BadRequestError("Select a logo to upload.");
+
+    const company = await Company.findById(companyId).select("logo");
+    if (!company) throw new NotFoundError("Company not found.");
+
+    if (company.logo?.publicId) {
+        await deleteFileFromCloudinary(company.logo.publicId, company.logo.resourceType as "image" | "raw");
+    }
+
+    const uploaded = await uploadFileToCloudinary(file, `company-logos/${companyId}`);
+
+    company.logo = {
+        url: uploaded.url,
+        publicId: uploaded.publicId,
+        resourceType: uploaded.resourceType,
+        mimeType: file.mimetype,
+        uploadedAt: new Date(),
+    } as any;
+    await company.save();
+
+    res.status(StatusCodes.OK).json({ logo: company.logo });
+};
+
+export const deleteCompanyLogo: MiddlewareFn = async (req, res) => {
+    const companyId = getReqUser(req).company_id;
+    const company = await Company.findById(companyId).select("logo");
+    if (!company) throw new NotFoundError("Company not found.");
+
+    if (company.logo?.publicId) {
+        await deleteFileFromCloudinary(company.logo.publicId, company.logo.resourceType as "image" | "raw");
+    }
+    company.logo = null;
+    await company.save();
+
+    res.status(StatusCodes.OK).json({ logo: null });
+};
 
 export const getCompanySettings: MiddlewareFn = async (req, res) => {
     const company = await Company.findById(getReqUser(req).company_id)

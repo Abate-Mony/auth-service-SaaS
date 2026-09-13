@@ -427,7 +427,10 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     if (!worker) throw new UnauthenticatedError("user not login ")
 
     const { id } = req.params;
-    const { status, reason } = req.body;
+    // `release` only applies to status "cancelled" — see that case below. It
+    // additionally opens the job back up to self-claim instead of leaving
+    // the manager to reassign it manually.
+    const { status, reason, release } = req.body;
 
     const allowedStatuses = ["accepted", "declined", "in-progress", "completed", "cancelled"];
     if (!allowedStatuses.includes(status)) {
@@ -489,7 +492,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
         // actionable "you may need to cover this" outcome, not worth a
         // whole separate per-user notification-preference toggle for.
         event: "job_accepted" | "job_declined",
-        emailType: "accept-job" | "reject-job" | "cancel-job",
+        emailType: "accept-job" | "reject-job" | "cancel-job" | "release-job",
         reason?: string
     ) {
         // Broadcasts to every admin/manager at the company — a declined or
@@ -502,12 +505,17 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             .select("email");
         if (!recipients.length) return;
 
-        const title = emailType === "accept-job" ? "Shift accepted" : emailType === "cancel-job" ? "Shift cancelled" : "Shift declined";
+        const title = emailType === "accept-job" ? "Shift accepted"
+            : emailType === "cancel-job" ? "Shift cancelled"
+                : emailType === "release-job" ? "Shift released to open shifts"
+                    : "Shift declined";
         const body = emailType === "accept-job"
             ? `${worker!.fullname} accepted ${job!.title} — ${job!.startTime} on ${dayjs(job!.date).tz(tz).format("D MMM")}`
             : emailType === "cancel-job"
                 ? `${worker!.fullname} cancelled their accepted shift on ${job!.title}${reason ? `: ${reason}` : ""}`
-                : `${worker!.fullname} declined ${job!.title}${reason ? `: ${reason}` : ""}`;
+                : emailType === "release-job"
+                    ? `${worker!.fullname} released ${job!.title} back to open shifts${reason ? `: ${reason}` : ""}`
+                    : `${worker!.fullname} declined ${job!.title}${reason ? `: ${reason}` : ""}`;
 
         await Promise.all(
             recipients.map(async recipient => {
@@ -615,6 +623,17 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             if (assignment.status !== "pending") {
                 throw new BadRequestError(`You cannot accept a job that is ${assignment.status}.`);
             }
+            // A self-claimed open shift on a requiresApproval job is also
+            // "pending", but that means "awaiting your manager's decision,"
+            // not "awaiting your response" — this generic endpoint is for
+            // the latter only. Without this check a worker could accept
+            // (and then start) their own still-unapproved claim directly,
+            // silently bypassing reviewOpenShiftClaim entirely.
+            if (assignment.pendingApproval) {
+                throw new BadRequestError(
+                    "This shift still needs your manager's approval before you can accept it."
+                );
+            }
 
             assignment.status = "accepted";
             assignment.acceptedAt = now;
@@ -643,6 +662,13 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
         case "declined": {
             if (assignment.status !== "pending") {
                 throw new BadRequestError(`You cannot decline a job that is ${assignment.status}.`);
+            }
+            // Same reasoning as "accepted" above — withdrawing a claim still
+            // awaiting manager review isn't what this endpoint is for.
+            if (assignment.pendingApproval) {
+                throw new BadRequestError(
+                    "This shift is awaiting your manager's decision — it can't be declined from here yet."
+                );
             }
 
             assignment.status = "declined";
@@ -689,13 +715,30 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 );
             }
 
+            // "Release" is a cancel that also reopens the slot for another
+            // worker to self-claim, instead of leaving the manager to
+            // reassign it by hand — same plan gate as flipping openToClaims
+            // anywhere else (job create/update).
+            const isRelease = release === true;
+            if (isRelease) {
+                await assertFeatureEnabledForCompany(job.company, "openShifts");
+            }
+
             assignment.status = "cancelled";
             assignment.cancellationReason = (reason ?? "").trim();
             assignment.cancelledAt = now;
             assignment.cancelledBy = workerId as any;
             assignment.cancellationType = "worker";
 
-            notifyManagerOfStatusChange("job_declined", "cancel-job", assignment.cancellationReason).catch(err =>
+            if (isRelease && !job.openToClaims) {
+                await jobModel.updateOne({ _id: job._id }, { openToClaims: true });
+            }
+
+            notifyManagerOfStatusChange(
+                "job_declined",
+                isRelease ? "release-job" : "cancel-job",
+                assignment.cancellationReason
+            ).catch(err =>
                 console.error(`Failed to notify manager of cancelled assignment ${assignment._id}:`, err)
             );
 
@@ -710,6 +753,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                     reason: assignment.cancellationReason || null,
                     // How much notice the manager has to backfill
                     hoursNotice: Math.round((scheduledStart.getTime() - now.getTime()) / 3_600_000),
+                    released: isRelease,
                 },
             });
             break;
@@ -1496,20 +1540,29 @@ export const getOpenShifts: MiddlewareFn = async (req, res) => {
     }
 
     const jobIds = openJobs.map(job => job._id);
-    const assignmentsByJob = await JobAssignment.aggregate([
-        { $match: { job: { $in: jobIds }, isDeleted: false, status: { $nin: ["declined", "cancelled"] } } },
-        { $group: { _id: "$job", count: { $sum: 1 }, workers: { $push: "$worker" } } },
+    const [fillCounts, myAssignments] = await Promise.all([
+        // How many slots are actually filled — a declined/cancelled
+        // assignment never counted as staffing, so it's excluded here.
+        JobAssignment.aggregate([
+            { $match: { job: { $in: jobIds }, isDeleted: false, status: { $nin: ["declined", "cancelled"] } } },
+            { $group: { _id: "$job", count: { $sum: 1 } } },
+        ]),
+        // Whether THIS worker has touched this job at all, any status —
+        // must match claimOpenShift's own "already claimed" check exactly
+        // (job+worker is a hard unique constraint there regardless of
+        // status), or a job the worker previously declined/cancelled keeps
+        // showing here as claimable and then always fails when they try.
+        JobAssignment.find({ job: { $in: jobIds }, worker: workerId, isDeleted: false }).select("job").lean(),
     ]);
-    const infoByJob = new Map(assignmentsByJob.map(a => [a._id.toString(), a]));
+    const filledByJob = new Map(fillCounts.map(a => [a._id.toString(), a.count]));
+    const claimedJobIds = new Set(myAssignments.map(a => a.job.toString()));
 
     // A job stays "open" only while it still has an unfilled slot and this
     // worker isn't already on it — claimed-out or already-claimed shifts
     // simply don't show up, rather than showing up disabled.
     const jobs = openJobs.filter(job => {
-        const info = infoByJob.get(job._id.toString());
-        const filled = info?.count ?? 0;
-        const alreadyClaimed = (info?.workers ?? []).some((w: mongoose.Types.ObjectId) => w.toString() === workerId);
-        return !alreadyClaimed && filled < (job.requiredWorkers ?? 1);
+        const filled = filledByJob.get(job._id.toString()) ?? 0;
+        return !claimedJobIds.has(job._id.toString()) && filled < (job.requiredWorkers ?? 1);
     });
 
     res.status(StatusCodes.OK).json({ success: true, jobs });
@@ -1620,6 +1673,17 @@ export const reviewOpenShiftClaim: MiddlewareFn = async (req, res) => {
         pendingApproval: true,
     });
     if (!assignment) throw new NotFoundError("No pending claim found for this assignment.");
+
+    // Belt-and-braces: pendingApproval should only ever be true while status
+    // is still "pending" (nothing else should be able to move it forward
+    // without clearing the flag — see updateWorkerJobStatus's own guards).
+    // If that invariant is ever violated by some other path, refuse rather
+    // than silently overwrite a shift the worker may have already started.
+    if (assignment.status !== "pending" || assignment.checkedInAt) {
+        throw new BadRequestError(
+            "This claim is no longer awaiting approval — it's already moved on. Refresh and check its current status."
+        );
+    }
 
     const job = await jobModel.findOne({ _id: assignment.job, isDeleted: false });
     if (!job || job.company.toString() !== req.user.company_id.toString()) {

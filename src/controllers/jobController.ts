@@ -6,6 +6,7 @@ import JobAssignment from "../models/JobAssignment.js";
 import Job from "../models/jobModel.js";
 import Company from "../models/company.js";
 import Client from "../models/clientModel.js";
+import Site from "../models/siteModel.js";
 import recurringJobModel from "../models/recurringJobModel.js";
 import userModel from "../models/userModel.js";
 import { toUtcDay } from "../utils/dates.js";
@@ -17,6 +18,8 @@ import { sendPushToUser } from "../utils/webPush.js";
 import { sendExpoPushToUser } from "../utils/expoPush.js";
 import dayjs from "../utils/dayjsSetup.js";
 import { TZ } from "../utils/dates.js";
+import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloudinaryUpload.js";
+import { formatAddress } from "../utils/formatAddress.js";
 
 export const jobDurationMinutes = (startTime: string, endTime: string): number => {
     const [sh, sm] = startTime.split(":").map(Number);
@@ -60,6 +63,53 @@ const resolveJobClient = async (
     return client;
 };
 
+// Sites are optional and belong to exactly one Client — resolving one
+// requires both company AND client scoping, never id alone. A Site can
+// never be attached to a job for a different client than the one it
+// belongs to.
+const resolveJobSite = async (
+    siteId: unknown,
+    companyId: string | mongoose.Types.ObjectId,
+    clientDoc: InstanceType<typeof Client> | null
+): Promise<InstanceType<typeof Site> | null> => {
+    if (siteId === undefined || siteId === null || siteId === "") return null;
+    if (typeof siteId !== "string" || !mongoose.Types.ObjectId.isValid(siteId)) {
+        throw new BadRequestError("Invalid site id.");
+    }
+    if (!clientDoc) {
+        throw new BadRequestError("Select a client before choosing one of its sites.");
+    }
+
+    const site = await Site.findOne({
+        _id: siteId,
+        company: companyId,
+        client: clientDoc._id,
+        isDeleted: false,
+    });
+    if (!site) throw new BadRequestError("Site not found.");
+    if (site.status !== "active") {
+        throw new BadRequestError("Site must be active before it can be assigned to a new job.");
+    }
+
+    return site;
+};
+
+// The Site fields Job has no field of its own for (location/address/
+// coordinates/geofence ARE the snapshot — filled onto the job directly, see
+// createJob/updateJob). This only carries what's left over, so a Site's
+// name/contact/instructions changing later never rewrites a past job's
+// scheduling facts.
+const buildSiteSnapshot = (site: InstanceType<typeof Site>) => ({
+    name: site.name,
+    contact: {
+        name: site.contact?.name ?? "",
+        phone: site.contact?.phone ?? "",
+        email: site.contact?.email ?? "",
+    },
+    accessInstructions: site.accessInstructions ?? "",
+    parkingInstructions: site.parkingInstructions ?? "",
+});
+
 // Plain-English recurrence description for the "added to a recurring shift"
 // notification — e.g. "Every week on Mon, Wed" or "Every 2 days".
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -85,6 +135,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         title,
         description,
         client,
+        site,
         location,
         address,
         coordinates,
@@ -170,11 +221,19 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     const workerIds = realWorkers.map(w => w._id);
 
     const clientDoc = await resolveJobClient(client, req.user.company_id);
+    const siteDoc = await resolveJobSite(site, req.user.company_id, clientDoc);
 
     // Client defaults only fill in what the request omitted — 0 is a valid
     // explicit chargeRate and must never be treated as "not provided".
     const finalChargeRate = chargeRate !== undefined ? chargeRate : clientDoc?.defaultChargeRate ?? 0;
     const finalChargeType = chargeType !== undefined ? chargeType : clientDoc?.defaultChargeType ?? "hourly";
+
+    // A Site-backed job fills location/address/coordinates/geofence from the
+    // Site — only when the request didn't already say so explicitly (a
+    // one-off job never has a site, but this keeps an explicit override
+    // possible either way, same "0/false is a real value" discipline as
+    // chargeRate above).
+    const finalCoordinates = coordinates ?? (siteDoc?.coordinates?.lat != null ? siteDoc.coordinates : undefined);
 
     // Allowlisted — never spread req.body, or clients can set isTemplate/status/createdBy
     const baseJobFields = {
@@ -182,9 +241,11 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         description,
         company: req.user.company_id.toString(),
         client: clientDoc?._id ?? null,
-        location,
-        address: address ?? "",
-        ...(coordinates ? { coordinates } : {}),
+        site: siteDoc?._id ?? null,
+        ...(siteDoc ? { siteSnapshot: buildSiteSnapshot(siteDoc) } : {}),
+        location: location ?? siteDoc?.name,
+        address: address ?? (siteDoc ? formatAddress(siteDoc.address) : undefined) ?? "",
+        ...(finalCoordinates ? { coordinates: finalCoordinates } : {}),
         date: jobDate,
         startTime,
         endTime,
@@ -199,8 +260,8 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         notes: notes ?? "",
         instructions: instructions ?? "",
         createdBy: currentUserId,
-         geofenceMode,
-         geofenceRadiusMeters,
+         geofenceMode: geofenceMode ?? siteDoc?.geofenceMode ?? undefined,
+         geofenceRadiusMeters: geofenceRadiusMeters ?? siteDoc?.geofenceRadiusMeters ?? undefined,
          clockInGraceMinutes,
          ...(openToClaims !== undefined ? { openToClaims } : {}),
          ...(requiresApproval !== undefined ? { requiresApproval } : {}),
@@ -550,13 +611,14 @@ export const getAllJobs: MiddlewareFn = async (
             $in: jobs.map(job => job._id),
         },
         isDeleted: false,
-    }).populate("worker", "fullname email worker").lean();
+    }).populate("worker", "fullname email profilePhoto worker").lean();
 
     // Flatten the populated worker onto the assignment — same shape as
     // getJob returns: { fullname, email, ... } directly, no nested `worker`.
     const flatAssignments = assignments.map(({ worker, ...rest }) => ({
         ...rest,
         email: (worker as any)?.email,
+        profilePhoto: (worker as any)?.profilePhoto ?? null,
         worker: (worker as any)?._id,
     }));
 
@@ -663,7 +725,7 @@ export const getJob: MiddlewareFn = async (
     const assignments = await JobAssignment.find({
         job: req.params.id,
         isDeleted: false,
-    }).populate("worker", "fullname email").lean();
+    }).populate("worker", "fullname email profilePhoto").lean();
 
     if (!job) throw new NotFoundError("job not found ")
 
@@ -697,6 +759,7 @@ export const getJob: MiddlewareFn = async (
             ...rest,
             worker: worker?._id,
             email: worker?.email,
+            profilePhoto: worker?.profilePhoto ?? null,
             hoursWorked: Math.round((payableMinutes / 60) * 100) / 100,
         };
     });
@@ -905,6 +968,44 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         }
     }
 
+    // Same "only re-resolve when actually changing" discipline as client
+    // above. Switching to a one-off location clears site/siteSnapshot and
+    // leaves location/address/coordinates/geofence exactly as whatever this
+    // same request submitted for them (the generic allowlist loop above
+    // already picked those up) — never regenerated just because the edit
+    // form resubmitted the job's other, unrelated fields.
+    if (req.body.site !== undefined) {
+        const currentSiteId = job.site ? job.site.toString() : null;
+        const requestedSiteId = req.body.site === null || req.body.site === "" ? null : req.body.site;
+
+        if (requestedSiteId !== currentSiteId) {
+            if (requestedSiteId === null) {
+                updateFields.site = null;
+                updateFields.siteSnapshot = null;
+            } else {
+                // A client changing in this same request resolves the site
+                // against the NEW client, not the job's old one.
+                const clientIdForSite = updateFields.client !== undefined ? updateFields.client : job.client;
+                const clientDocForSite = clientIdForSite
+                    ? await resolveJobClient(clientIdForSite.toString(), companyId)
+                    : null;
+                const siteDoc = await resolveJobSite(requestedSiteId, companyId, clientDocForSite);
+
+                updateFields.site = siteDoc!._id;
+                updateFields.siteSnapshot = buildSiteSnapshot(siteDoc!);
+                if (updateFields.location === undefined) updateFields.location = siteDoc!.name;
+                if (updateFields.address === undefined) updateFields.address = formatAddress(siteDoc!.address) ?? "";
+                if (updateFields.coordinates === undefined && siteDoc!.coordinates?.lat != null) {
+                    updateFields.coordinates = siteDoc!.coordinates;
+                }
+                if (updateFields.geofenceMode === undefined) updateFields.geofenceMode = siteDoc!.geofenceMode ?? null;
+                if (updateFields.geofenceRadiusMeters === undefined) {
+                    updateFields.geofenceRadiusMeters = siteDoc!.geofenceRadiusMeters ?? undefined;
+                }
+            }
+        }
+    }
+
     const updatedJob = await Job.findByIdAndUpdate(job._id, updateFields, {
         new: true,
         runValidators: true,
@@ -1035,7 +1136,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
      */
     const assignments = await JobAssignment.find({
         job: updatedJob._id,
-    }).populate("worker", "fullname email");
+    }).populate("worker", "fullname email profilePhoto");
 
     res.status(StatusCodes.OK).json({
         success: true,
@@ -1063,4 +1164,53 @@ export const deleteJob: MiddlewareFn = async (req, res): Promise<void> => {
         success: true,
         message: "Job deleted successfully",
     });
+};
+
+// Optional file a manager attaches to a job — e.g. a photo of a door
+// passcode or access instructions — visible to assigned workers alongside
+// the job's own instructions. Uploaded via its own multipart endpoint
+// rather than the JSON create/update payload, so the wizard's plain-JSON
+// submission doesn't need to change shape.
+export const uploadJobAttachment: MiddlewareFn = async (req, res) => {
+    const companyId = getReqUser(req).company_id;
+    const file = (req as any).file;
+    if (!file) throw new BadRequestError("Select a file to upload.");
+
+    const job = await Job.findOne({ _id: req.params.id, isDeleted: false, company: companyId.toString() });
+    if (!job) throw new NotFoundError("Job not found.");
+
+    // Replacing an existing attachment — clean up the old Cloudinary asset
+    // rather than leaving it orphaned.
+    if (job.attachment?.publicId) {
+        await deleteFileFromCloudinary(job.attachment.publicId, job.attachment.resourceType as "image" | "raw");
+    }
+
+    const uploaded = await uploadFileToCloudinary(file, `job-attachments/${companyId}`);
+
+    job.attachment = {
+        url: uploaded.url,
+        publicId: uploaded.publicId,
+        resourceType: uploaded.resourceType,
+        filename: file.originalname,
+        mimeType: file.mimetype,
+        uploadedAt: new Date(),
+    } as any;
+    await job.save();
+
+    res.status(StatusCodes.OK).json({ attachment: job.attachment });
+};
+
+export const deleteJobAttachment: MiddlewareFn = async (req, res) => {
+    const companyId = getReqUser(req).company_id;
+
+    const job = await Job.findOne({ _id: req.params.id, isDeleted: false, company: companyId.toString() });
+    if (!job) throw new NotFoundError("Job not found.");
+
+    if (job.attachment?.publicId) {
+        await deleteFileFromCloudinary(job.attachment.publicId, job.attachment.resourceType as "image" | "raw");
+    }
+    job.attachment = null;
+    await job.save();
+
+    res.status(StatusCodes.OK).json({ attachment: null });
 };

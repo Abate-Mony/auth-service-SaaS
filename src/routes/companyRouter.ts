@@ -1,12 +1,17 @@
 import { Router } from "express";
-import { getCompanyPlan, getCompanySettings, getPlanCatalog, updateCompanyPlan, updateCompanySettings } from "../controllers/companyController.js";
+import { deleteCompanyLogo, getCompanyPlan, getCompanySettings, getPlanCatalog, updateCompanyPlan, updateCompanySettings, uploadCompanyLogo } from "../controllers/companyController.js";
 import { authorizePermissions } from "../middleware/authMiddleware.js";
+import upload from "../middleware/multerMiddleware.js";
 
 const router = Router();
 
 router.route("/settings")
     .get(getCompanySettings)
     .patch(authorizePermissions("admin"), updateCompanySettings);
+
+router.route("/logo")
+    .post(authorizePermissions("admin"), upload.single("logo"), uploadCompanyLogo)
+    .delete(authorizePermissions("admin"), deleteCompanyLogo);
 
 // Registered before "/plan" only as a matter of habit (they're distinct
 // literal segments so Express wouldn't actually confuse them) — the

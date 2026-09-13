@@ -112,7 +112,7 @@ export const getRecurringJob: MiddlewareFn = async (req, res) => {
   const schedule = await recurringJobModel
     .findOne({ _id: id, company: getReqUser(req).company_id })
     .populate("templateJob")
-    .populate("defaultWorkers", "fullname email")
+    .populate("defaultWorkers", "fullname email profilePhoto")
     .populate("createdBy", "fullname")
     .lean();
 

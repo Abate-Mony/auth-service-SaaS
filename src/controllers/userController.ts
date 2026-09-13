@@ -10,10 +10,11 @@ import ActivityLog from "../models/ActivityLog.js";
 import { scheduledStartOf, toUtcDay, TZ } from "../utils/dates.js";
 import dayjs from "../utils/dayjsSetup.js";
 import { sanitizeUser } from "../utils/tokenUtils.js";
+import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloudinaryUpload.js";
 export const currentUser: MiddlewareFn = async (req, res) => {
   // const { user_id } = getReqUser(req);
   const { user_id } = req.user
-  const user = await userModel.findOne({ _id: user_id }).populate("company", "name plan maxWorkers")
+  const user = await userModel.findOne({ _id: user_id }).populate("company", "name plan maxWorkers logo")
 
   if (!user) throw new UnauthenticatedError(`login again `);
   // adding c
@@ -49,6 +50,55 @@ export const updateCurrentUser: MiddlewareFn = async (req, res) => {
   }
 
   const user = await userModel.findByIdAndUpdate(user_id, update, { new: true, runValidators: true });
+  if (!user) throw new UnauthenticatedError("login again");
+
+  res.status(StatusCodes.OK).json({ user: sanitizeUser(user) });
+};
+
+// A personal account setting, not role-restricted — every role can set
+// their own profile photo.
+export const uploadMyPhoto: MiddlewareFn = async (req, res) => {
+  const { user_id } = req.user;
+  const file = (req as any).file;
+  if (!file) throw new BadRequestError("Select a photo to upload.");
+
+  const existing = await userModel.findById(user_id).select("profilePhoto");
+  if (!existing) throw new UnauthenticatedError("login again");
+
+  if (existing.profilePhoto?.publicId) {
+    await deleteFileFromCloudinary(existing.profilePhoto.publicId, existing.profilePhoto.resourceType as "image" | "raw");
+  }
+
+  const uploaded = await uploadFileToCloudinary(file, `profile-photos/${user_id}`);
+
+  const user = await userModel.findByIdAndUpdate(
+    user_id,
+    {
+      profilePhoto: {
+        url: uploaded.url,
+        publicId: uploaded.publicId,
+        resourceType: uploaded.resourceType,
+        mimeType: file.mimetype,
+        uploadedAt: new Date(),
+      },
+    },
+    { new: true }
+  );
+  if (!user) throw new UnauthenticatedError("login again");
+
+  res.status(StatusCodes.OK).json({ user: sanitizeUser(user) });
+};
+
+export const deleteMyPhoto: MiddlewareFn = async (req, res) => {
+  const { user_id } = req.user;
+  const existing = await userModel.findById(user_id).select("profilePhoto");
+  if (!existing) throw new UnauthenticatedError("login again");
+
+  if (existing.profilePhoto?.publicId) {
+    await deleteFileFromCloudinary(existing.profilePhoto.publicId, existing.profilePhoto.resourceType as "image" | "raw");
+  }
+
+  const user = await userModel.findByIdAndUpdate(user_id, { profilePhoto: null }, { new: true });
   if (!user) throw new UnauthenticatedError("login again");
 
   res.status(StatusCodes.OK).json({ user: sanitizeUser(user) });
@@ -308,6 +358,7 @@ export const getWorkerStats: MiddlewareFn = async (req, res) => {
       role: worker.role,
       isActive: worker.isActive,
       createdAt: worker.createdAt,
+      profilePhoto: worker.profilePhoto ?? null,
     },
     stats: {
       hoursThisWeek: round1(minutesThisWeek / 60),

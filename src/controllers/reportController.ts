@@ -283,10 +283,15 @@ export const getReportsPayroll: MiddlewareFn = async (req, res) => {
 
   const userIds = workers.map(w => w.workerId);
   const users = userIds.length
-    ? await userModel.find({ _id: { $in: userIds } }).select("email").lean()
+    ? await userModel.find({ _id: { $in: userIds } }).select("email profilePhoto").lean()
     : [];
   const emailById = new Map(users.map(u => [u._id.toString(), u.email]));
-  const workersWithEmail = workers.map(w => ({ ...w, email: emailById.get(w.workerId) ?? "" }));
+  const photoById = new Map(users.map(u => [u._id.toString(), u.profilePhoto ?? null]));
+  const workersWithEmail = workers.map(w => ({
+    ...w,
+    email: emailById.get(w.workerId) ?? "",
+    profilePhoto: photoById.get(w.workerId) ?? null,
+  }));
 
   res.status(StatusCodes.OK).json({
     success: true,
@@ -308,14 +313,22 @@ export const getReportsTimesheets: MiddlewareFn = async (req, res) => {
 
   const { jobById, assignments } = await getJobsAndAssignments(companyId, start, end);
 
-  const rows = assignments
-    .filter(a => a.status === "completed" && a.checkedInAt && a.checkedOutAt)
+  const completedAssignments = assignments.filter(a => a.status === "completed" && a.checkedInAt && a.checkedOutAt);
+  const workerIds = [...new Set(completedAssignments.map(a => a.worker.toString()))];
+  const users = workerIds.length
+    ? await userModel.find({ _id: { $in: workerIds } }).select("profilePhoto").lean()
+    : [];
+  const photoById = new Map(users.map(u => [u._id.toString(), u.profilePhoto ?? null]));
+
+  const rows = completedAssignments
     .map(a => {
       const job = jobById.get(a.job.toString());
       const minutes = payableMinutesOf(a);
       return {
         assignmentId: a._id,
+        workerId: a.worker,
         worker: a.fullname,
+        profilePhoto: photoById.get(a.worker.toString()) ?? null,
         job: job?.title ?? "Shift",
         date: job ? dayjs(job.date).tz(tz).format("YYYY-MM-DD") : null,
         start: dayjs(a.checkedInAt).tz(tz).format("HH:mm"),

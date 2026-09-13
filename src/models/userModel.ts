@@ -1,5 +1,6 @@
 import mongoose, { InferSchemaType, Schema } from "mongoose";
 import { IUser } from "../interfaces/models/user.js";
+import { FileRefSchema } from "./shared/fileRefSchema.js";
 export interface IUserModel extends mongoose.Document, IUser {
   getDefaultResultOrder(): void;
 }
@@ -106,6 +107,29 @@ const UserSchema = new Schema(
     // Expo push tokens, one per mobile device the worker is logged in on.
     expoPushTokens: {
       type: [String],
+      default: [],
+    },
+
+    // Any role can set their own — a personal account setting, not
+    // restricted to workers.
+    profilePhoto: { type: FileRefSchema, default: null },
+
+    // Documents a worker uploads about themselves (ID, right-to-work,
+    // certifications, etc.) — self-service, viewable by the worker and by
+    // admins/managers in the same company. resourceType is Cloudinary's own
+    // classification (image vs raw), stored at upload time so a later
+    // delete uses the exact value Cloudinary expects instead of guessing.
+    documents: {
+      type: [
+        {
+          name: { type: String, required: true, trim: true },
+          url: { type: String, required: true },
+          publicId: { type: String, required: true },
+          resourceType: { type: String, enum: ["image", "raw"], required: true },
+          mimeType: { type: String },
+          uploadedAt: { type: Date, default: Date.now },
+        },
+      ],
       default: [],
     },
   },

@@ -1,4 +1,5 @@
 import mongoose, { InferSchemaType, Schema } from "mongoose";
+import { FileRefSchema } from "./shared/fileRefSchema.js";
 
 const JobSchema = new Schema(
     {
@@ -12,6 +13,35 @@ const JobSchema = new Schema(
             ref: "Client",
             index: true,
             default: null,
+        },
+        // Optional — a Site is a reusable client workplace; ad-hoc/one-off
+        // jobs legitimately have none and just use location/address below
+        // directly. When set, location/address/coordinates/geofenceMode/
+        // geofenceRadiusMeters below are filled from the Site at creation
+        // time and never re-synced — see siteSnapshot for the rationale.
+        site: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Site",
+            index: true,
+            default: null,
+        },
+        // Historical facts from the Site as they were at scheduling time,
+        // for whatever Site fields Job has no field of its own for
+        // (location/address/coordinates/geofence ARE that snapshot, already
+        // filled from the Site below — this only covers what's left over).
+        // If the Site's name/contact/instructions change later, or the Site
+        // is deleted, this job must keep showing what applied when it was
+        // scheduled — required for attendance disputes, geofence review,
+        // timesheets and audits.
+        siteSnapshot: {
+            name: String,
+            contact: {
+                name: String,
+                phone: String,
+                email: String,
+            },
+            accessInstructions: String,
+            parkingInstructions: String,
         },
         title: { type: String, required: true, trim: true },
         description: { type: String, required: true, trim: true },
@@ -113,6 +143,13 @@ const JobSchema = new Schema(
         // ── Misc ──────────────────────────────────────────────────────────
         notes: { type: String, default: "", trim: true },
         instructions: { type: String, default: "", trim: true },
+
+        // Optional single file a manager can attach — e.g. a photo of a door
+        // passcode or written access instructions. Visible to assigned
+        // workers alongside the job's instructions. Uploaded via its own
+        // multipart endpoint (see jobController.ts), never as part of the
+        // JSON create/update payload.
+        attachment: { type: FileRefSchema, default: null },
 
         createdBy: {
             type: mongoose.Schema.Types.ObjectId,
