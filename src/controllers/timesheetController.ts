@@ -7,6 +7,7 @@ import { StatusCodes } from "http-status-codes";
 import userModel from "../models/userModel.js";
 import Company from "../models/company.js";
 import { generateTimesheetPdf, TimesheetPdfRow } from "../utils/timesheetPdf.js";
+import { isManagementRole } from "../utils/roles.js";
 
 type Period = "weekly" | "biweekly" | "monthly";
 
@@ -158,7 +159,7 @@ export const getMyTimesheet: MiddlewareFn = async (req, res) => {
 // GET /timesheets/:id — admin/manager viewing a specific worker's timesheet
 // summary on-screen, ahead of (or instead of) downloading the PDF.
 export const getWorkerTimesheet: MiddlewareFn = async (req, res) => {
-  if (!["admin", "manager"].includes(req.user.role)) {
+  if (!isManagementRole(req.user.role)) {
     throw new UnauthorizedError("Not allowed to view this worker's timesheet.");
   }
 
@@ -429,7 +430,7 @@ export const downloadMyTimesheetPdf: MiddlewareFn = async (req, res) => {
 // action. Same PDF as downloadMyTimesheetPdf, just for someone else's shifts
 // and gated to management rather than "whoever is logged in".
 export const downloadWorkerTimesheetPdf: MiddlewareFn = async (req, res) => {
-  if (!["admin", "manager"].includes(req.user.role)) {
+  if (!isManagementRole(req.user.role)) {
     throw new UnauthorizedError("Not allowed to view this worker's timesheet.");
   }
 

@@ -11,6 +11,7 @@ import { scheduledStartOf, toUtcDay, TZ } from "../utils/dates.js";
 import dayjs from "../utils/dayjsSetup.js";
 import { sanitizeUser } from "../utils/tokenUtils.js";
 import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloudinaryUpload.js";
+import { isManagementRole } from "../utils/roles.js";
 export const currentUser: MiddlewareFn = async (req, res) => {
   // const { user_id } = getReqUser(req);
   const { user_id } = req.user
@@ -220,7 +221,7 @@ export const getWorkerStats: MiddlewareFn = async (req, res) => {
   const { id } = req.params;
   const currentUser = getReqUser(req);
 
-  if (!["admin", "manager"].includes(currentUser.role)) {
+  if (!isManagementRole(currentUser.role)) {
     throw new UnauthorizedError("Not allowed to view worker stats");
   }
 

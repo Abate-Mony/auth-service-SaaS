@@ -24,6 +24,7 @@ import { RestrictableAction } from "../models/userRestrictionModel.js";
 import { maybeCompleteJob } from "../utils/maybeCompleteJob.js";
 import { notifyUser } from "../utils/notifyUser.js";
 import { assertCanAddWorker, assertFeatureEnabledForCompany } from "../utils/planLimits.js";
+import { MANAGEMENT_ROLES } from "../utils/roles.js";
 
 // Which restriction the worker-status route enforces depends on the status
 // being requested, not the route itself — "declined" has no restrictable
@@ -501,7 +502,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
         // (Could narrow this back to just job.createdBy later if that turns
         // out too noisy — not doing that here.)
         const recipients = await userModel
-            .find({ company: assignment!.company, role: { $in: ["admin", "manager"] }, isActive: true })
+            .find({ company: assignment!.company, role: { $in: MANAGEMENT_ROLES }, isActive: true })
             .select("email");
         if (!recipients.length) return;
 
