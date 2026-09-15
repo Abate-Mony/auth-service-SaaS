@@ -20,6 +20,7 @@ import dayjs from "../utils/dayjsSetup.js";
 import { TZ } from "../utils/dates.js";
 import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloudinaryUpload.js";
 import { formatAddress } from "../utils/formatAddress.js";
+import { notifyEligibleWorkersOfOpenShift } from "../utils/notifyOpenShiftWorkers.js";
 
 export const jobDurationMinutes = (startTime: string, endTime: string): number => {
     const [sh, sm] = startTime.split(":").map(Number);
@@ -485,6 +486,14 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                 )
             ).catch(err => console.error(`Failed to send shift-assigned notification(s) for job ${job._id}:`, err));
         }
+    }
+
+    // A draft has nothing to claim yet — mirrors the same jobStatus !==
+    // "draft" gate the assigned-worker emails above use.
+    if (jobStatus !== "draft" && job.openToClaims) {
+        notifyEligibleWorkersOfOpenShift(job).catch(err =>
+            console.error(`Failed to send open-shift notification(s) for job ${job._id}:`, err)
+        );
     }
 
     res.status(StatusCodes.CREATED).json({ success: true, job });
@@ -1129,6 +1138,15 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                 ])
             )
         ).catch(err => console.error(`Failed to send shift-assigned notification(s) for job ${updatedJob._id}:`, err));
+    }
+
+    // Same draft gate as createJob, plus: only when this request is what
+    // actually opened it up (already-open jobs re-saved with unrelated
+    // changes shouldn't re-notify everyone every time).
+    if (newStatus !== "draft" && updatedJob.openToClaims && !job.openToClaims) {
+        notifyEligibleWorkersOfOpenShift(updatedJob).catch(err =>
+            console.error(`Failed to send open-shift notification(s) for job ${updatedJob._id}:`, err)
+        );
     }
 
     /**

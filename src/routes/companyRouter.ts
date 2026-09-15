@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { deleteCompanyLogo, getCompanyPlan, getCompanySettings, getPlanCatalog, updateCompanyPlan, updateCompanySettings, uploadCompanyLogo } from "../controllers/companyController.js";
 import { authorizePermissions } from "../middleware/authMiddleware.js";
-import upload from "../middleware/multerMiddleware.js";
+import { uploadAvatar } from "../middleware/multerMiddleware.js";
 
 const router = Router();
 
@@ -10,7 +10,7 @@ router.route("/settings")
     .patch(authorizePermissions("admin"), updateCompanySettings);
 
 router.route("/logo")
-    .post(authorizePermissions("admin"), upload.single("logo"), uploadCompanyLogo)
+    .post(authorizePermissions("admin"), uploadAvatar.single("logo"), uploadCompanyLogo)
     .delete(authorizePermissions("admin"), deleteCompanyLogo);
 
 // Registered before "/plan" only as a matter of habit (they're distinct

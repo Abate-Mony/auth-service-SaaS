@@ -25,6 +25,8 @@ import { maybeCompleteJob } from "../utils/maybeCompleteJob.js";
 import { notifyUser } from "../utils/notifyUser.js";
 import { assertCanAddWorker, assertFeatureEnabledForCompany } from "../utils/planLimits.js";
 import { MANAGEMENT_ROLES } from "../utils/roles.js";
+import { notifyEligibleWorkersOfOpenShift } from "../utils/notifyOpenShiftWorkers.js";
+import { uploadFileToCloudinary } from "../utils/cloudinaryUpload.js";
 
 // Which restriction the worker-status route enforces depends on the status
 // being requested, not the route itself — "declined" has no restrictable
@@ -733,6 +735,13 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
 
             if (isRelease && !job.openToClaims) {
                 await jobModel.updateOne({ _id: job._id }, { openToClaims: true });
+                // Fire-and-forget, same pattern as everywhere else a job
+                // becomes claimable — this worker's own now-cancelled
+                // assignment is excluded automatically (any status on this
+                // job is excluded, not just live ones).
+                notifyEligibleWorkersOfOpenShift(job).catch(err =>
+                    console.error(`Failed to send open-shift notification(s) for released job ${job._id}:`, err)
+                );
             }
 
             notifyManagerOfStatusChange(
@@ -1729,4 +1738,54 @@ export const reviewOpenShiftClaim: MiddlewareFn = async (req, res) => {
     }
 
     res.status(StatusCodes.OK).json({ success: true, assignment });
+};
+
+// PATCH /workers/assignments/:assignmentId/note — the worker's own note on
+// their own assignment (e.g. from the "shift complete" summary screen).
+// Not restricted to completed shifts — a worker jotting something down
+// mid-shift is fine too, only ownership is enforced.
+export const updateAssignmentNote: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const note = typeof req.body.note === "string" ? req.body.note.trim() : "";
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        worker: req.user.user_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+
+    assignment.workerNotes = note;
+    await assignment.save();
+
+    res.status(StatusCodes.OK).json({ success: true, workerNotes: assignment.workerNotes });
+};
+
+// POST /workers/assignments/:assignmentId/photos — one photo per request
+// (matches the file input's UX: pick a photo, it uploads, pick another).
+// Appends rather than replaces, same $push pattern as uploadMyDocument.
+export const uploadAssignmentPhoto: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const file = (req as any).file;
+    if (!file) throw new BadRequestError("Select a photo to upload.");
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        worker: req.user.user_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+
+    const uploaded = await uploadFileToCloudinary(file, `completion-photos/${req.user.company_id}/${assignmentId}`);
+
+    assignment.completionPhotos.push({
+        url: uploaded.url,
+        publicId: uploaded.publicId,
+        resourceType: uploaded.resourceType,
+        filename: file.originalname,
+        mimeType: file.mimetype,
+    } as any);
+    await assignment.save();
+
+    res.status(StatusCodes.CREATED).json({ success: true, completionPhotos: assignment.completionPhotos });
 };

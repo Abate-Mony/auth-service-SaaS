@@ -1,9 +1,10 @@
 // @ts-ignore
 import express from "express";
-import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, updateWorkerJobStatus } from "../controllers/workerController.js"
+import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 import { requireNotRestricted } from "../middleware/restrictionMiddleware.js";
+import upload from "../middleware/multerMiddleware.js";
 const router = express.Router();
 router
     .route("/").
@@ -34,4 +35,8 @@ router.route("/assignments/:assignmentId/overtime")
     .patch(authorizePermissions("admin", "manager"), reviewAssignmentOvertime);
 router.route("/assignments/:assignmentId/claim-review")
     .patch(authorizePermissions("admin", "manager"), reviewOpenShiftClaim);
+router.route("/assignments/:assignmentId/note")
+    .patch(authorizePermissions("worker"), updateAssignmentNote);
+router.route("/assignments/:assignmentId/photos")
+    .post(authorizePermissions("worker"), upload.single("photo"), uploadAssignmentPhoto);
 export default router;

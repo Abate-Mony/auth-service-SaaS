@@ -1,4 +1,5 @@
 import mongoose, { InferSchemaType, Schema } from "mongoose";
+import { FileRefSchema } from "./shared/fileRefSchema.js";
 
 const JobAssignmentSchema = new Schema(
   {
@@ -84,6 +85,12 @@ const JobAssignmentSchema = new Schema(
     cancellationReason: { type: String, default: "", trim: true },
     workerNotes: { type: String, default: "", trim: true },
     managerNotes: { type: String, default: "", trim: true },
+
+    // Site photos the worker attaches when finishing a shift — proof of
+    // work, site condition, etc. Uploaded one at a time via
+    // POST /workers/assignments/:assignmentId/photos, so this only ever
+    // grows via $push, never a bulk replace.
+    completionPhotos: { type: [FileRefSchema], default: [] },
 
     payRate: { type: Number, default: 0, min: 0 },
 

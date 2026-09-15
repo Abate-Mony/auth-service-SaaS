@@ -706,3 +706,58 @@ export async function sendClaimReviewResultEmail({
     html: layout({ heading: approved ? "Your claim was approved" : "Your claim was declined", body }),
   });
 }
+
+interface OpenShiftAvailableJob extends OpenShiftJob {
+  location?: string;
+  payRate?: number;
+}
+
+/** Sent to every eligible worker when a shift becomes available to
+ *  self-claim — created that way, edited to open it up, or released back
+ *  to the pool by another worker. */
+export async function sendOpenShiftAvailable({
+  email,
+  fullname,
+  job,
+}: {
+  email: string;
+  fullname: string;
+  job: OpenShiftAvailableJob;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const link = `${process.env.CLIENT_URL}/worker/jobs/open-shifts`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, a new open shift is available to claim.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime}`)}
+      ${job.location ? detailRow("Location", job.location) : ""}
+      ${job.payRate ? detailRow("Pay rate", `£${job.payRate}/hr`) : ""}
+    </table>
+
+    ${button(link, "View open shifts")}
+
+    <p style="margin:16px 0 0;font-size:13px;color:#94A3B8;">
+      First come, first served — it may already be gone by the time you open the app.
+    </p>`;
+
+  await sendMail({
+    to: email,
+    subject: `Open shift available: ${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `A new open shift is available to claim.\n\n` +
+      `Job: ${job.title}\n` +
+      `Date: ${when}\n` +
+      `Time: ${job.startTime} – ${job.endTime}\n` +
+      `${job.location ? `Location: ${job.location}\n` : ""}` +
+      `\nView open shifts: ${link}`,
+    html: layout({ heading: "A new open shift is available", body }),
+  });
+}

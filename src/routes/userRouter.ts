@@ -12,7 +12,7 @@ import {
 import { authorizePermissions }
 from "../middleware/authMiddleware.js";
 import { getDashboardStats } from "../controllers/dashboardStat.js";
-import upload from "../middleware/multerMiddleware.js";
+import { uploadAvatar } from "../middleware/multerMiddleware.js";
 const router = express.Router();
 router
   .route("/current-user")
@@ -20,7 +20,7 @@ router
   .patch(authorizePermissions("user", "admin","manager","worker"), updateCurrentUser);
 router
   .route("/current-user/photo")
-  .post(authorizePermissions("user", "admin", "manager", "worker"), upload.single("photo"), uploadMyPhoto)
+  .post(authorizePermissions("user", "admin", "manager", "worker"), uploadAvatar.single("photo"), uploadMyPhoto)
   .delete(authorizePermissions("user", "admin", "manager", "worker"), deleteMyPhoto);
 router.route("/allusers").get(authorizePermissions("admin","worker"), getAllUser);
 router.route("/users").get(authorizePermissions("admin","manager"), getAllUser);
