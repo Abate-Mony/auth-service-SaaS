@@ -163,7 +163,13 @@ const computeDisplayStatus = (q: any): string => {
 
 const serializeQuote = (q: any) => ({
     ...q,
+    // `client` is overridden to the display name (matches Invoice's own
+    // serializeInvoice convention) — clientId carries the real ObjectId
+    // alongside it, additive, for the one place that actually needs it:
+    // CreateJob.tsx's quote-prefill flow (see the accepted-quote → job
+    // brief). `site` was never overridden — it's already a raw id.
     client: q.clientSnapshot?.name ?? "",
+    clientId: q.client ? String(q.client) : null,
     site: q.site ? String(q.site) : null,
     status: computeDisplayStatus(q),
 });

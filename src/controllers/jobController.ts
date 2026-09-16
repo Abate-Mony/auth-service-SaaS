@@ -8,6 +8,7 @@ import Company from "../models/company.js";
 import Client from "../models/clientModel.js";
 import Site from "../models/siteModel.js";
 import recurringJobModel from "../models/recurringJobModel.js";
+import Quote from "../models/quoteModel.js";
 import userModel from "../models/userModel.js";
 import { toUtcDay } from "../utils/dates.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
@@ -111,6 +112,54 @@ const buildSiteSnapshot = (site: InstanceType<typeof Site>) => ({
     parkingInstructions: site.parkingInstructions ?? "",
 });
 
+const moneyEqual = (a: number, b: number) => Math.round((a ?? 0) * 100) === Math.round((b ?? 0) * 100);
+
+// Enforces the "accepted Quote is the commercial agreement" rule — a Job
+// created from a Quote can't silently diverge from what the client agreed
+// to. Only ever called with an already-resolved clientDoc/siteDoc, so the
+// comparisons below are against the SAME records the Job is about to be
+// created with, not a second independent lookup.
+const resolveSourceQuote = async (
+    sourceQuoteId: unknown,
+    companyId: string | mongoose.Types.ObjectId,
+    clientDoc: InstanceType<typeof Client> | null,
+    siteDoc: InstanceType<typeof Site> | null,
+    chargeType: "hourly" | "fixed",
+    chargeRate: number,
+    chargeAmount: number
+): Promise<InstanceType<typeof Quote> | null> => {
+    if (sourceQuoteId === undefined || sourceQuoteId === null || sourceQuoteId === "") return null;
+    if (typeof sourceQuoteId !== "string" || !mongoose.Types.ObjectId.isValid(sourceQuoteId)) {
+        throw new BadRequestError("Invalid quote id.");
+    }
+
+    // Never leaks whether a Quote exists for another tenant — same 404
+    // either way, whether it's missing, deleted, or just not this company's.
+    const quote = await Quote.findOne({ _id: sourceQuoteId, company: companyId, isDeleted: false });
+    if (!quote) throw new NotFoundError("Quote unavailable.");
+
+    if (quote.status !== "accepted") {
+        throw new BadRequestError("Only accepted quotes can be converted into jobs.");
+    }
+    if (!clientDoc || String(clientDoc._id) !== String(quote.client)) {
+        throw new BadRequestError("Job client must match the accepted quote.");
+    }
+    if (quote.site && (!siteDoc || String(siteDoc._id) !== String(quote.site))) {
+        throw new BadRequestError("Job site must match the accepted quote.");
+    }
+    if (chargeType !== quote.chargeType) {
+        throw new BadRequestError("Job billing type must match the accepted quote.");
+    }
+    if (quote.chargeType === "hourly" && !moneyEqual(chargeRate, quote.chargeRate ?? 0)) {
+        throw new BadRequestError("Job charge rate must match the accepted quote.");
+    }
+    if (quote.chargeType === "fixed" && !moneyEqual(chargeAmount, quote.chargeAmount ?? 0)) {
+        throw new BadRequestError("Job fixed amount must match the accepted quote.");
+    }
+
+    return quote;
+};
+
 // Plain-English recurrence description for the "added to a recurring shift"
 // notification — e.g. "Every week on Mon, Wed" or "Every 2 days".
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -168,6 +217,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
          status,
          openToClaims,
          requiresApproval,
+         sourceQuote,
     } = req.body;
 
     // Only these two are ever settable at creation — "completed"/"cancelled"
@@ -236,6 +286,21 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     // chargeRate above).
     const finalCoordinates = coordinates ?? (siteDoc?.coordinates?.lat != null ? siteDoc.coordinates : undefined);
 
+    // The accepted Quote is the commercial agreement — this enforces that a
+    // Job claiming to come from it can't silently charge the client
+    // something different. Runs after client/site/charge resolution above
+    // so it validates against the SAME records the Job is about to use.
+    const finalChargeAmount = chargeAmount ?? 0;
+    const quoteDoc = await resolveSourceQuote(
+        sourceQuote,
+        req.user.company_id,
+        clientDoc,
+        siteDoc,
+        finalChargeType,
+        finalChargeRate,
+        finalChargeAmount
+    );
+
     // Allowlisted — never spread req.body, or clients can set isTemplate/status/createdBy
     const baseJobFields = {
         title,
@@ -243,6 +308,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         company: req.user.company_id.toString(),
         client: clientDoc?._id ?? null,
         site: siteDoc?._id ?? null,
+        sourceQuote: quoteDoc?._id ?? null,
         ...(siteDoc ? { siteSnapshot: buildSiteSnapshot(siteDoc) } : {}),
         location: location ?? siteDoc?.name,
         address: address ?? (siteDoc ? formatAddress(siteDoc.address) : undefined) ?? "",
@@ -257,7 +323,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         payRate: payRate ?? 0,
         chargeType: finalChargeType,
         chargeRate: finalChargeRate,
-        chargeAmount: chargeAmount ?? 0,
+        chargeAmount: finalChargeAmount,
         notes: notes ?? "",
         instructions: instructions ?? "",
         createdBy: currentUserId,
@@ -426,7 +492,12 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         status: jobStatus,
     });
 
-    await logActivity({ job: job._id, type: "job_created", actor: currentUserId });
+    await logActivity({
+        job: job._id,
+        type: "job_created",
+        actor: currentUserId,
+        ...(quoteDoc ? { metadata: { sourceQuote: quoteDoc._id.toString(), quoteNumber: quoteDoc.quoteNumber } } : {}),
+    });
 
     if (workerIds.length) {
         await JobAssignment.insertMany(
@@ -521,6 +592,7 @@ export const getAllJobs: MiddlewareFn = async (
         unassigned,
         start,
         end,
+        sourceQuote,
     } = req.query as Record<string, string | undefined>;
     const limit = Number(limitQuery) || 10;
 
@@ -554,6 +626,13 @@ export const getAllJobs: MiddlewareFn = async (
             throw new BadRequestError("Invalid client id.");
         }
         query.client = client;
+    }
+    // Powers "Jobs created from this quote" on the Quote detail page.
+    if (sourceQuote) {
+        if (typeof sourceQuote !== "string" || !mongoose.Types.ObjectId.isValid(sourceQuote)) {
+            throw new BadRequestError("Invalid quote id.");
+        }
+        query.sourceQuote = sourceQuote;
     }
     if (search) {
         query.title = {
@@ -734,7 +813,9 @@ export const getJob: MiddlewareFn = async (
         _id: req.params.id,
         isDeleted: false,
         company: getReqUser(req).company_id.toString(),
-    }).populate("client", "name status contacts phone billingEmail address defaultChargeType defaultChargeRate")
+    })
+        .populate("client", "name status contacts phone billingEmail address defaultChargeType defaultChargeRate")
+        .populate("sourceQuote", "quoteNumber")
     const assignments = await JobAssignment.find({
         job: req.params.id,
         isDeleted: false,

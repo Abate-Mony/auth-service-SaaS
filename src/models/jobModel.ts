@@ -43,6 +43,19 @@ const JobSchema = new Schema(
             accessInstructions: String,
             parkingInstructions: String,
         },
+        // Set when this Job was created from an accepted Quote — see
+        // jobController.ts's resolveSourceQuote, which enforces that the
+        // Job's client/site/chargeType/chargeRate/chargeAmount can't diverge
+        // from what the client actually accepted. One Quote can produce
+        // several Jobs (e.g. a recurring contract), so this lives on Job
+        // rather than a createdJobs[] array on Quote — Job.find({sourceQuote})
+        // avoids the dual-write consistency problem that array would need.
+        sourceQuote: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Quote",
+            default: null,
+            index: true,
+        },
         title: { type: String, required: true, trim: true },
         description: { type: String, required: true, trim: true },
 
