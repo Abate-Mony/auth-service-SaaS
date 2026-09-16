@@ -5,7 +5,10 @@ import { EMAIL_WORTHY_EVENTS } from "./constant.js";
 
 let _resend: Resend | null = null;
 
-function getResend() {
+// Exported so resendDomain.ts's domain-lifecycle calls (create/verify/
+// remove a sending domain) share this exact singleton instead of each
+// constructing their own Resend client.
+export function getResend() {
     if (!_resend) {
         const apiKey = process.env.RESEND_API_KEY;
 
@@ -24,18 +27,25 @@ export async function sendMail(opts: {
     subject: string;
     text: string;
     html: string;
-    companyName?:string
+    companyName?: string;
+    // Full "Name <email>" sender/reply-to overrides — set by
+    // companyEmail.ts's sendCompanyEmail once it's resolved whether this
+    // company has a verified custom domain. Takes priority over
+    // companyName when both are given.
+    from?: string;
+    replyTo?: string;
     attachments?: { filename: string; content: Buffer }[];
 }) {
     const resend = getResend();
 
     const { data, error } = await resend.emails.send({
-        from: `${opts.companyName ?? "INPRN"} <${process.env.EMAIL_FROM}>`,
+        from: opts.from ?? `${opts.companyName ?? "INPRN"} <${process.env.EMAIL_FROM}>`,
         to: opts.to,
         subject: opts.subject,
         text: opts.text,
         html: opts.html,
         attachments: opts.attachments,
+        replyTo: opts.replyTo,
     });
 
     if (error) {

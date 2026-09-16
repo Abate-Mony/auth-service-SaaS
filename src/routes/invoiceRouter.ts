@@ -4,6 +4,7 @@ import {
     createInvoice,
     createInvoiceDraft,
     deleteInvoice,
+    downloadInvoicePdf,
     getAllInvoices,
     getClientBillingInfoHandler,
     getEligibleWorkHandler,
@@ -37,6 +38,7 @@ router
     .delete(authorizePermissions("admin", "manager"), deleteInvoice);
 
 router.patch("/:id/status", authorizePermissions("admin", "manager"), updateInvoiceStatusHandler);
+router.get("/:id/pdf", authorizePermissions("admin", "manager"), downloadInvoicePdf);
 router.post("/:id/send", authorizePermissions("admin", "manager"), sendInvoiceHandler);
 router.patch("/:id/mark-paid", authorizePermissions("admin", "manager"), markInvoicePaid);
 router.patch("/:id/cancel", authorizePermissions("admin", "manager"), cancelInvoiceHandler);

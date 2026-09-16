@@ -369,6 +369,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             const firstDate = new Date(occurrenceDates[0]);
             const lastDate = new Date(occurrenceDates[occurrenceDates.length - 1]);
             const daysLabel = describeRecurrence(frequency, intervalNum, normalizedDaysOfWeek);
+            const notifyingCompany = await Company.findById(req.user.company_id).select("name emailSettings").lean();
 
             Promise.all(
                 realWorkers.map(w =>
@@ -389,6 +390,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                             firstDate,
                             lastDate,
                             daysLabel,
+                            company: notifyingCompany ?? { name: "INPRN" },
                         }),
                         sendPushToUser(w._id.toString(), {
                             title: "Added to a recurring shift",
@@ -452,6 +454,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         if (jobStatus !== "draft") {
             // Fire-and-forget: the client doesn't need to wait on outbound
             // mail/push, and a failed send shouldn't fail job creation.
+            const notifyingCompany = await Company.findById(req.user.company_id).select("name emailSettings").lean();
             Promise.all(
                 realWorkers.map(w =>
                     Promise.all([
@@ -467,6 +470,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                                 endTime: job.endTime,
                                 minutes: job.minutes,
                             },
+                            company: notifyingCompany ?? { name: "INPRN" },
                         }),
                         // Tagged per job (distinct from the shift-start-reminder
                         // tag namespace) so re-saving/updating doesn't stack duplicates.
@@ -1107,6 +1111,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         // Fire-and-forget, same as createJob — uses the just-updated job so a
         // manager who changes the time/location and adds workers in the same
         // request notifies with the final details, not the stale pre-update ones.
+        const notifyingCompany = await Company.findById(req.user.company_id).select("name emailSettings").lean();
         Promise.all(
             workersToNotify.map(u =>
                 Promise.all([
@@ -1122,6 +1127,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                             endTime: updatedJob.endTime,
                             minutes: updatedJob.minutes,
                         },
+                        company: notifyingCompany ?? { name: "INPRN" },
                     }),
                     sendPushToUser(u._id.toString(), {
                         title: "New shift assigned",

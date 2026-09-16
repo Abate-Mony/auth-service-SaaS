@@ -40,6 +40,8 @@ import notificationPreferenceRouter
   import clientRouter from "./routes/clientRouter.js";
   import siteRouter from "./routes/siteRouter.js";
   import invoiceRouter from "./routes/invoiceRouter.js";
+  import invoiceTemplateRouter from "./routes/invoiceTemplateRouter.js";
+  import quoteRouter from "./routes/quoteRouter.js";
   import userRestrictionRouter from "./routes/userRestrictionRouter.js";
   import analyticsRouter from "./routes/analyticsRouter.js";
   import reportRouter from "./routes/reportRouter.js";
@@ -129,6 +131,12 @@ app.use("/api/v1/recurring-jobs", authenticateUser, loadRestriction, recurringJo
 app.use("/api/v1/clients", authenticateUser, loadRestriction, clientRouter)
 app.use("/api/v1/sites", authenticateUser, loadRestriction, siteRouter)
 app.use("/api/v1/invoices", authenticateUser, loadRestriction, invoiceRouter)
+app.use("/api/v1/invoice-templates", authenticateUser, loadRestriction, invoiceTemplateRouter)
+// Not wrapped in authenticateUser at this level — the public quote
+// view/respond routes need to work for a client with no session, same
+// reasoning as invitationRouter above. Authenticated quote routes apply
+// authenticateUser/authorizePermissions themselves inside quoteRouter.
+app.use("/api/v1/quotes", quoteRouter)
 // Applies authenticateUser and loadRestriction itself (see userRestrictionRouter)
 // since GET /me and POST /me/appeal must stay reachable at every access level.
 app.use("/api/v1/restrictions", userRestrictionRouter)

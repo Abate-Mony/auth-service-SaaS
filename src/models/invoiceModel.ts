@@ -195,6 +195,34 @@ const InvoiceSchema = new Schema(
       },
     },
 
+    // ── Template ──────────────────────────────────────────────
+    // `template` is a convenience ref only (traceability, "reuse this
+    // invoice's template" UX) — it's allowed to dangle if the template is
+    // later deleted, or be null if none was ever set. Rendering must never
+    // depend on it. `templateSnapshot` is what invoicePdf.ts actually
+    // reads: the resolved design as it was at issue time, so a company
+    // changing its default template (or editing/deleting a custom one)
+    // next month can never alter how an already-sent invoice looks if
+    // regenerated. Same clientSnapshot-style reasoning as above, same flat
+    // field names as InvoiceTemplate so this is a direct copy, not a
+    // translation.
+    template: {
+      type: Schema.Types.ObjectId,
+      ref: "InvoiceTemplate",
+      default: null,
+    },
+
+    templateSnapshot: {
+      name: { type: String, trim: true },
+      baseLayout: { type: String, enum: ["modern", "classic", "minimal"] },
+      accentColor: { type: String, trim: true },
+      font: { type: String, enum: ["Helvetica", "Times-Roman", "Inter"] },
+      logoPosition: { type: String, enum: ["top-left", "top-center", "top-right"] },
+      showVatBreakdown: { type: Boolean },
+      showPaymentTerms: { type: Boolean },
+      showNotes: { type: Boolean },
+    },
+
     // ── Related Jobs ────────────────────────────────────────
 
     /**

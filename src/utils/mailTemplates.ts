@@ -2,6 +2,7 @@
 import dayjs from "./dayjsSetup.js";
 import { TZ } from "./dates.js";
 import { sendMail } from "./sendMailsUtils.js";
+import { sendCompanyEmail, type CompanyEmailInfo } from "./companyEmail.js";
 
 const BRAND = "#1E3A5F";
 const ACCENT = "#3B82F6";
@@ -59,9 +60,11 @@ interface ShiftJob {
 export async function sendShiftAssigned({
   worker,
   job,
+  company,
 }: {
   worker: { email: string; fullname: string };
   job: ShiftJob;
+  company: CompanyEmailInfo;
 }) {
   const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
   const hours = Math.floor(job.minutes / 60);
@@ -88,7 +91,8 @@ export async function sendShiftAssigned({
       Please respond as soon as you can so your manager knows whether the shift is covered.
     </p>`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: worker.email,
     subject: `New shift: ${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}`,
     text:
@@ -112,6 +116,7 @@ export async function sendRecurringShiftAssigned({
   firstDate,
   lastDate,
   daysLabel,
+  company,
 }: {
   worker: { email: string; fullname: string };
   job: ShiftJob;
@@ -119,6 +124,7 @@ export async function sendRecurringShiftAssigned({
   firstDate: Date | string;
   lastDate: Date | string;
   daysLabel: string;
+  company: CompanyEmailInfo;
 }) {
   const link = `${process.env.CLIENT_URL}/worker/jobs`;
   const firstName = worker.fullname.split(" ")[0];
@@ -140,7 +146,8 @@ export async function sendRecurringShiftAssigned({
 
     ${button(link, "View my shifts")}`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: worker.email,
     subject: `You've been added to ${job.title} (${occurrenceCount} shifts)`,
     text:
@@ -556,7 +563,7 @@ export async function sendAppealResponseEmail({
 
 export async function sendInvoiceEmail({
   to,
-  companyName,
+  company,
   clientContactName,
   invoiceNumber,
   total,
@@ -565,7 +572,7 @@ export async function sendInvoiceEmail({
   pdfBuffer,
 }: {
   to: string;
-  companyName: string;
+  company: CompanyEmailInfo;
   clientContactName?: string;
   invoiceNumber: string;
   total: number;
@@ -573,6 +580,7 @@ export async function sendInvoiceEmail({
   dueDate: Date | string;
   pdfBuffer: Buffer;
 }) {
+  const companyName = company.name ?? "INPRN";
   const symbol = currency === "USD" ? "$" : currency === "EUR" ? "€" : "£";
   const amount = `${symbol}${total.toFixed(2)}`;
   const due = dayjs(dueDate).tz(TZ).format("D MMMM YYYY");
@@ -593,7 +601,8 @@ export async function sendInvoiceEmail({
       Please reach out to ${companyName} directly with any questions about this invoice.
     </p>`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to,
     subject: `Invoice ${invoiceNumber} from ${companyName}`,
     text:
@@ -604,7 +613,6 @@ export async function sendInvoiceEmail({
       `Due date: ${due}\n\n` +
       `Please reach out to ${companyName} directly with any questions about this invoice.`,
     html: layout({ heading: `Invoice ${invoiceNumber}`, body }),
-    companyName,
     attachments: [{ filename: `${invoiceNumber}.pdf`, content: pdfBuffer }],
   });
 }
@@ -759,5 +767,177 @@ export async function sendOpenShiftAvailable({
       `${job.location ? `Location: ${job.location}\n` : ""}` +
       `\nView open shifts: ${link}`,
     html: layout({ heading: "A new open shift is available", body }),
+  });
+}
+
+// ─────────────────────────────────────
+// Quotes
+// ─────────────────────────────────────
+
+/** Sent to the client when a quote is issued — links to the public,
+ *  no-login accept/decline page (token in the URL, never the raw quote
+ *  data itself). */
+export async function sendQuoteEmail({
+  email,
+  clientContactName,
+  company,
+  quoteNumber,
+  title,
+  total,
+  currency,
+  validUntil,
+  responseToken,
+  pdfBuffer,
+}: {
+  email: string;
+  clientContactName?: string;
+  company: CompanyEmailInfo;
+  quoteNumber: string;
+  title: string;
+  total: number;
+  currency: string;
+  validUntil: Date | string;
+  responseToken: string;
+  pdfBuffer: Buffer;
+}) {
+  const companyName = company.name ?? "INPRN";
+  const greeting = clientContactName ? clientContactName.split(" ")[0] : "there";
+  const symbol = currency === "USD" ? "$" : currency === "EUR" ? "€" : "£";
+  const when = dayjs(validUntil).tz(TZ).format("D MMMM YYYY");
+  const link = `${process.env.CLIENT_URL}/q/${responseToken}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${greeting}, ${companyName} has sent you a quote for your review. It's attached to this email as a PDF.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Quote", quoteNumber)}
+      ${detailRow("For", title)}
+      ${detailRow("Total", `${symbol}${total.toFixed(2)}`)}
+      ${detailRow("Valid until", when)}
+    </table>
+
+    ${button(link, "View & respond to quote")}
+
+    <p style="margin:0;font-size:13px;color:#94A3B8;">
+      This quote is valid until ${when}. No account or sign-up needed to accept or decline.
+    </p>`;
+
+  await sendCompanyEmail({
+    company,
+    to: email,
+    subject: `Quote from ${companyName}: ${title}`,
+    text:
+      `Hi ${greeting},\n\n` +
+      `${companyName} has sent you a quote. It's attached to this email as a PDF.\n\n` +
+      `Quote: ${quoteNumber}\n` +
+      `For: ${title}\n` +
+      `Total: ${symbol}${total.toFixed(2)}\n` +
+      `Valid until: ${when}\n\n` +
+      `View & respond: ${link}`,
+    html: layout({ heading: "You've received a quote", body }),
+    attachments: [{ filename: `${quoteNumber}.pdf`, content: pdfBuffer }],
+  });
+}
+
+/** Sent to the quote's creator when the client accepts or declines. */
+export async function sendQuoteResponseNotice({
+  email,
+  fullname,
+  quoteNumber,
+  title,
+  clientName,
+  accepted,
+  declineReason,
+  company,
+}: {
+  email: string;
+  fullname: string;
+  quoteNumber: string;
+  title: string;
+  clientName: string;
+  accepted: boolean;
+  declineReason?: string;
+  company: CompanyEmailInfo;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const link = `${process.env.CLIENT_URL}/quotes`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, ${clientName} has <strong>${accepted ? "accepted" : "declined"}</strong> quote ${quoteNumber} (${title}).
+    </p>
+
+    ${!accepted && declineReason
+      ? `<table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+          ${detailRow("Reason", declineReason)}
+        </table>`
+      : ""
+    }
+
+    ${button(link, "View quotes")}`;
+
+  await sendCompanyEmail({
+    company,
+    to: email,
+    subject: accepted ? `${clientName} accepted your quote` : `${clientName} declined your quote`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `${clientName} has ${accepted ? "accepted" : "declined"} quote ${quoteNumber} (${title}).\n` +
+      `${!accepted && declineReason ? `Reason: ${declineReason}\n` : ""}` +
+      `\nView quotes: ${link}`,
+    html: layout({ heading: accepted ? "Quote accepted" : "Quote declined", body }),
+  });
+}
+
+/** Sent to the CLIENT after they accept a quote — gated by
+ *  Quote.sendThankYouEmailOnAccept (a checkbox at creation/edit time), not
+ *  sent unconditionally. customMessage is the future
+ *  Quote.thankYouMessage field — that field is schema-only for now (no UI
+ *  writes it yet), so this always falls back to the default copy in
+ *  practice until that follow-up wires a way to set it. */
+export async function sendQuoteThankYouEmail({
+  email,
+  clientContactName,
+  quoteNumber,
+  title,
+  company,
+  customMessage,
+}: {
+  email: string;
+  clientContactName?: string;
+  quoteNumber: string;
+  title: string;
+  company: CompanyEmailInfo;
+  customMessage?: string;
+}) {
+  const companyName = company.name ?? "INPRN";
+  const greeting = clientContactName ? clientContactName.split(" ")[0] : "there";
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${greeting}, thank you for accepting quote ${quoteNumber} (${title}). ${companyName} will be in touch shortly to confirm next steps.
+    </p>
+
+    ${customMessage
+      ? `<p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">${customMessage}</p>`
+      : ""
+    }
+
+    <p style="margin:0;font-size:13px;color:#94A3B8;">
+      If you have any questions in the meantime, just reply to this email.
+    </p>`;
+
+  await sendCompanyEmail({
+    company,
+    to: email,
+    subject: `Thank you — ${quoteNumber} confirmed`,
+    text:
+      `Hi ${greeting},\n\n` +
+      `Thank you for accepting quote ${quoteNumber} (${title}). ${companyName} will be in touch shortly to confirm next steps.\n` +
+      `${customMessage ? `\n${customMessage}\n` : ""}` +
+      `\nIf you have any questions in the meantime, just reply to this email.`,
+    html: layout({ heading: "Thank you for accepting", body }),
   });
 }

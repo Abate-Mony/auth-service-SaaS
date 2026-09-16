@@ -79,6 +79,22 @@ export const createInvitationToken = (): { token: string; hash: string; expiresA
 export const hashInvitationToken = (token: string): string =>
   crypto.createHash("sha256").update(token).digest("hex");
 
+// Quotes stay open for the admin-set validUntil date, but the response
+// *link* itself shouldn't live forever regardless — 30 days covers any
+// reasonable validUntil this app lets an admin pick without the token
+// becoming a permanently-live credential.
+const QUOTE_RESPONSE_TOKEN_EXPIRES_DAYS = 30;
+
+export const createQuoteResponseToken = (): { token: string; hash: string; expiresAt: Date } => {
+  const token = crypto.randomBytes(32).toString("hex");
+  const hash = crypto.createHash("sha256").update(token).digest("hex");
+  const expiresAt = new Date(Date.now() + QUOTE_RESPONSE_TOKEN_EXPIRES_DAYS * 24 * 60 * 60 * 1000);
+  return { token, hash, expiresAt };
+};
+
+export const hashQuoteResponseToken = (token: string): string =>
+  crypto.createHash("sha256").update(token).digest("hex");
+
 export const sanitizeUser = (user: mongoose.Document): any => {
   const _user = user.toJSON();
   delete _user.password;

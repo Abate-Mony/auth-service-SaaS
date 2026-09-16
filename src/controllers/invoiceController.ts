@@ -9,6 +9,7 @@ import JobAssignment from "../models/JobAssignment.js";
 import Invoice from "../models/invoiceModel.js";
 import Company from "../models/company.js";
 import { generateInvoicePdf } from "../utils/invoicePdf.js";
+import { resolveInvoiceTemplate } from "../utils/resolveInvoiceTemplate.js";
 import { sendInvoiceEmail } from "../utils/mailTemplates.js";
 import { getEligibleWork, resolveSelectedWork } from "../services/invoice/eligibility.js";
 import { computeCurrentBillingPeriod } from "../services/invoice/billingPeriod.js";
@@ -457,19 +458,25 @@ export const updateInvoiceStatusHandler: MiddlewareFn = async (req, res) => {
     res.status(StatusCodes.OK).json({ success: true, invoice: serializeInvoice(invoice.toObject()) });
 };
 
-// Actually emails the invoice (with a PDF attached) to the client's billing
-// address and flips it to "sent" in one step, replacing the old
-// status-only "Mark as Sent" toggle.
-export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
-    const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
-    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
-    if (!invoice) throw new NotFoundError("Invoice not found.");
-
-    const billingEmail = invoice.clientSnapshot?.billingEmail;
-    if (!billingEmail) {
-        throw new BadRequestError("This client has no billing email on file — add one before sending.");
-    }
-
+// Shared by sendInvoiceHandler and downloadInvoicePdf so the PDF a manager
+// downloads to "see what it looks like" is built from the exact same code
+// path as the one that actually gets emailed — never two renderers that
+// could quietly drift apart.
+//
+// persistTemplate controls whether resolving the template (when the
+// invoice has no snapshot yet) gets saved onto the invoice or stays a
+// one-off preview:
+//   - send: true — the look locks in permanently, matching "changing the
+//     company default next month must never alter an already-sent invoice".
+//   - download/preview: false — an invoice that hasn't been sent yet should
+//     keep reflecting the current company default on every download, not
+//     freeze on whichever one happened to be picked the first time someone
+//     clicked "Download" while still deciding.
+async function buildInvoicePdfDocument(
+    invoice: InstanceType<typeof Invoice>,
+    companyId: mongoose.Types.ObjectId,
+    opts: { persistTemplate: boolean }
+) {
     const company = await Company.findById(companyId).select("name phone").lean();
     const companyName = company?.name ?? "INPRN";
 
@@ -478,7 +485,18 @@ export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
         ? [addr.line1, addr.line2, addr.city, addr.county, addr.postcode, addr.country].filter(Boolean).join(", ")
         : undefined;
 
-    const doc = generateInvoicePdf({
+    let snapshot = invoice.templateSnapshot;
+    if (!snapshot?.baseLayout) {
+        const resolved = await resolveInvoiceTemplate(companyId, invoice.template?.toString());
+        snapshot = resolved.snapshot;
+        if (opts.persistTemplate) {
+            invoice.template = resolved.templateId;
+            invoice.templateSnapshot = resolved.snapshot;
+            await invoice.save();
+        }
+    }
+
+    return generateInvoicePdf({
         invoiceNumber: invoice.invoiceNumber,
         companyName,
         companyPhone: company?.phone || undefined,
@@ -507,7 +525,53 @@ export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
         total: invoice.total,
         currency: invoice.currency,
         notes: invoice.notes,
+        template: snapshot?.baseLayout
+            ? {
+                baseLayout: snapshot.baseLayout as "modern" | "classic" | "minimal",
+                accentColor: snapshot.accentColor ?? "#1E3A5F",
+                font: (snapshot.font ?? "Helvetica") as "Helvetica" | "Times-Roman" | "Inter",
+                logoPosition: (snapshot.logoPosition ?? "top-left") as "top-left" | "top-center" | "top-right",
+                showVatBreakdown: snapshot.showVatBreakdown ?? true,
+                showPaymentTerms: snapshot.showPaymentTerms ?? true,
+                showNotes: snapshot.showNotes ?? true,
+            }
+            : undefined,
     });
+}
+
+// GET /invoices/:id/pdf — download the invoice as a PDF without emailing
+// it, e.g. to see what a template choice actually looks like before
+// sending. Doesn't lock in a template on an unsent invoice — see
+// buildInvoicePdfDocument's persistTemplate comment.
+export const downloadInvoicePdf: MiddlewareFn = async (req, res) => {
+    const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
+    if (!invoice) throw new NotFoundError("Invoice not found.");
+
+    const doc = await buildInvoicePdfDocument(invoice, companyId, { persistTemplate: false });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${invoice.invoiceNumber}.pdf"`);
+    doc.pipe(res);
+    doc.end();
+};
+
+// Actually emails the invoice (with a PDF attached) to the client's billing
+// address and flips it to "sent" in one step, replacing the old
+// status-only "Mark as Sent" toggle.
+export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
+    const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
+    if (!invoice) throw new NotFoundError("Invoice not found.");
+
+    const billingEmail = invoice.clientSnapshot?.billingEmail;
+    if (!billingEmail) {
+        throw new BadRequestError("This client has no billing email on file — add one before sending.");
+    }
+
+    const company = await Company.findById(companyId).select("name phone emailSettings").lean();
+
+    const doc = await buildInvoicePdfDocument(invoice, companyId, { persistTemplate: true });
 
     const buffers: Buffer[] = [];
     doc.on("data", chunk => buffers.push(chunk));
@@ -519,7 +583,7 @@ export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
 
     await sendInvoiceEmail({
         to: billingEmail,
-        companyName,
+        company: company ?? { name: "INPRN" },
         clientContactName: invoice.clientSnapshot?.contactName,
         invoiceNumber: invoice.invoiceNumber,
         total: invoice.total,

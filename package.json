@@ -11,7 +11,8 @@
     "migrate:clients": "node dist/scripts/migrateClientsToEntities.js",
     "migrate:clients:dry-run": "node dist/scripts/migrateClientsToEntities.js --dry-run",
     "migrate:company-owners": "node dist/scripts/backfillCompanyOwners.js",
-    "migrate:company-owners:dry-run": "node dist/scripts/backfillCompanyOwners.js --dry-run"
+    "migrate:company-owners:dry-run": "node dist/scripts/backfillCompanyOwners.js --dry-run",
+    "seed:invoice-templates": "node dist/scripts/seedInvoiceTemplates.js"
   },
   "keywords": [],
   "author": "",

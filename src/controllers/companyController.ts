@@ -37,6 +37,13 @@ const COMPANY_SETTINGS_FIELDS = [
     "openShiftsRequireApproval",
 ] as const;
 
+// Read-only here — included so GET /companies/settings hands the frontend
+// the current pick alongside everything else, but it's never in
+// companySettingsSchema below, so the bulk PATCH can't touch it. Writing it
+// goes through setDefaultInvoiceTemplate instead (invoiceTemplateController.ts),
+// which needs an async ownership check this synchronous Zod schema can't do.
+const COMPANY_READ_ONLY_EXTRA_FIELDS = ["defaultInvoiceTemplate"] as const;
+
 // Intl throws RangeError for anything that isn't a recognised IANA zone —
 // there's no dedicated validator on the platform, so this is the standard way.
 const isValidTimezone = (tz: string): boolean => {
@@ -124,7 +131,7 @@ export const deleteCompanyLogo: MiddlewareFn = async (req, res) => {
 
 export const getCompanySettings: MiddlewareFn = async (req, res) => {
     const company = await Company.findById(getReqUser(req).company_id)
-        .select(COMPANY_SETTINGS_FIELDS.join(" "))
+        .select([...COMPANY_SETTINGS_FIELDS, ...COMPANY_READ_ONLY_EXTRA_FIELDS].join(" "))
         .lean();
 
     if (!company) throw new NotFoundError("Company not found.");
