@@ -143,7 +143,14 @@ export const getAllClients: MiddlewareFn = async (req, res) => {
         },
     ]);
 
-    const clients = (result?.data ?? []).map((c: any) => ({ ...c, formattedAddress: formatAddress(c.address) }));
+    // Client.aggregate() returns plain objects, not Mongoose documents, so
+    // schema virtuals (primaryContact, formattedAddress) never run — both
+    // are recomputed here to match ClientSchema's own virtual getters.
+    const clients = (result?.data ?? []).map((c: any) => ({
+        ...c,
+        formattedAddress: formatAddress(c.address),
+        primaryContact: (c.contacts ?? []).find((ct: any) => ct.isPrimary) ?? c.contacts?.[0] ?? null,
+    }));
     const total = result?.totalCount?.[0]?.count ?? 0;
 
     res.status(StatusCodes.OK).json({
