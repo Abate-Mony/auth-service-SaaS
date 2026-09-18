@@ -225,7 +225,11 @@ export const getClient: MiddlewareFn = async (req, res) => {
 
     res.status(StatusCodes.OK).json({
         success: true,
-        client: { ...client, formattedAddress: formatAddress(client.address) },
+        client: {
+            ...client,
+            formattedAddress: formatAddress(client.address),
+            primaryContact: (client.contacts ?? []).find((ct: any) => ct.isPrimary) ?? client.contacts?.[0] ?? null,
+        },
         stats: {
             totalJobs,
             upcomingJobs,
