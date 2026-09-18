@@ -12,9 +12,10 @@ import { generateInvoicePdf } from "../utils/invoicePdf.js";
 import { resolveInvoiceTemplate } from "../utils/resolveInvoiceTemplate.js";
 import { fetchImageBuffer } from "../utils/fetchImageBuffer.js";
 import { sendInvoiceEmail } from "../utils/mailTemplates.js";
-import { getEligibleWork, resolveSelectedWork } from "../services/invoice/eligibility.js";
+import { getEligibleWork } from "../services/invoice/eligibility.js";
 import { computeCurrentBillingPeriod } from "../services/invoice/billingPeriod.js";
-import { calculateVat, getInvoiceDueDate, round2 } from "../services/invoice/calculations.js";
+import { calculateVat, round2 } from "../services/invoice/calculations.js";
+import { createDraftInvoice, nextInvoiceNumber } from "../services/invoice/createDraftInvoice.js";
 import dayjs from "../utils/dayjsSetup.js";
 import { toUtcDay } from "../utils/dates.js";
 
@@ -111,11 +112,6 @@ const buildLineItems = (input: z.infer<typeof lineItemInputSchema>[]) =>
         rate: li.rate,
         amount: Number((li.hours * li.rate).toFixed(2)),
     }));
-
-const nextInvoiceNumber = async (companyId: mongoose.Types.ObjectId, attempt = 0): Promise<string> => {
-    const count = await Invoice.countDocuments({ company: companyId });
-    return `INV-${String(count + 1 + attempt).padStart(4, "0")}`;
-};
 
 // Overdue is a derived virtual on the model, not a stored value — computed
 // here in JS so it works uniformly on both hydrated docs and .lean() results
@@ -769,6 +765,8 @@ const createDraftSchema = z
     .strict();
 
 // POST /invoices/draft — create a draft from selected eligible-work items.
+// The actual build/lock/save logic lives in createDraftInvoice.ts, shared
+// with the automated recurring-invoice generator.
 export const createInvoiceDraft: MiddlewareFn = async (req, res) => {
     const data = parseOrThrow(createDraftSchema, req.body);
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
@@ -781,166 +779,23 @@ export const createInvoiceDraft: MiddlewareFn = async (req, res) => {
         throw new BadRequestError("Service period end cannot be before start.");
     }
 
-    // Re-queries and recalculates from scratch — the frontend's selection is
-    // only ever "which ids", never trusted for the amounts.
-    const [resolved, company] = await Promise.all([
-        resolveSelectedWork(companyId.toString(), data.client, periodStart, periodEnd, {
-            jobIds: data.jobIds,
-            assignmentIds: data.assignmentIds,
-        }),
-        Company.findById(companyId).select("currency"),
-    ]);
-
-    const workLineItems = resolved.items.map(item => ({
-        description: item.title,
-        type: item.chargeType,
-        job: item.jobId,
-        assignment: item.assignmentId ?? null,
-        date: item.date,
-        startTime: item.startTime,
-        endTime: item.endTime,
-        location: item.location,
-        workerName: item.workerName ?? null,
-        minutes: item.approvedMinutes ?? 0,
-        quantity: item.quantity,
-        rate: item.rate,
-        amount: item.amount,
-    }));
-
-    const adjustmentLineItems = (data.adjustments ?? []).map(adj => {
-        const signedAmount = round2(adj.type === "discount" ? -Math.abs(adj.amount) : Math.abs(adj.amount));
-        return {
-            description: adj.description,
-            type: "adjustment" as const,
-            job: null,
-            assignment: null,
-            quantity: 1,
-            rate: signedAmount,
-            amount: signedAmount,
-        };
+    const invoice = await createDraftInvoice({
+        companyId,
+        createdBy: req.user.user_id,
+        clientId: data.client,
+        periodStart,
+        periodEnd,
+        jobIds: data.jobIds,
+        assignmentIds: data.assignmentIds,
+        adjustments: data.adjustments,
+        issueDate: data.issueDate ? new Date(data.issueDate) : undefined,
+        dueDate: data.dueDate ? new Date(data.dueDate) : undefined,
+        notes: data.notes,
+        purchaseOrderNumber: data.purchaseOrderNumber,
+        vatRate: data.vatRate,
     });
 
-    const lineItems = [...workLineItems, ...adjustmentLineItems];
-
-    const subtotal = round2(lineItems.reduce((sum, li) => sum + li.amount, 0));
-    if (subtotal < 0) {
-        throw new BadRequestError(
-            `Adjustments can't bring the invoice below ${company?.currency === "USD" ? "$" : company?.currency === "EUR" ? "€" : "£"}0 — reduce the discount amount.`
-        );
-    }
-    const vatRate = data.vatRate ?? 0;
-    const vatAmount = calculateVat(subtotal, vatRate);
-    const total = round2(subtotal + vatAmount);
-    if (total < 0) {
-        throw new BadRequestError(
-            `Adjustments can't bring the invoice below ${company?.currency === "USD" ? "$" : company?.currency === "EUR" ? "€" : "£"}0 — reduce the discount amount.`
-        );
-    }
-
-    const issueDate = data.issueDate ? new Date(data.issueDate) : new Date();
-    const dueDate = data.dueDate
-        ? new Date(data.dueDate)
-        : getInvoiceDueDate(issueDate, resolved.client.paymentTermsDays ?? 30);
-
-    // ── Locking, without a multi-document transaction ──────────────────
-    // Nothing else in this app relies on one, and nothing guarantees the
-    // deployment is a replica set — so the lock IS the write: a conditional
-    // update that only matches sources not already invoiced. Pre-generating
-    // the Invoice's _id lets the lock attach the real invoice reference in
-    // the same atomic step as flipping billingStatus, rather than a second
-    // write after the fact. If two requests race for the same job or
-    // assignment, only one's conditional update actually matches — the
-    // loser's modifiedCount comes back short and it backs out cleanly
-    // instead of double-booking the work.
-    const invoiceId = new mongoose.Types.ObjectId();
-
-    const jobLock = resolved.jobIds.length
-        ? await Job.updateMany(
-              { _id: { $in: resolved.jobIds }, billingStatus: { $ne: "invoiced" } },
-              { $set: { billingStatus: "invoiced", invoice: invoiceId } }
-          )
-        : { modifiedCount: 0 };
-    const assignmentLock = resolved.assignmentIds.length
-        ? await JobAssignment.updateMany(
-              { _id: { $in: resolved.assignmentIds }, billingStatus: { $ne: "invoiced" } },
-              { $set: { billingStatus: "invoiced", invoice: invoiceId } }
-          )
-        : { modifiedCount: 0 };
-
-    const fullyLocked =
-        jobLock.modifiedCount === resolved.jobIds.length && assignmentLock.modifiedCount === resolved.assignmentIds.length;
-
-    const releaseLock = () =>
-        Promise.all([
-            resolved.jobIds.length
-                ? Job.updateMany({ _id: { $in: resolved.jobIds } }, { $set: { billingStatus: "pending", invoice: null } })
-                : Promise.resolve(),
-            resolved.assignmentIds.length
-                ? JobAssignment.updateMany(
-                      { _id: { $in: resolved.assignmentIds } },
-                      { $set: { billingStatus: "pending", invoice: null } }
-                  )
-                : Promise.resolve(),
-        ]);
-
-    if (!fullyLocked) {
-        await releaseLock();
-        throw new BadRequestError(
-            "Some of the selected work was just invoiced by someone else. Refresh and try again."
-        );
-    }
-
-    let invoice;
-    try {
-        for (let attempt = 0; attempt < 5; attempt++) {
-            try {
-                invoice = await Invoice.create({
-                    _id: invoiceId,
-                    company: companyId,
-                    createdBy: req.user.user_id,
-                    invoiceNumber: await nextInvoiceNumber(companyId, attempt),
-                    client: resolved.client._id,
-                    clientSnapshot: {
-                        name: resolved.client.name,
-                        billingEmail: resolved.client.billingEmail,
-                        vatNumber: resolved.client.vatNumber,
-                        phone: resolved.client.phone,
-                        contactName:
-                            resolved.client.contacts?.find((c: any) => c.isPrimary)?.name ??
-                            resolved.client.contacts?.[0]?.name,
-                        address: resolved.client.address,
-                    },
-                    jobs: resolved.jobIds,
-                    assignments: resolved.assignmentIds,
-                    servicePeriod: { start: periodStart, end: periodEnd },
-                    issueDate,
-                    dueDate,
-                    purchaseOrderNumber: data.purchaseOrderNumber,
-                    lineItems,
-                    subtotal,
-                    vatRate,
-                    vatAmount,
-                    total,
-                    currency: company?.currency ?? "GBP",
-                    notes: data.notes ?? "",
-                });
-                break;
-            } catch (err: any) {
-                // Duplicate invoiceNumber (race with another concurrent
-                // create) — retry with the next number; the lock above
-                // already protects against the same *work* being reused.
-                if (err?.code === 11000 && attempt < 4) continue;
-                throw err;
-            }
-        }
-    } catch (err) {
-        // The invoice itself never got created — release the lock so this
-        // work isn't stranded as "invoiced" against nothing.
-        await releaseLock();
-        throw err;
-    }
-
-    res.status(StatusCodes.CREATED).json({ success: true, invoice: serializeInvoice(invoice!.toObject()) });
+    res.status(StatusCodes.CREATED).json({ success: true, invoice: serializeInvoice(invoice.toObject()) });
 };
 
 const markPaidSchema = z

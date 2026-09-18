@@ -36,6 +36,7 @@ const COMPANY_SETTINGS_FIELDS = [
     "openShiftsEnabled",
     "openShiftsRequireApproval",
     "paymentRemindersEnabled",
+    "autoGenerateRecurringInvoices",
 ] as const;
 
 // Read-only here — included so GET /companies/settings hands the frontend
@@ -84,6 +85,7 @@ const companySettingsSchema = z
         openShiftsEnabled: z.boolean(),
         openShiftsRequireApproval: z.boolean(),
         paymentRemindersEnabled: z.boolean(),
+        autoGenerateRecurringInvoices: z.boolean(),
     })
     .partial() // PATCH — every field optional, unknown keys rejected below
     .strict();

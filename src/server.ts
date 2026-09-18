@@ -33,6 +33,7 @@ import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGenerati
 import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
 import { autoCloseAbandonedShifts } from "./utils/autoCloseAbandonedShifts.js";
 import { sendOverduePaymentReminders } from "./utils/sendPaymentReminders.js";
+import { generateRecurringInvoices } from "./services/invoice/recurringInvoiceGenerator.js";
 import notificationPreferenceRouter
   from "./routes/notificationPreferenceRouter.js";
   import timesheetRouter from "./routes/timesheetRouter.js";
@@ -182,6 +183,11 @@ const start = async (): Promise<void> => {
     // 8am UTC — a reminder email landing at 1am does nobody any good.
     cron.schedule("0 8 * * *", () => {
       sendOverduePaymentReminders();
+    });
+    // 6am UTC, ahead of the payment-reminder run — drafts are ready for a
+    // manager to review before the working day starts.
+    cron.schedule("0 6 * * *", () => {
+      generateRecurringInvoices();
     });
   } catch (err) {
     console.error(err);

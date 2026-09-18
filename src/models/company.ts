@@ -124,6 +124,18 @@ const CompanySchema = new Schema(
       default: true,
     },
 
+    // Auto-drafts an invoice when a client's billing cadence
+    // (Client.billingFrequency) closes a period — see
+    // services/invoice/recurringInvoiceGenerator.ts. Defaults OFF and
+    // opt-in per company: billingFrequency already existed purely as a UI
+    // hint for the manual eligible-work picker, so flipping every
+    // existing company straight to auto-generating real invoice documents
+    // would be a surprising behaviour change, not a safe default.
+    autoGenerateRecurringInvoices: {
+      type: Boolean,
+      default: false,
+    },
+
     // ── Email & Sending ───────────────────────────────────────────────
     // Lets a company send INPRN transactional email ("New shift assigned",
     // "Quote from ...") from their own domain instead of INPRN's. See
