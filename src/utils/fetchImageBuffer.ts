@@ -6,6 +6,13 @@
 // unreachable must not break invoice/quote generation, it should just
 // render without one, same as this file's own fallback-on-failure pattern
 // elsewhere (e.g. sendCompanyEmail's provider fallback).
+//
+// Logo uploads accept JPEG/PNG/WebP (see multerMiddleware.ts), but pdfkit
+// only natively draws JPEG and PNG — a WebP logo would otherwise silently
+// fail to render. Every fetched image is normalized to PNG via sharp so the
+// source format never matters.
+import sharp from "sharp";
+
 const FETCH_TIMEOUT_MS = 5000;
 
 export async function fetchImageBuffer(url: string | null | undefined): Promise<Buffer | null> {
@@ -19,7 +26,7 @@ export async function fetchImageBuffer(url: string | null | undefined): Promise<
 
     if (!response.ok) return null;
     const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    return await sharp(Buffer.from(arrayBuffer)).png().toBuffer();
   } catch (err) {
     console.error("fetchImageBuffer failed:", err);
     return null;
