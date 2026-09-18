@@ -44,6 +44,7 @@ export interface PlanFeatures {
   advancedReports: boolean;
   aiJobAssistant: boolean;
   aiDashboardInsights: boolean;
+  aiDataAssistant: boolean;
 }
 
 export interface PlanDefinition {
@@ -57,22 +58,22 @@ export const PLAN_LIMITS: Record<Plan, PlanDefinition> = {
   free: {
     maxWorkers: 3,
     maxJobsPerMonth: 10,
-    features: { gpsVerification: false, recurringJobs: false, openShifts: false, advancedReports: false, aiJobAssistant: false, aiDashboardInsights: false },
+    features: { gpsVerification: false, recurringJobs: false, openShifts: false, advancedReports: false, aiJobAssistant: false, aiDashboardInsights: false, aiDataAssistant: false },
   },
   starter: {
     maxWorkers: 15,
     maxJobsPerMonth: 100,
-    features: { gpsVerification: true, recurringJobs: false, openShifts: false, advancedReports: false, aiJobAssistant: false, aiDashboardInsights: false },
+    features: { gpsVerification: true, recurringJobs: false, openShifts: false, advancedReports: false, aiJobAssistant: false, aiDashboardInsights: false, aiDataAssistant: false },
   },
   professional: {
     maxWorkers: 50,
     maxJobsPerMonth: -1,
-    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true, aiJobAssistant: true, aiDashboardInsights: true },
+    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true, aiJobAssistant: true, aiDashboardInsights: true, aiDataAssistant: true },
   },
   enterprise: {
     maxWorkers: -1,
     maxJobsPerMonth: -1,
-    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true, aiJobAssistant: true, aiDashboardInsights: true },
+    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true, aiJobAssistant: true, aiDashboardInsights: true, aiDataAssistant: true },
   },
 };
 
@@ -86,6 +87,7 @@ export const PLAN_FEATURE_LABELS: Record<keyof PlanFeatures, string> = {
   advancedReports: "Advanced reports & analytics",
   aiJobAssistant: "AI job-creation assistant",
   aiDashboardInsights: "AI dashboard insights",
+  aiDataAssistant: "AI data assistant",
 };
 
 // Marketing/pricing-page copy for a plan — deliberately NOT where the

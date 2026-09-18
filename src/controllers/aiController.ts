@@ -7,6 +7,7 @@ import Client from "../models/clientModel.js";
 import { BadRequestError } from "../errors/customErrors.js";
 import { generateJobDraft } from "../services/ai/jobDraftAssistant.js";
 import { generateDashboardInsights } from "../services/ai/dashboardInsightAssistant.js";
+import { runDataAssistantChat, type ChatTurn } from "../services/ai/dataAssistantChat.js";
 import { assertFeatureEnabledForCompany } from "../utils/planLimits.js";
 import { computeDashboardStats } from "./dashboardStat.js";
 
@@ -74,4 +75,40 @@ export const generateDashboardInsightsHandler = async (req: Request, res: Respon
   const insights = await generateDashboardInsights(stats);
 
   res.status(StatusCodes.OK).json(insights);
+};
+
+const chatTurnSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().trim().min(1).max(2000),
+});
+
+const dataAssistantChatSchema = z
+  .object({
+    message: z.string().trim().min(1, "Ask a question first.").max(1000),
+    // Capped short — this is a stateless per-request chat, not a persisted
+    // conversation, so only recent context needs to ride along each call.
+    history: z.array(chatTurnSchema).max(12).optional(),
+  })
+  .strict();
+
+// Tool-calling chat scoped to the caller's own company — see
+// dataAssistantTools.ts for the read-only, field-whitelisted tools this is
+// restricted to (never raw documents, never another company's data, never
+// worker personal/identifying data).
+export const dataAssistantChatHandler = async (req: Request, res: Response) => {
+  const parsed = dataAssistantChatSchema.safeParse(req.body);
+  if (!parsed.success) {
+    throw new BadRequestError(parsed.error.issues[0]?.message ?? "Invalid request.");
+  }
+
+  const companyId = req.user!.company_id.toString();
+  await assertFeatureEnabledForCompany(companyId, "aiDataAssistant");
+
+  const reply = await runDataAssistantChat({
+    companyId,
+    message: parsed.data.message,
+    history: (parsed.data.history ?? []) as ChatTurn[],
+  });
+
+  res.status(StatusCodes.OK).json({ reply });
 };
