@@ -534,3 +534,106 @@ export const getReportsProfitability: MiddlewareFn = async (req, res) => {
     byClient: byClientRows,
   });
 };
+
+// ── Aging report ─────────────────────────────────────────────────────────
+
+type AgingBucket = "current" | "1-30" | "31-60" | "61-90" | "90+";
+
+const bucketFor = (daysOverdue: number): AgingBucket => {
+  if (daysOverdue <= 0) return "current";
+  if (daysOverdue <= 30) return "1-30";
+  if (daysOverdue <= 60) return "31-60";
+  if (daysOverdue <= 90) return "61-90";
+  return "90+";
+};
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * GET /api/v1/reports/aging
+ *
+ * A snapshot "as of now" of every unpaid balance, bucketed by how many
+ * days past its due date each invoice is — the classic AR aging report.
+ * Only "sent" invoices carry an outstanding balance in this model (draft
+ * isn't billed yet, paid/cancelled have none), same convention as the
+ * outstanding-balance calc in clientController/quoteController.
+ */
+export const getReportsAging: MiddlewareFn = async (req, res) => {
+  const companyId = req.user.company_id.toString();
+  const now = new Date();
+
+  const invoices = await Invoice.find({ company: companyId, isDeleted: false, status: "sent" })
+    .select("invoiceNumber client clientSnapshot total amountPaid dueDate")
+    .lean<
+      {
+        _id: unknown;
+        invoiceNumber: string;
+        client?: unknown;
+        clientSnapshot?: { name?: string };
+        total?: number;
+        amountPaid?: number;
+        dueDate?: Date;
+      }[]
+    >();
+
+  const rows = invoices
+    .map(inv => {
+      const balanceDue = round2(Math.max(0, (inv.total ?? 0) - (inv.amountPaid ?? 0)));
+      const daysOverdue = inv.dueDate ? dayjs(now).diff(dayjs(inv.dueDate), "day") : 0;
+      return {
+        invoiceNumber: inv.invoiceNumber,
+        clientId: inv.client ? String(inv.client) : null,
+        clientName: inv.clientSnapshot?.name ?? "Unknown client",
+        dueDate: inv.dueDate ? dayjs(inv.dueDate).format("YYYY-MM-DD") : null,
+        daysOverdue,
+        balanceDue,
+        bucket: bucketFor(daysOverdue),
+      };
+    })
+    // A "sent" invoice that's already fully paid down to zero (a partial
+    // payment exactly covering it) has nothing left to chase — leave it
+    // out rather than show a bucketed row for £0.
+    .filter(row => row.balanceDue > 0)
+    .sort((a, b) => b.daysOverdue - a.daysOverdue);
+
+  const buckets = { current: 0, "1-30": 0, "31-60": 0, "61-90": 0, "90+": 0 } as Record<AgingBucket, number>;
+  for (const row of rows) buckets[row.bucket] += row.balanceDue;
+  for (const key of Object.keys(buckets) as AgingBucket[]) buckets[key] = round2(buckets[key]);
+
+  const byClientMap = new Map<
+    string,
+    { clientId: string | null; clientName: string; buckets: Record<AgingBucket, number>; total: number; invoiceCount: number }
+  >();
+  for (const row of rows) {
+    const key = row.clientId ?? row.clientName;
+    const entry = byClientMap.get(key) ?? {
+      clientId: row.clientId,
+      clientName: row.clientName,
+      buckets: { current: 0, "1-30": 0, "31-60": 0, "61-90": 0, "90+": 0 },
+      total: 0,
+      invoiceCount: 0,
+    };
+    entry.buckets[row.bucket] += row.balanceDue;
+    entry.total += row.balanceDue;
+    entry.invoiceCount += 1;
+    byClientMap.set(key, entry);
+  }
+  const byClient = [...byClientMap.values()]
+    .map(c => ({
+      ...c,
+      total: round2(c.total),
+      buckets: Object.fromEntries(
+        Object.entries(c.buckets).map(([k, v]) => [k, round2(v)])
+      ) as Record<AgingBucket, number>,
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    asOf: dayjs(now).format("YYYY-MM-DD"),
+    buckets,
+    totalOutstanding: round2(Object.values(buckets).reduce((s, v) => s + v, 0)),
+    byClient,
+    invoices: rows,
+  });
+};
