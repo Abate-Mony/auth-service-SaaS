@@ -63,6 +63,12 @@ interface GenerateInvoicePdfOptions {
   purchaseOrderNumber?: string;
   notes?: string;
 
+  // Pre-fetched by the caller (buildInvoicePdfDocument) via
+  // fetchImageBuffer — this file never does I/O itself. null/undefined
+  // when the company has no logo, or fetching it failed; either way the
+  // invoice still renders, just without one.
+  logoBuffer?: Buffer | null;
+
   // Falls back to DEFAULT_INVOICE_TEMPLATE (the original single layout this
   // file used to always render) when omitted, so existing callers that
   // don't pass one keep working unchanged.
@@ -117,14 +123,42 @@ function ensureSpace(doc: PDFKit.PDFDocument, needed: number) {
   }
 }
 
-// Company/client identity block, positioned left/center/right per
-// template.logoPosition — the closest honest equivalent to "logo
-// placement" this file can offer without an actual logo image being
-// passed in (see the open item about embedding Company.logo).
+// X position for both the heading text block AND the logo image (see
+// renderLogo below) — left/center/right per template.logoPosition, so
+// whichever one is present always lands on the same edge.
 function headerColumnX(logoPosition: InvoicePdfTemplate["logoPosition"], pageWidth: number, blockWidth: number): number {
   if (logoPosition === "top-center") return LEFT + (pageWidth - blockWidth) / 2;
   if (logoPosition === "top-right") return LEFT + pageWidth - blockWidth;
   return LEFT;
+}
+
+// Drawn within the same 220-wide slot headingX already reserves for the
+// heading text below it, so the logo and "INVOICE"/number stay aligned to
+// whichever edge logoPosition picked instead of each computing its own,
+// possibly different, anchor. Wrapped in try/catch — pdfkit throws
+// synchronously on an unsupported format (e.g. an SVG logo, which pdfkit
+// can't rasterize), and that must never take the whole PDF down with it.
+const LOGO_BOX_HEIGHT = 32;
+// pdfkit's image `align` only accepts "center"/"right" (left is the
+// implicit default, omitting the option entirely) — not a 3-way enum.
+const LOGO_ALIGN: Record<InvoicePdfTemplate["logoPosition"], "center" | "right" | undefined> = {
+  "top-left": undefined,
+  "top-center": "center",
+  "top-right": "right",
+};
+
+function renderLogo(doc: PDFKit.PDFDocument, ctx: Ctx, headingX: number): void {
+  if (!ctx.logoBuffer) return;
+  try {
+    doc.image(ctx.logoBuffer, headingX, doc.y, {
+      fit: [220, LOGO_BOX_HEIGHT],
+      align: LOGO_ALIGN[ctx.template.logoPosition],
+    });
+  } catch (err) {
+    console.error("renderLogo failed:", err);
+    return;
+  }
+  doc.y += LOGO_BOX_HEIGHT + 8;
 }
 
 function renderPartyBlocks(doc: PDFKit.PDFDocument, ctx: Ctx, pageWidth: number, opts: { labelColor: string; accentLabels: boolean }) {
@@ -223,6 +257,7 @@ function renderModernInvoice(doc: PDFKit.PDFDocument, ctx: Ctx, pageWidth: numbe
 
   // Header
   const headingX = headerColumnX(template.logoPosition, pageWidth, 220);
+  renderLogo(doc, ctx, headingX);
   doc.font(fontBold).fontSize(22).fillColor(template.accentColor).text("INVOICE", headingX, doc.y, { continued: false });
   doc.font(fontBold).fontSize(11).fillColor(COLOR_LABEL).text(ctx.invoiceNumber, headingX, doc.y);
 
@@ -354,6 +389,7 @@ function renderClassicInvoice(doc: PDFKit.PDFDocument, ctx: Ctx, pageWidth: numb
 
   // Header — plain heading, accent used only as a thin rule, not on text.
   const headingX = headerColumnX(template.logoPosition, pageWidth, 220);
+  renderLogo(doc, ctx, headingX);
   doc.font(fontBold).fontSize(20).fillColor(COLOR_HEADING).text("INVOICE", headingX, doc.y);
   doc.font(fontReg).fontSize(10).fillColor(COLOR_LABEL).text(ctx.invoiceNumber, headingX, doc.y);
 
@@ -461,6 +497,7 @@ function renderMinimalInvoice(doc: PDFKit.PDFDocument, ctx: Ctx, pageWidth: numb
 
   doc.y += 10;
   const headingX = headerColumnX(template.logoPosition, pageWidth, 220);
+  renderLogo(doc, ctx, headingX);
   doc.font(fontReg).fontSize(18).fillColor(COLOR_HEADING).text("Invoice", headingX, doc.y);
   doc.font(fontReg).fontSize(9).fillColor(template.accentColor).text(ctx.invoiceNumber, headingX, doc.y);
 

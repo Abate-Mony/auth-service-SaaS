@@ -364,6 +364,9 @@ const QuoteSchema = new Schema(
     },
 
     sentAt: Date,
+    // First-sent timestamp — never overwritten on resend, unlike lastSentAt
+    // below. Same split as Invoice's own sentAt/lastSentAt.
+    lastSentAt: Date,
     viewedAt: Date,
 
     acceptedAt: Date,

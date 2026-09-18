@@ -43,6 +43,10 @@ interface GenerateQuotePdfOptions {
   notes?: string;
   terms?: string;
 
+  // Pre-fetched by the caller (buildQuotePdfDocument) via
+  // fetchImageBuffer — see invoicePdf.ts's identical field for why.
+  logoBuffer?: Buffer | null;
+
   template?: QuotePdfTemplate;
 }
 
@@ -80,6 +84,33 @@ function headerColumnX(logoPosition: QuotePdfTemplate["logoPosition"], pageWidth
 }
 
 type Ctx = GenerateQuotePdfOptions & { template: QuotePdfTemplate };
+
+// Same recipe as invoicePdf.ts's renderLogo — drawn within the same
+// 220-wide slot headingX reserves for the heading text, wrapped in
+// try/catch since pdfkit throws synchronously on an unsupported image
+// format (e.g. an SVG logo) and that must never take the PDF down with it.
+const LOGO_BOX_HEIGHT = 32;
+// pdfkit's image `align` only accepts "center"/"right" (left is the
+// implicit default, omitting the option entirely) — not a 3-way enum.
+const LOGO_ALIGN: Record<QuotePdfTemplate["logoPosition"], "center" | "right" | undefined> = {
+  "top-left": undefined,
+  "top-center": "center",
+  "top-right": "right",
+};
+
+function renderLogo(doc: PDFKit.PDFDocument, ctx: Ctx, headingX: number): void {
+  if (!ctx.logoBuffer) return;
+  try {
+    doc.image(ctx.logoBuffer, headingX, doc.y, {
+      fit: [220, LOGO_BOX_HEIGHT],
+      align: LOGO_ALIGN[ctx.template.logoPosition],
+    });
+  } catch (err) {
+    console.error("renderLogo failed:", err);
+    return;
+  }
+  doc.y += LOGO_BOX_HEIGHT + 8;
+}
 
 function renderPartyBlocks(doc: PDFKit.PDFDocument, ctx: Ctx, pageWidth: number, opts: { labelColor: string; accentLabels: boolean }) {
   const { template } = ctx;
@@ -155,6 +186,7 @@ function renderModernQuote(doc: PDFKit.PDFDocument, ctx: Ctx, pageWidth: number)
   const rightColX = LEFT + pageWidth / 2 + 10;
 
   const headingX = headerColumnX(template.logoPosition, pageWidth, 220);
+  renderLogo(doc, ctx, headingX);
   doc.font(fontBold).fontSize(22).fillColor(template.accentColor).text("QUOTE", headingX, doc.y);
   doc.font(fontBold).fontSize(11).fillColor(COLOR_LABEL).text(ctx.quoteNumber, headingX, doc.y);
 
@@ -228,6 +260,7 @@ function renderClassicQuote(doc: PDFKit.PDFDocument, ctx: Ctx, pageWidth: number
   const rightColX = LEFT + pageWidth / 2 + 10;
 
   const headingX = headerColumnX(template.logoPosition, pageWidth, 220);
+  renderLogo(doc, ctx, headingX);
   doc.font(fontBold).fontSize(20).fillColor(COLOR_HEADING).text("QUOTE", headingX, doc.y);
   doc.font(fontReg).fontSize(10).fillColor(COLOR_LABEL).text(ctx.quoteNumber, headingX, doc.y);
 
@@ -319,6 +352,7 @@ function renderMinimalQuote(doc: PDFKit.PDFDocument, ctx: Ctx, pageWidth: number
 
   doc.y += 10;
   const headingX = headerColumnX(template.logoPosition, pageWidth, 220);
+  renderLogo(doc, ctx, headingX);
   doc.font(fontReg).fontSize(18).fillColor(COLOR_HEADING).text("Quote", headingX, doc.y);
   doc.font(fontReg).fontSize(9).fillColor(template.accentColor).text(ctx.quoteNumber, headingX, doc.y);
 

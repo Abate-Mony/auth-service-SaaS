@@ -10,6 +10,7 @@ import Invoice from "../models/invoiceModel.js";
 import Company from "../models/company.js";
 import { generateInvoicePdf } from "../utils/invoicePdf.js";
 import { resolveInvoiceTemplate } from "../utils/resolveInvoiceTemplate.js";
+import { fetchImageBuffer } from "../utils/fetchImageBuffer.js";
 import { sendInvoiceEmail } from "../utils/mailTemplates.js";
 import { getEligibleWork, resolveSelectedWork } from "../services/invoice/eligibility.js";
 import { computeCurrentBillingPeriod } from "../services/invoice/billingPeriod.js";
@@ -475,19 +476,24 @@ export const updateInvoiceStatusHandler: MiddlewareFn = async (req, res) => {
 async function buildInvoicePdfDocument(
     invoice: InstanceType<typeof Invoice>,
     companyId: mongoose.Types.ObjectId,
-    opts: { persistTemplate: boolean }
+    opts: { persistTemplate: boolean; explicitTemplateId?: string }
 ) {
-    const company = await Company.findById(companyId).select("name phone").lean();
+    const company = await Company.findById(companyId).select("name phone logo").lean();
     const companyName = company?.name ?? "INPRN";
+    const logoBuffer = await fetchImageBuffer(company?.logo?.url);
 
     const addr = invoice.clientSnapshot?.address;
     const clientAddress = addr
         ? [addr.line1, addr.line2, addr.city, addr.county, addr.postcode, addr.country].filter(Boolean).join(", ")
         : undefined;
 
+    // An explicit choice (the send-time template picker) always re-resolves
+    // and can override an already-locked snapshot; with no explicit choice
+    // an already-locked snapshot is reused as-is — same reasoning as
+    // quoteController.ts's buildQuotePdfDocument.
     let snapshot = invoice.templateSnapshot;
-    if (!snapshot?.baseLayout) {
-        const resolved = await resolveInvoiceTemplate(companyId, invoice.template?.toString());
+    if (opts.explicitTemplateId || !snapshot?.baseLayout) {
+        const resolved = await resolveInvoiceTemplate(companyId, opts.explicitTemplateId ?? invoice.template?.toString());
         snapshot = resolved.snapshot;
         if (opts.persistTemplate) {
             invoice.template = resolved.templateId;
@@ -525,6 +531,7 @@ async function buildInvoicePdfDocument(
         total: invoice.total,
         currency: invoice.currency,
         notes: invoice.notes,
+        logoBuffer,
         template: snapshot?.baseLayout
             ? {
                 baseLayout: snapshot.baseLayout as "modern" | "classic" | "minimal",
@@ -548,7 +555,8 @@ export const downloadInvoicePdf: MiddlewareFn = async (req, res) => {
     const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
     if (!invoice) throw new NotFoundError("Invoice not found.");
 
-    const doc = await buildInvoicePdfDocument(invoice, companyId, { persistTemplate: false });
+    const explicitTemplateId = typeof req.query.template === "string" ? req.query.template : undefined;
+    const doc = await buildInvoicePdfDocument(invoice, companyId, { persistTemplate: false, explicitTemplateId });
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${invoice.invoiceNumber}.pdf"`);
@@ -559,7 +567,10 @@ export const downloadInvoicePdf: MiddlewareFn = async (req, res) => {
 // Actually emails the invoice (with a PDF attached) to the client's billing
 // address and flips it to "sent" in one step, replacing the old
 // status-only "Mark as Sent" toggle.
+const sendInvoiceSchema = z.object({ template: z.string().optional() }).strict();
+
 export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
+    const data = parseOrThrow(sendInvoiceSchema, req.body);
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
     const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
     if (!invoice) throw new NotFoundError("Invoice not found.");
@@ -571,7 +582,7 @@ export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
 
     const company = await Company.findById(companyId).select("name phone emailSettings").lean();
 
-    const doc = await buildInvoicePdfDocument(invoice, companyId, { persistTemplate: true });
+    const doc = await buildInvoicePdfDocument(invoice, companyId, { persistTemplate: true, explicitTemplateId: data.template });
 
     const buffers: Buffer[] = [];
     doc.on("data", chunk => buffers.push(chunk));

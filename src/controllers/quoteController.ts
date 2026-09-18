@@ -10,6 +10,7 @@ import User from "../models/userModel.js";
 import Quote from "../models/quoteModel.js";
 import { generateQuotePdf } from "../utils/quotePdf.js";
 import { resolveQuoteTemplate } from "../utils/resolveInvoiceTemplate.js";
+import { fetchImageBuffer } from "../utils/fetchImageBuffer.js";
 import { sendQuoteEmail, sendQuoteResponseNotice, sendQuoteThankYouEmail } from "../utils/mailTemplates.js";
 import { calculateVat, round2 } from "../services/invoice/calculations.js";
 import { createQuoteResponseToken, hashQuoteResponseToken } from "../utils/tokenUtils.js";
@@ -409,19 +410,25 @@ export const deleteQuote: MiddlewareFn = async (req, res) => {
 async function buildQuotePdfDocument(
     quote: InstanceType<typeof Quote>,
     companyId: mongoose.Types.ObjectId,
-    opts: { persistTemplate: boolean }
+    opts: { persistTemplate: boolean; explicitTemplateId?: string }
 ) {
-    const company = await Company.findById(companyId).select("name phone").lean();
+    const company = await Company.findById(companyId).select("name phone logo").lean();
     const companyName = company?.name ?? "INPRN";
+    const logoBuffer = await fetchImageBuffer(company?.logo?.url);
 
     const addr = quote.clientSnapshot?.address;
     const clientAddress = addr
         ? [addr.line1, addr.line2, addr.city, addr.county, addr.postcode, addr.country].filter(Boolean).join(", ")
         : undefined;
 
+    // An explicit choice (the send-time template picker) always re-resolves
+    // and can override an already-locked snapshot — e.g. picking a
+    // different look on resend. With no explicit choice, an already-locked
+    // snapshot is reused as-is (the normal "sending never silently changes
+    // an already-sent look" rule).
     let snapshot = quote.templateSnapshot;
-    if (!snapshot?.baseLayout) {
-        const resolved = await resolveQuoteTemplate(companyId, quote.template?.toString());
+    if (opts.explicitTemplateId || !snapshot?.baseLayout) {
+        const resolved = await resolveQuoteTemplate(companyId, opts.explicitTemplateId ?? quote.template?.toString());
         snapshot = resolved.snapshot;
         if (opts.persistTemplate) {
             quote.template = resolved.templateId as any;
@@ -454,6 +461,7 @@ async function buildQuotePdfDocument(
         currency: quote.currency,
         notes: quote.notes,
         terms: quote.terms,
+        logoBuffer,
         template: snapshot?.baseLayout
             ? {
                 baseLayout: snapshot.baseLayout as "modern" | "classic" | "minimal",
@@ -468,14 +476,17 @@ async function buildQuotePdfDocument(
     });
 }
 
-// GET /quotes/:id/pdf — preview/download without sending. Doesn't lock in a
-// template on an unsent quote, same reasoning as downloadInvoicePdf.
+// GET /quotes/:id/pdf?template=<id> — preview/download without sending.
+// Doesn't lock in a template on an unsent quote, same reasoning as
+// downloadInvoicePdf. The optional ?template lets the send-time picker
+// preview each candidate template before committing to Send.
 export const downloadQuotePdf: MiddlewareFn = async (req, res) => {
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
     const quote = await Quote.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
     if (!quote) throw new NotFoundError("Quote not found.");
 
-    const doc = await buildQuotePdfDocument(quote, companyId, { persistTemplate: false });
+    const explicitTemplateId = typeof req.query.template === "string" ? req.query.template : undefined;
+    const doc = await buildQuotePdfDocument(quote, companyId, { persistTemplate: false, explicitTemplateId });
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${quote.quoteNumber}.pdf"`);
@@ -485,11 +496,25 @@ export const downloadQuotePdf: MiddlewareFn = async (req, res) => {
 
 // Emails the quote (PDF attached) to the client's billing address, generates
 // the public response token, and flips draft -> sent in one step.
+const sendQuoteSchema = z.object({ template: z.string().optional() }).strict();
+
+// Covers both the first send (draft -> sent) and a resend (sent/viewed ->
+// sent) in one handler — a resend always rotates the response token, so a
+// stale/lost email link can never be replayed after a fresh one goes out.
+// Terminal statuses are rejected with a reason specific enough to act on.
 export const sendQuoteHandler: MiddlewareFn = async (req, res) => {
+    const data = parseOrThrow(sendQuoteSchema, req.body);
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
     const quote = await Quote.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
     if (!quote) throw new NotFoundError("Quote not found.");
-    if (quote.status !== "draft") throw new BadRequestError("Only draft quotes can be sent.");
+
+    if (quote.status === "accepted") throw new BadRequestError("This quote has already been accepted — it can't be resent.");
+    if (quote.status === "declined") throw new BadRequestError("This quote was declined. Create a new quote instead of resending it.");
+    if (quote.status === "expired") throw new BadRequestError("This quote has expired. Create a new quote instead of resending it.");
+    if (quote.status === "cancelled") throw new BadRequestError("This quote was cancelled and can't be sent.");
+    if (quote.status !== "draft" && quote.status !== "sent" && quote.status !== "viewed") {
+        throw new BadRequestError("This quote can't be sent in its current state.");
+    }
 
     const billingEmail = quote.clientSnapshot?.billingEmail;
     if (!billingEmail) {
@@ -498,7 +523,7 @@ export const sendQuoteHandler: MiddlewareFn = async (req, res) => {
 
     const company = await Company.findById(companyId).select("name phone emailSettings").lean();
 
-    const doc = await buildQuotePdfDocument(quote, companyId, { persistTemplate: true });
+    const doc = await buildQuotePdfDocument(quote, companyId, { persistTemplate: true, explicitTemplateId: data.template });
 
     const buffers: Buffer[] = [];
     doc.on("data", chunk => buffers.push(chunk));
@@ -508,6 +533,8 @@ export const sendQuoteHandler: MiddlewareFn = async (req, res) => {
         doc.end();
     });
 
+    // Rotated every send, including a resend — an old email (lost, bounced,
+    // or just superseded) must never keep working once a fresh one goes out.
     const { token, hash, expiresAt } = createQuoteResponseToken();
 
     await sendQuoteEmail({
@@ -527,6 +554,7 @@ export const sendQuoteHandler: MiddlewareFn = async (req, res) => {
     quote.responseTokenExpiresAt = expiresAt;
     quote.status = "sent";
     quote.sentAt = quote.sentAt ?? new Date();
+    quote.lastSentAt = new Date();
     await quote.save();
 
     res.status(StatusCodes.OK).json({ success: true, quote: serializeQuote(quote.toObject()) });
