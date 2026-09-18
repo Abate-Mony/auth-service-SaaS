@@ -893,10 +893,8 @@ export async function sendQuoteResponseNotice({
 
 /** Sent to the CLIENT after they accept a quote — gated by
  *  Quote.sendThankYouEmailOnAccept (a checkbox at creation/edit time), not
- *  sent unconditionally. customMessage is the future
- *  Quote.thankYouMessage field — that field is schema-only for now (no UI
- *  writes it yet), so this always falls back to the default copy in
- *  practice until that follow-up wires a way to set it. */
+ *  sent unconditionally. customMessage is Quote.thankYouMessage, an
+ *  optional extra paragraph set on the same form. */
 export async function sendQuoteThankYouEmail({
   email,
   clientContactName,

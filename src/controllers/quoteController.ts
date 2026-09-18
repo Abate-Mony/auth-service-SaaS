@@ -121,6 +121,7 @@ const createQuoteSchema = z
         notes: z.string().optional(),
         terms: z.string().optional(),
         sendThankYouEmailOnAccept: z.boolean().optional(),
+        thankYouMessage: z.string().trim().max(1000, "Keep it under 1000 characters").optional(),
     })
     .strict();
 
@@ -297,6 +298,7 @@ export const createQuote: MiddlewareFn = async (req, res) => {
                 notes: data.notes ?? "",
                 terms: data.terms ?? "",
                 sendThankYouEmailOnAccept: data.sendThankYouEmailOnAccept ?? true,
+                thankYouMessage: data.thankYouMessage ?? "",
             });
             break;
         } catch (err: any) {
@@ -355,6 +357,7 @@ export const updateQuote: MiddlewareFn = async (req, res) => {
     if (data.notes !== undefined) quote.notes = data.notes;
     if (data.terms !== undefined) quote.terms = data.terms;
     if (data.sendThankYouEmailOnAccept !== undefined) quote.sendThankYouEmailOnAccept = data.sendThankYouEmailOnAccept;
+    if (data.thankYouMessage !== undefined) quote.thankYouMessage = data.thankYouMessage;
     if (data.validUntil !== undefined) quote.validUntil = new Date(data.validUntil);
     if (data.chargeType !== undefined) quote.chargeType = data.chargeType;
     if (data.chargeRate !== undefined) quote.chargeRate = data.chargeRate;

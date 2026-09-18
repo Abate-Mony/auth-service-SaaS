@@ -348,9 +348,9 @@ const QuoteSchema = new Schema(
       default: true,
     },
 
-    // Not wired to any UI yet — schema placeholder only, per explicit
-    // instruction, for a future custom-message-on-thank-you-email update.
-    // Empty string means "use the default thank-you copy."
+    // Optional extra paragraph appended to the default thank-you email copy
+    // (set at creation/edit time, same as sendThankYouEmailOnAccept above).
+    // Empty string means "use the default thank-you copy only."
     thankYouMessage: {
       type: String,
       trim: true,
