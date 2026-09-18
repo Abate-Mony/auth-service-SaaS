@@ -1332,6 +1332,7 @@ async function notifyManagerOfSeriesResponse({
                 count,
                 firstDate: sortedDates[0],
                 lastDate: sortedDates[sortedDates.length - 1],
+                company: schedule.company,
             })
             : Promise.resolve(),
         canPush
@@ -1652,6 +1653,7 @@ export const claimOpenShift: MiddlewareFn = async (req, res) => {
                 endTime: job.endTime,
             },
             needsApproval,
+            company: job.company,
         }).catch(err => console.error("Failed to send open-shift claim notice:", err));
     }
 
@@ -1734,6 +1736,7 @@ export const reviewOpenShiftClaim: MiddlewareFn = async (req, res) => {
                 endTime: job.endTime,
             },
             approved: approve,
+            company: job.company,
         }).catch(err => console.error("Failed to send claim-review result email:", err));
     }
 

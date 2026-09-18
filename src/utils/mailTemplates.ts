@@ -1,8 +1,14 @@
 // utils/mailTemplates.ts
+import mongoose from "mongoose";
 import dayjs from "./dayjsSetup.js";
 import { TZ } from "./dates.js";
 import { sendMail } from "./sendMailsUtils.js";
 import { sendCompanyEmail, type CompanyEmailInfo } from "./companyEmail.js";
+
+// Matches sendCompanyEmail's own `company` param exactly — callers can pass
+// whatever they already have in scope (a hydrated doc, or just an id) with
+// no extra fetch of their own.
+type CompanyRef = CompanyEmailInfo | string | mongoose.Types.ObjectId;
 
 const BRAND = "#1E3A5F";
 const ACCENT = "#3B82F6";
@@ -174,6 +180,7 @@ export async function sendRecurringSeriesResponse({
   count,
   firstDate,
   lastDate,
+  company,
 }: {
   manager: { email: string };
   worker: { fullname: string };
@@ -183,6 +190,7 @@ export async function sendRecurringSeriesResponse({
   count: number;
   firstDate: Date | string;
   lastDate: Date | string;
+  company: CompanyRef;
 }) {
   const link = `${process.env.CLIENT_URL}/jobs/recurring/recurring-job-detail/${recurringJobId}`;
   const range = `${dayjs(firstDate).tz(TZ).format("D MMM")} – ${dayjs(lastDate).tz(TZ).format("D MMM")}`;
@@ -202,7 +210,8 @@ export async function sendRecurringSeriesResponse({
 
     ${button(link, "View schedule")}`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: manager.email,
     subject: `${worker.fullname} ${verb} ${count} shift${count === 1 ? "" : "s"} — ${job.title}`,
     text:
@@ -217,9 +226,11 @@ export async function sendRecurringSeriesResponse({
 export async function sendShiftReminder({
   worker,
   job,
+  company,
 }: {
   worker: { email: string; fullname: string };
   job: ShiftJob;
+  company: CompanyRef;
 }) {
   const firstName = worker.fullname.split(" ")[0];
   const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
@@ -239,7 +250,8 @@ export async function sendShiftReminder({
 
     ${button(link, "View shift")}`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: worker.email,
     subject: `Starting soon: ${job.title} at ${job.startTime}`,
     text:
@@ -261,6 +273,7 @@ export async function sendInvitationEmail({
   inviterName,
   role,
   invitationToken,
+  company,
 }: {
   email: string;
   fullname?: string;
@@ -268,6 +281,7 @@ export async function sendInvitationEmail({
   inviterName: string;
   role: "worker" | "manager" | "admin";
   invitationToken: string;
+  company: CompanyRef;
 }) {
   const greeting = fullname ? fullname.split(" ")[0] : "there";
   const roleLabel = role === "admin" ? "Admin" : role === "manager" ? "Manager" : "Worker";
@@ -285,7 +299,8 @@ export async function sendInvitationEmail({
       This invitation expires in 7 days. If you weren't expecting this, you can ignore this email.
     </p>`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: email,
     subject: `You've been invited to join ${companyName}`,
     text:
@@ -294,7 +309,6 @@ export async function sendInvitationEmail({
       `Accept invitation: ${link}\n\n` +
       `This invitation expires in 7 days. If you weren't expecting this, you can ignore this email.`,
     html: layout({ heading: `You're invited to join ${companyName}`, body }),
-    companyName,
   });
 }
 
@@ -417,6 +431,7 @@ export async function sendRestrictionNotice({
   message,
   remedy,
   canAppeal,
+  company,
 }: {
   email: string;
   fullname: string;
@@ -424,6 +439,7 @@ export async function sendRestrictionNotice({
   message: string;
   remedy: string;
   canAppeal: boolean;
+  company: CompanyRef;
 }) {
   const firstName = fullname.split(" ")[0];
   const remedyLine = RESTRICTION_REMEDY_LABELS[remedy] ?? "";
@@ -443,7 +459,8 @@ export async function sendRestrictionNotice({
 
     ${button(link, "Open INPRN")}`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: email,
     subject: "Your account has been restricted",
     text:
@@ -461,10 +478,12 @@ export async function sendRestrictionLiftedEmail({
   email,
   fullname,
   liftReason,
+  company,
 }: {
   email: string;
   fullname: string;
   liftReason?: string;
+  company: CompanyRef;
 }) {
   const firstName = fullname.split(" ")[0];
   const link = `${process.env.CLIENT_URL}`;
@@ -476,7 +495,8 @@ export async function sendRestrictionLiftedEmail({
     ${liftReason ? `<table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">${detailRow("Note", liftReason)}</table>` : ""}
     ${button(link, "Open INPRN")}`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: email,
     subject: "Your account restriction has been lifted",
     text:
@@ -493,10 +513,12 @@ export async function sendAppealSubmittedEmail({
   managerEmail,
   workerFullname,
   appealMessage,
+  company,
 }: {
   managerEmail: string;
   workerFullname: string;
   appealMessage: string;
+  company: CompanyRef;
 }) {
   const link = `${process.env.CLIENT_URL}`;
 
@@ -509,7 +531,8 @@ export async function sendAppealSubmittedEmail({
     </table>
     ${button(link, "Review appeal")}`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: managerEmail,
     subject: `${workerFullname} submitted an appeal`,
     text:
@@ -526,11 +549,13 @@ export async function sendAppealResponseEmail({
   fullname,
   status,
   response,
+  company,
 }: {
   email: string;
   fullname: string;
   status: "accepted" | "rejected";
   response: string;
+  company: CompanyRef;
 }) {
   const firstName = fullname.split(" ")[0];
   const heading = status === "accepted" ? "Your appeal was accepted" : "Your appeal was reviewed";
@@ -545,7 +570,8 @@ export async function sendAppealResponseEmail({
     </table>
     ${button(link, "Open INPRN")}`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: email,
     subject: heading,
     text:
@@ -635,11 +661,13 @@ export async function sendOpenShiftClaimNotice({
   workerFullname,
   job,
   needsApproval,
+  company,
 }: {
   managerEmail: string;
   workerFullname: string;
   job: OpenShiftJob;
   needsApproval: boolean;
+  company: CompanyRef;
 }) {
   const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
   const link = `${process.env.CLIENT_URL}/jobs/${job._id}`;
@@ -657,7 +685,8 @@ export async function sendOpenShiftClaimNotice({
 
     ${button(link, needsApproval ? "Review claim" : "View job")}`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: managerEmail,
     subject: needsApproval
       ? `${workerFullname} wants to claim an open shift`
@@ -676,11 +705,13 @@ export async function sendClaimReviewResultEmail({
   fullname,
   job,
   approved,
+  company,
 }: {
   email: string;
   fullname: string;
   job: OpenShiftJob;
   approved: boolean;
+  company: CompanyRef;
 }) {
   const firstName = fullname.split(" ")[0];
   const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
@@ -704,7 +735,8 @@ export async function sendClaimReviewResultEmail({
 
     ${button(link, "Open INPRN")}`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: email,
     subject: approved ? `Your claim on "${job.title}" was approved` : `Your claim on "${job.title}" was declined`,
     text:
@@ -727,10 +759,12 @@ export async function sendOpenShiftAvailable({
   email,
   fullname,
   job,
+  company,
 }: {
   email: string;
   fullname: string;
   job: OpenShiftAvailableJob;
+  company: CompanyRef;
 }) {
   const firstName = fullname.split(" ")[0];
   const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
@@ -755,7 +789,8 @@ export async function sendOpenShiftAvailable({
       First come, first served — it may already be gone by the time you open the app.
     </p>`;
 
-  await sendMail({
+  await sendCompanyEmail({
+    company,
     to: email,
     subject: `Open shift available: ${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}`,
     text:

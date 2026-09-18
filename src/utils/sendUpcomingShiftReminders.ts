@@ -64,6 +64,7 @@ export async function sendUpcomingShiftReminders() {
               endTime: job.endTime,
               minutes: job.minutes,
             },
+            company: job.company,
           }),
           // Same trigger/window as the email above, just a second channel.
           // Tagged per job so a retried tick can't stack duplicate

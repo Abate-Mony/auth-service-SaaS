@@ -61,6 +61,7 @@ export async function notifyEligibleWorkersOfOpenShift(job: OpenShiftJobForNotif
                     email: worker.email,
                     fullname: worker.fullname,
                     job: jobForEmail,
+                    company: job.company as any,
                 }),
                 sendPushToUser(worker._id.toString(), {
                     title: "Open shift available",

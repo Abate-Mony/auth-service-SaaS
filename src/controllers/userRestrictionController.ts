@@ -134,6 +134,7 @@ export const createRestriction: MiddlewareFn = async (req, res) => {
         message: restriction.message,
         remedy: restriction.remedy,
         canAppeal: restriction.canAppeal,
+        company: companyId,
     }).catch(err => console.error("Failed to send restriction notice email:", err));
 
     res.status(StatusCodes.CREATED).json({ success: true, restriction });
@@ -263,6 +264,7 @@ export const liftRestriction: MiddlewareFn = async (req, res) => {
             email: restriction.user.email,
             fullname: restriction.user.fullname,
             liftReason: data.liftReason,
+            company: req.user.company_id,
         }).catch(err => console.error("Failed to send restriction-lifted email:", err));
     }
 
@@ -296,6 +298,7 @@ export const submitAppeal: MiddlewareFn = async (req, res) => {
             managerEmail: manager.email,
             workerFullname: worker?.fullname ?? "A worker",
             appealMessage: data.message,
+            company: req.user.company_id,
         }).catch(err => console.error("Failed to notify manager of appeal:", err));
     }
 
@@ -341,6 +344,7 @@ export const respondToAppeal: MiddlewareFn = async (req, res) => {
             fullname: restriction.user.fullname,
             status: data.status,
             response: data.response,
+            company: req.user.company_id,
         }).catch(err => console.error("Failed to send appeal-response email:", err));
     }
 

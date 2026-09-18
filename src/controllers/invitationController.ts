@@ -132,7 +132,7 @@ export const createInvitation: MiddlewareFn = async (req, res) => {
     }
 
     const [company, inviter] = await Promise.all([
-        Company.findById(companyId).select("name").lean(),
+        Company.findById(companyId).select("name emailSettings").lean(),
         User.findById(inviterId).select("fullname").lean(),
     ]);
 
@@ -144,6 +144,7 @@ export const createInvitation: MiddlewareFn = async (req, res) => {
         inviterName: inviter?.fullname ?? "A team member",
         role,
         invitationToken: token,
+        company: company ?? companyId,
     }).catch(err => console.error(`Failed to send invitation email to ${email}:`, err));
 
     res.status(StatusCodes.CREATED).json({
@@ -478,7 +479,7 @@ export const resendInvitation: MiddlewareFn = async (req, res) => {
     await invitation.save();
 
     const [company, inviter] = await Promise.all([
-        Company.findById(req.user.company_id).select("name").lean(),
+        Company.findById(req.user.company_id).select("name emailSettings").lean(),
         User.findById(req.user.user_id).select("fullname").lean(),
     ]);
 
@@ -489,6 +490,7 @@ export const resendInvitation: MiddlewareFn = async (req, res) => {
         inviterName: inviter?.fullname ?? "A team member",
         role: invitation.role,
         invitationToken: token,
+        company: company ?? req.user.company_id,
     }).catch(err => console.error(`Failed to resend invitation email to ${invitation.email}:`, err));
 
     res.status(StatusCodes.OK).json({ success: true, msg: "Invitation resent." });
