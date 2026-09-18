@@ -35,6 +35,7 @@ const COMPANY_SETTINGS_FIELDS = [
     "generateAheadDays",
     "openShiftsEnabled",
     "openShiftsRequireApproval",
+    "paymentRemindersEnabled",
 ] as const;
 
 // Read-only here — included so GET /companies/settings hands the frontend
@@ -82,6 +83,7 @@ const companySettingsSchema = z
         generateAheadDays: z.number().int().min(1).max(365),
         openShiftsEnabled: z.boolean(),
         openShiftsRequireApproval: z.boolean(),
+        paymentRemindersEnabled: z.boolean(),
     })
     .partial() // PATCH — every field optional, unknown keys rejected below
     .strict();

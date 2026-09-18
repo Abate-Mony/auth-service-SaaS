@@ -643,6 +643,68 @@ export async function sendInvoiceEmail({
   });
 }
 
+/** Sent by the daily payment-reminder job — see
+ *  utils/sendPaymentReminders.ts. A lighter-weight nudge than the original
+ *  invoice email: no PDF re-attached, just the numbers and how overdue it
+ *  is, since this can fire several times over an invoice's life
+ *  (REMINDER_DAYS milestones). */
+export async function sendPaymentReminderEmail({
+  to,
+  company,
+  clientContactName,
+  invoiceNumber,
+  balanceDue,
+  currency,
+  dueDate,
+  daysOverdue,
+}: {
+  to: string;
+  company: CompanyEmailInfo | string;
+  clientContactName?: string;
+  invoiceNumber: string;
+  balanceDue: number;
+  currency: string;
+  dueDate: Date | string;
+  daysOverdue: number;
+}) {
+  const companyName = typeof company === "object" && company && "name" in company ? company.name ?? "INPRN" : "INPRN";
+  const symbol = currency === "USD" ? "$" : currency === "EUR" ? "€" : "£";
+  const amount = `${symbol}${balanceDue.toFixed(2)}`;
+  const due = dayjs(dueDate).tz(TZ).format("D MMMM YYYY");
+  const greeting = clientContactName ? clientContactName.split(" ")[0] : "there";
+  const overdueLabel = `${daysOverdue} day${daysOverdue === 1 ? "" : "s"} overdue`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${greeting}, this is a reminder that invoice ${invoiceNumber} from ${companyName} is now ${overdueLabel}.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Invoice", invoiceNumber)}
+      ${detailRow("Balance due", amount)}
+      ${detailRow("Due date", due)}
+      ${detailRow("Status", overdueLabel)}
+    </table>
+
+    <p style="margin:20px 0 0;font-size:13px;color:#94A3B8;">
+      If you've already paid this, please disregard this email — otherwise, get in touch with ${companyName} to settle it.
+    </p>`;
+
+  await sendCompanyEmail({
+    company,
+    to,
+    subject: `Reminder: invoice ${invoiceNumber} is ${overdueLabel}`,
+    text:
+      `Hi ${greeting},\n\n` +
+      `This is a reminder that invoice ${invoiceNumber} from ${companyName} is now ${overdueLabel}.\n\n` +
+      `Invoice: ${invoiceNumber}\n` +
+      `Balance due: ${amount}\n` +
+      `Due date: ${due}\n\n` +
+      `If you've already paid this, please disregard this email — otherwise, get in touch with ${companyName} to settle it.`,
+    html: layout({ heading: `Invoice ${invoiceNumber} is ${overdueLabel}`, body }),
+  });
+}
+
 // ─────────────────────────────────────────────
 // Open shifts
 // ─────────────────────────────────────────────

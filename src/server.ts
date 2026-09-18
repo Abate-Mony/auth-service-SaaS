@@ -32,6 +32,7 @@ import cron from "node-cron";
 import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGeneration.js";
 import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
 import { autoCloseAbandonedShifts } from "./utils/autoCloseAbandonedShifts.js";
+import { sendOverduePaymentReminders } from "./utils/sendPaymentReminders.js";
 import notificationPreferenceRouter
   from "./routes/notificationPreferenceRouter.js";
   import timesheetRouter from "./routes/timesheetRouter.js";
@@ -177,6 +178,10 @@ const start = async (): Promise<void> => {
     cron.schedule("* * * * *", () => {
       sendUpcomingShiftReminders();
       autoCloseAbandonedShifts();
+    });
+    // 8am UTC — a reminder email landing at 1am does nobody any good.
+    cron.schedule("0 8 * * *", () => {
+      sendOverduePaymentReminders();
     });
   } catch (err) {
     console.error(err);

@@ -115,6 +115,15 @@ const CompanySchema = new Schema(
       default: null,
     },
 
+    // Automatic "this invoice is overdue" nudges to the client — see
+    // utils/sendPaymentReminders.ts. Defaults on (most companies want
+    // this chased automatically) with an opt-out, same reasoning as
+    // Quote.sendThankYouEmailOnAccept.
+    paymentRemindersEnabled: {
+      type: Boolean,
+      default: true,
+    },
+
     // ── Email & Sending ───────────────────────────────────────────────
     // Lets a company send INPRN transactional email ("New shift assigned",
     // "Quote from ...") from their own domain instead of INPRN's. See

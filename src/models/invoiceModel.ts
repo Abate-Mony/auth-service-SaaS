@@ -331,6 +331,15 @@ const InvoiceSchema = new Schema(
       min: 0,
     },
 
+    // Day-overdue milestones (see REMINDER_DAYS in
+    // utils/sendPaymentReminders.ts) a reminder email has already gone out
+    // for — each milestone fires at most once per invoice, regardless of
+    // how many times the daily reminder job runs.
+    remindersSent: {
+      type: [Number],
+      default: [],
+    },
+
     // ── Invoice Lifecycle ───────────────────────────────────
 
     /**
