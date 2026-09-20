@@ -29,6 +29,7 @@ import workerRouter from "./routes/workerRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
 import companyRouter from "./routes/companyRouter.js"
 import externalRouter from "./routes/externalRouter.js"
+import { getPlanCatalog } from "./controllers/companyController.js"
 import cron from "node-cron";
 import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGeneration.js";
 import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
@@ -98,6 +99,11 @@ app.use(
 );
 // DONE WITH AUTH DOCUMENTATION ON POSTMAN
 app.use(`/api/v1/auth`, authRouter);
+// Public — the same static plan catalog every visitor sees, no company/user
+// data involved. Exists so the public marketing page's pricing section can
+// show real, enforced numbers (see utils/constant.ts's own note on this)
+// instead of a second hand-maintained copy of them.
+app.get("/api/v1/plans", getPlanCatalog);
 // DONE WITH USERS DOCUMENTATION ON POSTMAN
 app.use(`/api/v1/users`,
   authenticateUser,
