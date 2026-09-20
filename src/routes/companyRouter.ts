@@ -9,6 +9,7 @@ import {
     verifyEmailDomain,
 } from "../controllers/companyEmailController.js";
 import { setDefaultInvoiceTemplate } from "../controllers/invoiceTemplateController.js";
+import { createApiKey, getApiKeys, revokeApiKey } from "../controllers/apiKeyController.js";
 import { authorizePermissions } from "../middleware/authMiddleware.js";
 import { uploadAvatar } from "../middleware/multerMiddleware.js";
 
@@ -32,6 +33,14 @@ router.route("/email-domain")
     .delete(authorizePermissions("owner"), removeEmailDomain);
 router.post("/email-domain/verify", authorizePermissions("owner"), verifyEmailDomain);
 router.post("/email-domain/test", authorizePermissions("owner"), sendTestEmail);
+
+// External-integration credentials — owner-only to create/revoke (same
+// "credentials to outside systems are the most sensitive tier" reasoning
+// as email-domain above); admin can view what exists.
+router.route("/api-keys")
+    .get(authorizePermissions("admin"), getApiKeys)
+    .post(authorizePermissions("owner"), createApiKey);
+router.delete("/api-keys/:id", authorizePermissions("owner"), revokeApiKey);
 
 router.route("/logo")
     .post(authorizePermissions("admin"), uploadAvatar.single("logo"), uploadCompanyLogo)

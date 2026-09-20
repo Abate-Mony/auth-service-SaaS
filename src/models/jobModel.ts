@@ -169,6 +169,20 @@ const JobSchema = new Schema(
             ref: "User",
             required: true,
         },
+
+        // Set when this job was created by an external integration (see
+        // routes/externalRouter.ts) rather than a manager in the app —
+        // createdBy still points at the company owner for these (Job
+        // requires a real User), this is what actually distinguishes them.
+        createdViaApiKey: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "ApiKey",
+            default: null,
+        },
+
+        // The caller's own booking/reference id, echoed back on every
+        // response so their system can reconcile without storing our id.
+        externalReference: { type: String, default: null, trim: true },
     },
     { timestamps: true }
 );

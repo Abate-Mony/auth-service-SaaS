@@ -28,6 +28,7 @@ import documentRouter from "./routes/documentRouter.js";
 import workerRouter from "./routes/workerRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
 import companyRouter from "./routes/companyRouter.js"
+import externalRouter from "./routes/externalRouter.js"
 import cron from "node-cron";
 import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGeneration.js";
 import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
@@ -147,6 +148,9 @@ app.use("/api/v1/reports", authenticateUser, loadRestriction, reportRouter)
 app.use("/api/v1/notifications", authenticateUser, loadRestriction, notificationRouter)
 app.use("/api/v1/ai", authenticateUser, loadRestriction, aiRouter)
 app.use("/api/v1/documents", authenticateUser, loadRestriction, documentRouter)
+// API-key authenticated, not a user session — see externalRouter.ts's own
+// header for why this is mounted separately from every router above.
+app.use("/api/v1/external", externalRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });

@@ -45,6 +45,7 @@ export interface PlanFeatures {
   aiJobAssistant: boolean;
   aiDashboardInsights: boolean;
   aiDataAssistant: boolean;
+  externalApiAccess: boolean;
 }
 
 export interface PlanDefinition {
@@ -58,22 +59,22 @@ export const PLAN_LIMITS: Record<Plan, PlanDefinition> = {
   free: {
     maxWorkers: 3,
     maxJobsPerMonth: 10,
-    features: { gpsVerification: false, recurringJobs: false, openShifts: false, advancedReports: false, aiJobAssistant: false, aiDashboardInsights: false, aiDataAssistant: false },
+    features: { gpsVerification: false, recurringJobs: false, openShifts: false, advancedReports: false, aiJobAssistant: false, aiDashboardInsights: false, aiDataAssistant: false, externalApiAccess: false },
   },
   starter: {
     maxWorkers: 15,
     maxJobsPerMonth: 100,
-    features: { gpsVerification: true, recurringJobs: false, openShifts: false, advancedReports: false, aiJobAssistant: false, aiDashboardInsights: false, aiDataAssistant: false },
+    features: { gpsVerification: true, recurringJobs: false, openShifts: false, advancedReports: false, aiJobAssistant: false, aiDashboardInsights: false, aiDataAssistant: false, externalApiAccess: false },
   },
   professional: {
     maxWorkers: 50,
     maxJobsPerMonth: -1,
-    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true, aiJobAssistant: true, aiDashboardInsights: true, aiDataAssistant: true },
+    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true, aiJobAssistant: true, aiDashboardInsights: true, aiDataAssistant: true, externalApiAccess: true },
   },
   enterprise: {
     maxWorkers: -1,
     maxJobsPerMonth: -1,
-    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true, aiJobAssistant: true, aiDashboardInsights: true, aiDataAssistant: true },
+    features: { gpsVerification: true, recurringJobs: true, openShifts: true, advancedReports: true, aiJobAssistant: true, aiDashboardInsights: true, aiDataAssistant: true, externalApiAccess: true },
   },
 };
 
@@ -88,6 +89,7 @@ export const PLAN_FEATURE_LABELS: Record<keyof PlanFeatures, string> = {
   aiJobAssistant: "AI job-creation assistant",
   aiDashboardInsights: "AI dashboard insights",
   aiDataAssistant: "AI data assistant",
+  externalApiAccess: "External API access",
 };
 
 // Marketing/pricing-page copy for a plan — deliberately NOT where the
