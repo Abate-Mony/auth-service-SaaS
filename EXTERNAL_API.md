@@ -201,6 +201,71 @@ know once a manager has published it.
 | 400 | `startTime must be HH:mm` / `endTime must be HH:mm` | Wrong time format. |
 | 429 | (rate limit response) | More than 300 requests in 15 minutes on this key. |
 
+## Example client (Node.js / axios)
+
+The key only ever needs to go in the `Authorization` header — set it once
+on an axios instance and every call inherits it.
+
+```js
+import axios from "axios";
+
+const inprn = axios.create({
+  baseURL: "https://<your-inprn-api-host>/api/v1/external",
+  headers: {
+    Authorization: `Bearer ${process.env.INPRN_API_KEY}`,
+  },
+});
+
+// GET /clients?search=
+export async function findClient(name) {
+  const { data } = await inprn.get("/clients", { params: { search: name } });
+  return data.clients[0] ?? null; // { id, name } | undefined
+}
+
+// GET /sites?clientId=
+export async function getSitesForClient(clientId) {
+  const { data } = await inprn.get("/sites", { params: { clientId } });
+  return data.sites; // [{ id, name }]
+}
+
+// GET /schedule?dateFrom=&dateTo=
+export async function getSchedule(dateFrom, dateTo) {
+  const { data } = await inprn.get("/schedule", { params: { dateFrom, dateTo } });
+  return data.jobs;
+}
+
+// POST /jobs — always comes back as status: "draft"
+export async function requestBooking(booking) {
+  const { data } = await inprn.post("/jobs", {
+    clientId: booking.clientId,
+    siteId: booking.siteId, // omit if using `location` instead
+    title: booking.title,
+    date: booking.date, // "YYYY-MM-DD"
+    startTime: booking.startTime, // "HH:mm"
+    endTime: booking.endTime, // "HH:mm"
+    requiredWorkers: booking.requiredWorkers ?? 1,
+    notes: booking.notes,
+    externalReference: booking.orderId, // your own id, echoed back
+  });
+  return data.job;
+}
+```
+
+Handling errors — every failure is `{ msg: "<human-readable message>" }`,
+the same shape documented in the error table above:
+
+```js
+try {
+  const job = await requestBooking(booking);
+} catch (err) {
+  if (axios.isAxiosError(err)) {
+    console.error(err.response?.status, err.response?.data?.msg);
+    // e.g. 400 "Client not found, inactive, or doesn't belong to this company."
+  }
+  throw err;
+}
+```
+
 ## A typical integration flow
 
 1. `GET /clients?search=<name>` once, at setup time, to find the `clientId` you'll use going forward (or hardcode it if your integration only ever books for one client).
