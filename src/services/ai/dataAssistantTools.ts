@@ -88,6 +88,7 @@ export function buildDataAssistantTools(companyId: string) {
       const countByJob = new Map(assignmentCounts.map((a: any) => [String(a._id), a.count]));
 
       const items = shownJobs.map((j: any) => ({
+        id: String(j._id),
         title: j.title,
         date: j.date ? new Date(j.date).toISOString().slice(0, 10) : null,
         startTime: j.startTime,
@@ -148,6 +149,7 @@ export function buildDataAssistantTools(companyId: string) {
       }, 0);
 
       const items = invoices.slice(0, RESULT_CAP).map((inv: any) => ({
+        id: String(inv._id),
         invoiceNumber: inv.invoiceNumber,
         client: inv.clientSnapshot?.name ?? null,
         status: inv.status,
@@ -196,6 +198,7 @@ export function buildDataAssistantTools(companyId: string) {
 
       const total = quotes.length;
       const items = quotes.slice(0, RESULT_CAP).map((q: any) => ({
+        id: String(q._id),
         quoteNumber: q.quoteNumber,
         client: q.clientSnapshot?.name ?? null,
         status: q.status,
@@ -233,6 +236,7 @@ export function buildDataAssistantTools(companyId: string) {
       const countByClient = new Map(jobCounts.map((c: any) => [String(c._id), c.count]));
 
       const items = clients.map((c: any) => ({
+        id: String(c._id),
         name: c.name,
         status: c.status,
         jobCount: countByClient.get(String(c._id)) ?? 0,
@@ -263,6 +267,7 @@ export function buildDataAssistantTools(companyId: string) {
       ]);
 
       const items = workers.map((w: any) => ({
+        id: String(w._id),
         name: w.fullname,
         role: w.role,
         active: w.isActive,
