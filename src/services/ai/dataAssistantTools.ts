@@ -24,6 +24,7 @@ import Invoice from "../../models/invoiceModel.js";
 import Quote from "../../models/quoteModel.js";
 import Client from "../../models/clientModel.js";
 import UserModel from "../../models/userModel.js";
+import JobAssignment from "../../models/JobAssignment.js";
 
 const RESULT_CAP = 25;
 
@@ -60,7 +61,7 @@ export function buildDataAssistantTools(companyId: string) {
       let jobs = await Job.find(match)
         .populate("client", "name")
         .populate("site", "name")
-        .select("title date startTime endTime status requiredWorkers workers client site")
+        .select("title date startTime endTime status requiredWorkers client site")
         .sort({ date: -1 })
         .limit(200)
         .lean();
@@ -71,7 +72,22 @@ export function buildDataAssistantTools(companyId: string) {
       }
 
       const total = jobs.length;
-      const items = jobs.slice(0, RESULT_CAP).map((j: any) => ({
+      const shownJobs = jobs.slice(0, RESULT_CAP);
+
+      // Staffing isn't a field on Job itself — a worker being on a shift is
+      // a separate JobAssignment document. Excludes declined/cancelled the
+      // same way the claim-approval flow counts "actively assigned"
+      // (workerController.ts), not just completed ones.
+      const jobIds = shownJobs.map((j: any) => j._id);
+      const assignmentCounts = jobIds.length
+        ? await JobAssignment.aggregate([
+            { $match: { job: { $in: jobIds }, isDeleted: false, status: { $nin: ["declined", "cancelled"] } } },
+            { $group: { _id: "$job", count: { $sum: 1 } } },
+          ])
+        : [];
+      const countByJob = new Map(assignmentCounts.map((a: any) => [String(a._id), a.count]));
+
+      const items = shownJobs.map((j: any) => ({
         title: j.title,
         date: j.date ? new Date(j.date).toISOString().slice(0, 10) : null,
         startTime: j.startTime,
@@ -80,7 +96,7 @@ export function buildDataAssistantTools(companyId: string) {
         client: j.client?.name ?? null,
         site: j.site?.name ?? null,
         requiredWorkers: j.requiredWorkers,
-        assignedWorkers: Array.isArray(j.workers) ? j.workers.length : 0,
+        assignedWorkers: countByJob.get(String(j._id)) ?? 0,
       }));
 
       return JSON.stringify({ totalMatched: total, shown: items.length, jobs: items });
