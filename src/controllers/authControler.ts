@@ -221,11 +221,14 @@ export const register: MiddlewareFn = async (req, res) => {
     },
   });
 };
-// Exchanges a still-valid refresh token cookie for a new access token
-// (rotating the refresh token too, so a stolen-and-replayed old refresh
-// token stops working the moment the legitimate client refreshes).
+// Exchanges a still-valid refresh token for a new access token (rotating
+// the refresh token too, so a stolen-and-replayed old refresh token stops
+// working the moment the legitimate client refreshes). Web sends it as an
+// httpOnly cookie; mobile has no cookie jar, so it sends the one it stored
+// from login/the previous refresh in the body instead — falls back to that
+// when no cookie is present.
 export const refresh: MiddlewareFn = async (req, res) => {
-  const { refreshToken } = req.cookies;
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
   if (!refreshToken) throw new UnauthenticatedError("authentication invalid");
 
   const hash = hashRefreshToken(refreshToken);
@@ -237,9 +240,16 @@ export const refresh: MiddlewareFn = async (req, res) => {
     throw new UnauthenticatedError("authentication invalid");
   }
 
-  await issueTokens(user, res);
+  const { accessToken, refreshToken: newRefreshToken } = await issueTokens(user, res);
 
-  res.status(StatusCodes.OK).json({ success: true, msg: "token refreshed" });
+  // Cookies are set above for web; the body carries the same pair for
+  // mobile, which has nowhere else to read a rotated token from.
+  res.status(StatusCodes.OK).json({
+    success: true,
+    msg: "token refreshed",
+    accessToken,
+    refreshToken: newRefreshToken,
+  });
 };
 
 // Public — the link in the verification email is opened outside any
