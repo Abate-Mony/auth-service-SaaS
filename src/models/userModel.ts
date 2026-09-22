@@ -42,6 +42,15 @@ const UserSchema = new Schema(
       enum: ["owner", "admin", "manager", "worker"],
       default: "worker",
     },
+    platformRole: {
+      type: String,
+      enum: [
+        "super_admin",
+        "support_admin",
+        "billing_admin"
+      ],
+      default: null,
+    },
     phone: { type: String, trim: true, default: "0000-0000-0000" },
     gender: {
       type: String,

@@ -43,6 +43,18 @@ const CompanySchema = new Schema(
       type: Boolean,
       default: true,
     },
+    // Platform-admin-controlled account state, distinct from isActive (which
+    // predates this and nothing ever enforced). "active" is the only state a
+    // company can reach on its own; "suspended"/"disabled" are only ever set
+    // via the platform API (src/controllers/platformController.ts) and
+    // enforced on every tenant request by enforceCompanyStatus
+    // (src/middleware/companyStatusMiddleware.ts).
+    status: {
+      type: String,
+      enum: ["active", "suspended", "disabled"],
+      default: "active",
+      index: true,
+    },
     logo: { type: FileRefSchema, default: null },
     plan: {
       type: String,

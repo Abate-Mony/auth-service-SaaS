@@ -22,6 +22,8 @@ import calendarRouter from "./routes/calendarRouter.js"
 import cors from "cors";
 import { authenticateUser } from "./middleware/authMiddleware.js";
 import { loadRestriction } from "./middleware/restrictionMiddleware.js";
+import { enforceCompanyStatus } from "./middleware/companyStatusMiddleware.js";
+import platformRouter from "./routes/platformRouter.js";
 import jobRouter from "./routes/jobRouter.js";
 import aiRouter from "./routes/aiRouter.js";
 import documentRouter from "./routes/documentRouter.js";
@@ -107,40 +109,40 @@ app.get("/api/v1/plans", getPlanCatalog);
 // DONE WITH USERS DOCUMENTATION ON POSTMAN
 app.use(`/api/v1/users`,
   authenticateUser,
-  loadRestriction,
+  loadRestriction, enforceCompanyStatus,
   userRouter);
 // DONE WITH USERS DOCUMENTATION ON POSTMAN
-app.use("/api/v1/jobs", authenticateUser, loadRestriction, jobRouter);
+app.use("/api/v1/jobs", authenticateUser, loadRestriction, enforceCompanyStatus, jobRouter);
 // DONE WITH WORKERS DOCUMENTATION ON POSTMAN
 app.use("/api/v1/workers",
   authenticateUser,
-  loadRestriction,
+  loadRestriction, enforceCompanyStatus,
   workerRouter
 )
 app.use(
   "/api/v1/notification-preferences",
   authenticateUser,
-  loadRestriction,
+  loadRestriction, enforceCompanyStatus,
   notificationPreferenceRouter
 );
-app.use("/api/v1/activity-logs", authenticateUser, loadRestriction, activityLogRouter);
-app.use("/api/v1/companies", authenticateUser, loadRestriction, companyRouter);
+app.use("/api/v1/activity-logs", authenticateUser, loadRestriction, enforceCompanyStatus, activityLogRouter);
+app.use("/api/v1/companies", authenticateUser, loadRestriction, enforceCompanyStatus, companyRouter);
 app.use(
   "/api/v1/timesheets",
   authenticateUser,
-  loadRestriction,
+  loadRestriction, enforceCompanyStatus,
   timesheetRouter
 );
-app.use("/api/v1/calendar", authenticateUser, loadRestriction, calendarRouter)
+app.use("/api/v1/calendar", authenticateUser, loadRestriction, enforceCompanyStatus, calendarRouter)
 // Not wrapped in authenticateUser at this level — validate/accept are
 // public (the recipient isn't logged in yet); the router applies
 // authenticateUser itself on the routes that actually need it.
 app.use("/api/v1/invitations", invitationRouter)
-app.use("/api/v1/recurring-jobs", authenticateUser, loadRestriction, recurringJobRouter)
-app.use("/api/v1/clients", authenticateUser, loadRestriction, clientRouter)
-app.use("/api/v1/sites", authenticateUser, loadRestriction, siteRouter)
-app.use("/api/v1/invoices", authenticateUser, loadRestriction, invoiceRouter)
-app.use("/api/v1/invoice-templates", authenticateUser, loadRestriction, invoiceTemplateRouter)
+app.use("/api/v1/recurring-jobs", authenticateUser, loadRestriction, enforceCompanyStatus, recurringJobRouter)
+app.use("/api/v1/clients", authenticateUser, loadRestriction, enforceCompanyStatus, clientRouter)
+app.use("/api/v1/sites", authenticateUser, loadRestriction, enforceCompanyStatus, siteRouter)
+app.use("/api/v1/invoices", authenticateUser, loadRestriction, enforceCompanyStatus, invoiceRouter)
+app.use("/api/v1/invoice-templates", authenticateUser, loadRestriction, enforceCompanyStatus, invoiceTemplateRouter)
 // Not wrapped in authenticateUser at this level — the public quote
 // view/respond routes need to work for a client with no session, same
 // reasoning as invitationRouter above. Authenticated quote routes apply
@@ -149,14 +151,20 @@ app.use("/api/v1/quotes", quoteRouter)
 // Applies authenticateUser and loadRestriction itself (see userRestrictionRouter)
 // since GET /me and POST /me/appeal must stay reachable at every access level.
 app.use("/api/v1/restrictions", userRestrictionRouter)
-app.use("/api/v1/analytics", authenticateUser, loadRestriction, analyticsRouter)
-app.use("/api/v1/reports", authenticateUser, loadRestriction, reportRouter)
-app.use("/api/v1/notifications", authenticateUser, loadRestriction, notificationRouter)
-app.use("/api/v1/ai", authenticateUser, loadRestriction, aiRouter)
-app.use("/api/v1/documents", authenticateUser, loadRestriction, documentRouter)
+app.use("/api/v1/analytics", authenticateUser, loadRestriction, enforceCompanyStatus, analyticsRouter)
+app.use("/api/v1/reports", authenticateUser, loadRestriction, enforceCompanyStatus, reportRouter)
+app.use("/api/v1/notifications", authenticateUser, loadRestriction, enforceCompanyStatus, notificationRouter)
+app.use("/api/v1/ai", authenticateUser, loadRestriction, enforceCompanyStatus, aiRouter)
+app.use("/api/v1/documents", authenticateUser, loadRestriction, enforceCompanyStatus, documentRouter)
 // API-key authenticated, not a user session — see externalRouter.ts's own
 // header for why this is mounted separately from every router above.
 app.use("/api/v1/external", externalRouter)
+// Deliberately NOT behind loadRestriction/enforceCompanyStatus — those gate
+// tenant access to one company, and a platform admin isn't necessarily
+// scoped to (or even a member of) any company. requirePlatformRole (applied
+// inside platformRouter) is this namespace's own, separate authorization
+// boundary — see platformAuthMiddleware.ts.
+app.use("/api/v1/platform", authenticateUser, platformRouter)
 app.use("*", async (_req, res) => {
   res.status(404).send("routes not found 404");
 });

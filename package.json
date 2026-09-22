@@ -12,7 +12,10 @@
     "migrate:clients:dry-run": "node dist/scripts/migrateClientsToEntities.js --dry-run",
     "migrate:company-owners": "node dist/scripts/backfillCompanyOwners.js",
     "migrate:company-owners:dry-run": "node dist/scripts/backfillCompanyOwners.js --dry-run",
-    "seed:invoice-templates": "node dist/scripts/seedInvoiceTemplates.js"
+    "seed:invoice-templates": "node dist/scripts/seedInvoiceTemplates.js",
+    "platform:grant": "node dist/scripts/grantPlatformRole.js",
+    "platform:revoke": "node dist/scripts/revokePlatformRole.js",
+    "platform:create-admin": "node dist/scripts/createPlatformAdmin.js"
   },
   "keywords": [],
   "author": "",
