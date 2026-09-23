@@ -276,11 +276,17 @@ export const getWorkerStats: MiddlewareFn = async (req, res) => {
   let onTimeCount = 0;
   let checkedInCount = 0;
   let scheduledMinutesWorked = 0; // the flip side of totalMinutes, for utilisation
+  let noShows = 0;
 
   for (const a of assignments) {
     if (a.status === "completed") jobsCompleted++;
     if (a.status === "accepted" || a.status === "in-progress" || a.status === "completed") jobsAccepted++;
     if (a.status === "declined") jobsDeclined++;
+    // A no-show is stored as status "cancelled" (see markAssignmentNoShow),
+    // so it's already excluded from jobsAccepted above by the time this
+    // runs — counted separately here rather than folded into jobsDeclined,
+    // which means something different (they said no ahead of time).
+    if (a.cancellationType === "no_show") noShows++;
 
     const minutes = workedMinutesOf(a);
     totalMinutes += minutes;
@@ -374,6 +380,12 @@ export const getWorkerStats: MiddlewareFn = async (req, res) => {
       // Of the shifts they committed to (accepted/in-progress/completed),
       // how many did they actually see through to completion.
       completionRate: jobsAccepted ? Math.round((jobsCompleted / jobsAccepted) * 100) : null,
+      noShows,
+      // Of the shifts that reached a real outcome (worked, or confirmed
+      // no-show) — not counting ones still pending/upcoming — what share
+      // were no-shows. null rather than 0 until they've had at least one
+      // resolved shift, same "no data yet" convention as the rates below.
+      noShowRate: jobsCompleted + noShows ? Math.round((noShows / (jobsCompleted + noShows)) * 100) : null,
       // "Reliability" — how often they accept when asked.
       acceptanceRate: respondedTo ? Math.round((jobsAccepted / respondedTo) * 100) : null,
       onTimeArrivalRate: checkedInCount ? Math.round((onTimeCount / checkedInCount) * 100) : null,
