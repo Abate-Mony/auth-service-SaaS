@@ -397,6 +397,45 @@ export const getJob: MiddlewareFn = async (req, res) => {
         success: true,
     });
 };
+
+// Worker-facing: check/uncheck one item on a job's checklist. The checklist
+// lives on Job (shared across every worker assigned to it, not per-worker —
+// see jobModel.ts's checklist field), so this is scoped by job id like
+// getJob/updateWorkerJobStatus above, not by assignment id like
+// updateAssignmentNote. Ownership is verified the same way those do:
+// resolving the caller's own assignment for this job first, never trusting
+// the job id alone.
+export const toggleJobChecklistItem: MiddlewareFn = async (req, res) => {
+    const { id, itemId } = req.params;
+    const { done } = req.body ?? {};
+
+    if (typeof done !== "boolean") {
+        throw new BadRequestError("done must be a boolean.");
+    }
+
+    const assignment = await JobAssignment.findOne({
+        worker: req.user.user_id,
+        job: id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("You are not assigned to this job.");
+
+    const job = await jobModel.findOneAndUpdate(
+        { _id: id, "checklist._id": itemId },
+        {
+            $set: {
+                "checklist.$.done": done,
+                "checklist.$.completedBy": done ? new mongoose.Types.ObjectId(req.user.user_id) : null,
+                "checklist.$.completedAt": done ? new Date() : null,
+            },
+        },
+        { new: true }
+    ).select("checklist");
+    if (!job) throw new NotFoundError("Checklist item not found.");
+
+    res.status(StatusCodes.OK).json({ success: true, checklist: job.checklist });
+};
+
 export const getActiveJob: MiddlewareFn = async (req, res) => {
     const assignment = await JobAssignment.findOne({
         status: "in-progress",

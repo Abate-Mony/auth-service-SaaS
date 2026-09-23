@@ -218,6 +218,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
          openToClaims,
          requiresApproval,
          sourceQuote,
+         checklist,
     } = req.body;
 
     // Only these two are ever settable at creation — "completed"/"cancelled"
@@ -258,6 +259,24 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         }
     }
     const workerEmails = workers.map(w => w.email).filter(Boolean);
+
+    // Never trust client-supplied `done`/`completedBy`/`completedAt` at
+    // creation time — only the text survives, capped at a sane count/length
+    // so this can't be used to stuff an arbitrarily large document.
+    let checklistItems: { text: string }[] = [];
+    if (checklist) {
+        let parsed: any;
+        try {
+            parsed = typeof checklist === "string" ? JSON.parse(checklist) : checklist;
+        } catch {
+            throw new BadRequestError("Invalid checklist payload");
+        }
+        if (!Array.isArray(parsed)) throw new BadRequestError("Invalid checklist payload");
+        checklistItems = parsed
+            .filter((item: any) => typeof item?.text === "string" && item.text.trim().length > 0)
+            .slice(0, 50)
+            .map((item: any) => ({ text: item.text.trim().slice(0, 200) }));
+    }
 
     const realWorkers = workerEmails.length
         ? await userModel.find({ email: { $in: workerEmails }, isActive: true })
@@ -326,6 +345,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         chargeAmount: finalChargeAmount,
         notes: notes ?? "",
         instructions: instructions ?? "",
+        checklist: checklistItems,
         createdBy: currentUserId,
          geofenceMode: geofenceMode ?? siteDoc?.geofenceMode ?? undefined,
          geofenceRadiusMeters: geofenceRadiusMeters ?? siteDoc?.geofenceRadiusMeters ?? undefined,
@@ -870,7 +890,7 @@ const UPDATE_JOB_ALLOWED_FIELDS = [
     "title", "description", "location", "address", "coordinates",
     "requiredWorkers", "priority", "supervisor", "payRate", "chargeRate", "chargeType", "chargeAmount",
     "notes", "instructions", "status","geofenceMode","geofenceRadiusMeters",
-    "openToClaims", "requiresApproval",
+    "openToClaims", "requiresApproval", "checklist",
 ] as const;
 
 export const updateJob: MiddlewareFn = async (req, res) => {
@@ -1029,6 +1049,21 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     };
     for (const key of UPDATE_JOB_ALLOWED_FIELDS) {
         if (req.body[key] !== undefined) updateFields[key] = req.body[key];
+    }
+    // Same cap as createJob — the admin UI resends the whole list (including
+    // already-completed items, to preserve worker progress), so this only
+    // needs a sanity limit, not the same "strip done/completedBy" treatment
+    // createJob gives a brand-new job's checklist.
+    if (Array.isArray(updateFields.checklist)) {
+        updateFields.checklist = updateFields.checklist
+            .filter((item: any) => typeof item?.text === "string" && item.text.trim().length > 0)
+            .slice(0, 50)
+            .map((item: any) => ({
+                text: String(item.text).trim().slice(0, 200),
+                done: Boolean(item.done),
+                completedBy: item.completedBy ?? null,
+                completedAt: item.completedAt ?? null,
+            }));
     }
     if (req.body.date !== undefined) {
         updateFields.date = toUtcDay(req.body.date);

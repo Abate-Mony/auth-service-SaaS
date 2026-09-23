@@ -157,6 +157,24 @@ const JobSchema = new Schema(
         notes: { type: String, default: "", trim: true },
         instructions: { type: String, default: "", trim: true },
 
+        // Optional task list a worker can tick off on-site (e.g. "Clean
+        // oven", "Wash client plates") — shared across every worker assigned
+        // to the job, not per-worker. Each item gets its own _id
+        // (Mongoose's default subdocument behaviour) so a worker can toggle
+        // one item without resending the whole list — see
+        // toggleJobChecklistItem in workerController.ts.
+        checklist: {
+            type: [
+                {
+                    text: { type: String, required: true, trim: true, maxlength: 200 },
+                    done: { type: Boolean, default: false },
+                    completedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+                    completedAt: { type: Date, default: null },
+                },
+            ],
+            default: [],
+        },
+
         // Optional single file a manager can attach — e.g. a photo of a door
         // passcode or written access instructions. Visible to assigned
         // workers alongside the job's instructions. Uploaded via its own

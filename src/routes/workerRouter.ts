@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto } from "../controllers/workerController.js"
+import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 import { requireNotRestricted } from "../middleware/restrictionMiddleware.js";
@@ -26,6 +26,7 @@ router.route("/:id/status")
 .patch(updateWorkerJobStatus);
 router.route("/:id/break/start").patch(authorizePermissions("worker"), startWorkerBreak);
 router.route("/:id/break/end").patch(authorizePermissions("worker"), endWorkerBreak);
+router.route("/:id/checklist/:itemId").patch(authorizePermissions("worker"), toggleJobChecklistItem);
 router.route("/:id").get(authorizePermissions("worker"), getJob)
 // Managers/admins need these too — they're the ones who actually get the
 // overtime-review, auto-close and job-completed push notifications.
