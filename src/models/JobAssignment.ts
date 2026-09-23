@@ -27,7 +27,15 @@ const JobAssignmentSchema = new Schema(
 
     cancellationType: {
       type: String,
-      enum: ["manager", "worker", "job"],
+      // "no_show": a manager/admin recording that a worker was scheduled
+      // and never showed at all — distinct from "worker" (the worker
+      // themselves backing out ahead of time) and "manager"/"job" (a
+      // manager pulling them off the job or the job itself changing).
+      // Reuses the existing cancelled-assignment plumbing (status,
+      // cancelledAt/By, cancellationReason) rather than adding a new
+      // top-level status value — see markAssignmentNoShow in
+      // workerController.ts.
+      enum: ["manager", "worker", "job", "no_show"],
     },
 //new fiels end here 
     company: {

@@ -1189,6 +1189,69 @@ export const manuallyAdjustAssignment: MiddlewareFn = async (req, res) => {
     });
 };
 
+// Manager-facing: record that a scheduled worker never showed up at all —
+// distinct from manuallyAdjustAssignment above (worker did the work but
+// clock data is missing/wrong) and from the worker's own "cancelled"/
+// "declined" self-service paths (this is the manager confirming after the
+// fact that nobody did the work). Reuses the existing cancelled-assignment
+// fields rather than a new top-level status — see JobAssignment.ts's
+// cancellationType comment.
+export const markAssignmentNoShow: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const { reason } = req.body ?? {};
+
+    if (typeof reason !== "string" || reason.trim().length === 0) {
+        throw new BadRequestError("A reason is required.");
+    }
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        company: req.user.company_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+
+    if (assignment.checkedInAt) {
+        throw new BadRequestError("This worker already clocked in — use \"Record hours worked\" instead.");
+    }
+    if (["completed", "cancelled", "declined"].includes(assignment.status)) {
+        throw new BadRequestError(`Cannot mark a ${assignment.status} assignment as a no-show.`);
+    }
+
+    const before = { status: assignment.status };
+
+    assignment.status = "cancelled";
+    assignment.cancelledAt = new Date();
+    assignment.cancelledBy = new mongoose.Types.ObjectId(req.user.user_id);
+    assignment.cancellationType = "no_show";
+    assignment.cancellationReason = reason.trim();
+
+    await assignment.save();
+
+    const job = await jobModel.findById(assignment.job).select("date");
+
+    await logActivity({
+        job: assignment.job,
+        jobDate: job?.date,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_no_show",
+        actor: req.user.user_id,
+        changes: [{ field: "status", from: before.status, to: assignment.status }],
+        metadata: { reason: assignment.cancellationReason },
+    });
+
+    await maybeCompleteJob(assignment.job).catch(err =>
+        console.error(`Failed to check job completion after no-show for assignment ${assignment._id}:`, err)
+    );
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        message: "Marked as no-show.",
+        assignment,
+    });
+};
+
 export const startWorkerBreak: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
 
