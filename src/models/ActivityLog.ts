@@ -23,6 +23,7 @@ export const ACTIVITY_TYPES = [
   "assignment_auto_completed",
   "assignment_overtime_flagged",
   "assignment_overtime_reviewed",
+  "assignment_manually_adjusted",
   "note_added",
 ] as const;
 

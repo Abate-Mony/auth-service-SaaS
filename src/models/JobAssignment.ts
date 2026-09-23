@@ -82,6 +82,21 @@ const JobAssignmentSchema = new Schema(
     overtimeReviewedBy: { type: Schema.Types.ObjectId, ref: "User" },
     overtimeReviewedAt: Date,
 
+    // ── Manual adjustment ──────────────────────────────────────────────
+    // Set when a manager/admin records hours worked directly (worker's
+    // phone died, forgot to clock in/out, etc. — see
+    // manuallyAdjustAssignment in workerController.ts) instead of the
+    // worker's own clock-in/out producing them. checkedInAt/checkedOutAt
+    // are still populated in this case (synthesized from the manager's
+    // input) so every existing read path that keys off those two fields —
+    // timesheets, invoicing, dashboard stats — keeps working unchanged;
+    // this flag exists purely so the UI can show "manually entered"
+    // instead of implying the worker actually used the clock-in flow.
+    manuallyAdjusted: { type: Boolean, default: false },
+    adjustedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    adjustedAt: Date,
+    adjustmentReason: { type: String, default: "", trim: true },
+
     cancellationReason: { type: String, default: "", trim: true },
     workerNotes: { type: String, default: "", trim: true },
     managerNotes: { type: String, default: "", trim: true },

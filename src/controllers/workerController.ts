@@ -1100,6 +1100,95 @@ export const reviewAssignmentOvertime: MiddlewareFn = async (req, res) => {
     });
 };
 
+// Manager-facing: record hours worked for a shift the worker never clocked
+// (phone died, forgot to clock in/out) or correct one that clocked
+// incorrectly. Sets checkedInAt/checkedOutAt (synthesized from the
+// scheduled start when the worker never checked in at all, preserved as-is
+// when they did) so this assignment reads identically to a normal
+// completed shift everywhere else in the app — timesheets, invoicing,
+// dashboard stats — none of those needed to change to support this.
+export const manuallyAdjustAssignment: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const { hoursWorked, reason, workDate } = req.body ?? {};
+
+    if (typeof hoursWorked !== "number" || !Number.isFinite(hoursWorked) || hoursWorked <= 0 || hoursWorked > 24) {
+        throw new BadRequestError("hoursWorked must be a number between 0 and 24.");
+    }
+    if (typeof reason !== "string" || reason.trim().length === 0) {
+        throw new BadRequestError("A reason is required.");
+    }
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        company: req.user.company_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+    if (["cancelled", "declined"].includes(assignment.status)) {
+        throw new BadRequestError(`Cannot record hours for a ${assignment.status} assignment.`);
+    }
+
+    const job = await jobModel.findById(assignment.job).select("date startTime minutes");
+    if (!job) throw new NotFoundError("Job not found.");
+
+    const company = await Company.findById(req.user.company_id).select("timezone");
+    const tz = company?.timezone ?? TZ;
+
+    // Preserve a real checkedInAt if one exists (worker clocked in, then
+    // their phone died before clocking out) — only synthesize one from the
+    // job's schedule when there's truly no clock data at all.
+    const checkedInAt = assignment.checkedInAt
+        ?? scheduledStartOf({ date: workDate ?? job.date, startTime: job.startTime }, tz);
+    const minutes = Math.round(hoursWorked * 60);
+    const checkedOutAt = new Date(checkedInAt.getTime() + minutes * 60_000);
+
+    const before = {
+        status: assignment.status,
+        approvedMinutes: assignment.approvedMinutes,
+    };
+
+    assignment.checkedInAt = checkedInAt;
+    assignment.checkedOutAt = checkedOutAt;
+    assignment.completedAt = checkedOutAt;
+    assignment.status = "completed";
+    assignment.actualMinutes = minutes;
+    assignment.approvedMinutes = minutes;
+    assignment.overtimeMinutes = Math.max(0, minutes - job.minutes);
+    // No separate overtime review needed — a manager already chose this
+    // exact number directly, that IS the review.
+    assignment.overtimeStatus = "none";
+    assignment.manuallyAdjusted = true;
+    assignment.adjustedBy = new mongoose.Types.ObjectId(req.user.user_id);
+    assignment.adjustedAt = new Date();
+    assignment.adjustmentReason = reason.trim();
+
+    await assignment.save();
+
+    await logActivity({
+        job: assignment.job,
+        jobDate: job.date,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_manually_adjusted",
+        actor: req.user.user_id,
+        changes: [
+            { field: "status", from: before.status, to: assignment.status },
+            { field: "approvedMinutes", from: before.approvedMinutes, to: assignment.approvedMinutes },
+        ],
+        metadata: { hoursWorked, reason: assignment.adjustmentReason },
+    });
+
+    await maybeCompleteJob(assignment.job).catch(err =>
+        console.error(`Failed to auto-complete job after manual adjustment for assignment ${assignment._id}:`, err)
+    );
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        message: "Hours recorded.",
+        assignment,
+    });
+};
+
 export const startWorkerBreak: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
 

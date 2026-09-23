@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto } from "../controllers/workerController.js"
+import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 import { requireNotRestricted } from "../middleware/restrictionMiddleware.js";
@@ -33,6 +33,8 @@ router.route("/push-subscription").post(authorizePermissions("worker", "admin", 
 router.route("/expo-push-token").post(authorizePermissions("worker", "admin", "manager"), saveExpoPushToken);
 router.route("/assignments/:assignmentId/overtime")
     .patch(authorizePermissions("admin", "manager"), reviewAssignmentOvertime);
+router.route("/assignments/:assignmentId/manual-adjustment")
+    .patch(authorizePermissions("admin", "manager"), manuallyAdjustAssignment);
 router.route("/assignments/:assignmentId/claim-review")
     .patch(authorizePermissions("admin", "manager"), reviewOpenShiftClaim);
 router.route("/assignments/:assignmentId/note")
