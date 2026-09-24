@@ -71,6 +71,18 @@ const UserSchema = new Schema(
       default: true,
     },
 
+    // Set when a worker asks to have their account removed — see
+    // requestAccountDeletion in workerController.ts. This app has no
+    // in-app account creation (accounts are provisioned by a company
+    // admin), so deletion is admin-mediated too: this just gives the
+    // request a visible, timestamped record rather than only existing as
+    // a one-off email. Cleared by nothing automatically — an admin
+    // resolves it by actually deactivating/deleting the worker.
+    deletionRequestedAt: {
+      type: Date,
+      default: null,
+    },
+
     lastLogin: Date,
 
     refreshToken: {

@@ -12,7 +12,7 @@ import dayjs from "../utils/dayjsSetup.js";
 import Company from "../models/company.js";
 import { scheduledEndOf, scheduledStartOf, toUtcDay, TZ } from "../utils/dates.js";
 import { checkGeofence } from "../utils/geo.js";
-import { sendWorkerJobStatusEmail } from "../utils/sendMailsUtils.js";
+import { sendWorkerJobStatusEmail, sendMail } from "../utils/sendMailsUtils.js";
 import { sendRecurringSeriesResponse, sendOpenShiftClaimNotice, sendClaimReviewResultEmail } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
 import { sendExpoPushToUser } from "../utils/expoPush.js";
@@ -24,7 +24,7 @@ import { RestrictableAction } from "../models/userRestrictionModel.js";
 import { maybeCompleteJob } from "../utils/maybeCompleteJob.js";
 import { notifyUser } from "../utils/notifyUser.js";
 import { assertCanAddWorker, assertFeatureEnabledForCompany } from "../utils/planLimits.js";
-import { MANAGEMENT_ROLES } from "../utils/roles.js";
+import { MANAGEMENT_ROLES, ADMIN_LEVEL_ROLES } from "../utils/roles.js";
 import { notifyEligibleWorkersOfOpenShift } from "../utils/notifyOpenShiftWorkers.js";
 import { uploadFileToCloudinary } from "../utils/cloudinaryUpload.js";
 
@@ -1953,6 +1953,57 @@ export const updateAssignmentNote: MiddlewareFn = async (req, res) => {
     await assignment.save();
 
     res.status(StatusCodes.OK).json({ success: true, workerNotes: assignment.workerNotes });
+};
+
+// POST /workers/me/request-deletion — this app has no in-app account
+// creation (a company admin provisions every worker account via the web
+// dashboard), so there's nothing for a worker to self-service delete here
+// either. This gives them a real, documented path anyway: stamps a
+// timestamp on their own record (visible to admins on the worker profile)
+// and emails the company's owner/admins so a human actually sees the
+// request and can deactivate/remove the account from the admin side.
+export const requestAccountDeletion: MiddlewareFn = async (req, res) => {
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 500) : "";
+
+    const worker = await userModel.findById(req.user.user_id).select("fullname email company deletionRequestedAt");
+    if (!worker) throw new UnauthenticatedError("user not logged in");
+
+    worker.deletionRequestedAt = new Date();
+    await worker.save();
+
+    const admins = await userModel
+        .find({ company: worker.company, role: { $in: ADMIN_LEVEL_ROLES }, isActive: true })
+        .select("email");
+
+    if (admins.length) {
+        const html = `
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;color:#0F172A;">
+            <h2 style="font-size:18px;margin:0 0 12px;">Account deletion requested</h2>
+            <p style="font-size:14px;line-height:1.5;">
+              <strong>${worker.fullname}</strong> (${worker.email}) has asked for their INPRN account to be deleted.
+            </p>
+            ${reason ? `<p style="font-size:14px;line-height:1.5;"><strong>Reason given:</strong> ${reason}</p>` : ""}
+            <p style="font-size:14px;line-height:1.5;">
+              You can deactivate or remove this worker from your Team page.
+            </p>
+          </div>
+        `;
+        await Promise.all(
+            admins.map(admin =>
+                sendMail({
+                    to: admin.email,
+                    subject: `Account deletion requested — ${worker.fullname}`,
+                    text: `${worker.fullname} (${worker.email}) has asked for their INPRN account to be deleted.${reason ? ` Reason: ${reason}` : ""} You can deactivate or remove them from your Team page.`,
+                    html,
+                }).catch(err => console.error(`Failed to send deletion-request email to ${admin.email}:`, err))
+            )
+        );
+    }
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        message: "Your request has been sent to your company admin.",
+    });
 };
 
 // POST /workers/assignments/:assignmentId/photos — one photo per request

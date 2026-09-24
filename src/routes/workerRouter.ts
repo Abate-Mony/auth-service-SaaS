@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto } from "../controllers/workerController.js"
+import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 import { requireNotRestricted } from "../middleware/restrictionMiddleware.js";
@@ -11,6 +11,7 @@ router
     post(authorizePermissions("admin", "manager"), createWorker)
     .get(authorizePermissions("worker"), getMyJobs)
 router.route("/me/hours").get(authorizePermissions("worker"), getMyTotalHours);
+router.route("/me/request-deletion").post(authorizePermissions("worker"), requestAccountDeletion);
 router.route("/stats").get(authorizePermissions("worker"), getWorkerDashboardStats);
 router.route("/active-job").get(authorizePermissions("worker"), getActiveJob)
 // Registered before the generic "/:id" GET below — otherwise Express would
