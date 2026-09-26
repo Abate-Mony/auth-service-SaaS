@@ -1036,3 +1036,94 @@ export async function sendQuoteThankYouEmail({
     html: layout({ heading: "Thank you for accepting", body }),
   });
 }
+
+/** Sent to a company's managers/admins when a worker submits a time-off request. */
+export async function sendTimeOffRequested({
+  managerEmail,
+  workerFullname,
+  startDate,
+  endDate,
+  type,
+  reason,
+  company,
+}: {
+  managerEmail: string;
+  workerFullname: string;
+  startDate: Date | string;
+  endDate: Date | string;
+  type: string;
+  reason?: string;
+  company: CompanyRef;
+}) {
+  const range = `${dayjs(startDate).tz(TZ).format("D MMM")} – ${dayjs(endDate).tz(TZ).format("D MMM YYYY")}`;
+  const link = `${process.env.CLIENT_URL}/time-off`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      ${workerFullname} has requested time off — it needs your review.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Dates", range)}
+      ${detailRow("Type", type)}
+      ${reason ? detailRow("Reason", reason) : ""}
+    </table>
+
+    ${button(link, "Review request")}`;
+
+  await sendCompanyEmail({
+    company,
+    to: managerEmail,
+    subject: `${workerFullname} requested time off (${range})`,
+    text:
+      `${workerFullname} has requested time off: ${range} (${type}).` +
+      `${reason ? `\nReason: ${reason}` : ""}\n\n` +
+      `Review request: ${link}`,
+    html: layout({ heading: "A time-off request needs your review", body }),
+  });
+}
+
+/** Sent to the worker once a manager approves or rejects their time-off request. */
+export async function sendTimeOffReviewed({
+  email,
+  fullname,
+  startDate,
+  endDate,
+  approved,
+  managerNotes,
+  company,
+}: {
+  email: string;
+  fullname: string;
+  startDate: Date | string;
+  endDate: Date | string;
+  approved: boolean;
+  managerNotes?: string;
+  company: CompanyRef;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const range = `${dayjs(startDate).tz(TZ).format("D MMM")} – ${dayjs(endDate).tz(TZ).format("D MMM YYYY")}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, your time-off request for ${range} has been ${approved ? "approved" : "declined"}.
+    </p>
+
+    ${managerNotes
+      ? `<table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+          ${detailRow("Note", managerNotes)}
+        </table>`
+      : ""
+    }`;
+
+  await sendCompanyEmail({
+    company,
+    to: email,
+    subject: approved ? `Your time off (${range}) was approved` : `Your time off (${range}) was declined`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `Your time-off request for ${range} has been ${approved ? "approved" : "declined"}.` +
+      `${managerNotes ? `\n\nNote: ${managerNotes}` : ""}`,
+    html: layout({ heading: approved ? "Time off approved" : "Time off declined", body }),
+  });
+}

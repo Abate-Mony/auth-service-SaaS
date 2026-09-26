@@ -188,6 +188,9 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
       "timesheet_submitted",
       "timesheet_approved",
       "timesheet_rejected",
+
+      "time_off_requested",
+      "time_off_reviewed",
   ] as const;
   export const NOTIFICATION_CHANNELS = [
       "email",

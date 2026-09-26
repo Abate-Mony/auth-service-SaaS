@@ -79,6 +79,18 @@ function getDefaultPreference(
       push: true,
       inApp: true,
     },
+
+    time_off_requested: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
+
+    time_off_reviewed: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
   };
 
   return defaults[event][channel];

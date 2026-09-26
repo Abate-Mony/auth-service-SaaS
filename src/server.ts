@@ -28,6 +28,7 @@ import jobRouter from "./routes/jobRouter.js";
 import aiRouter from "./routes/aiRouter.js";
 import documentRouter from "./routes/documentRouter.js";
 import workerRouter from "./routes/workerRouter.js"
+import timeOffRouter from "./routes/timeOffRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
 import companyRouter from "./routes/companyRouter.js"
 import externalRouter from "./routes/externalRouter.js"
@@ -118,6 +119,11 @@ app.use("/api/v1/workers",
   authenticateUser,
   loadRestriction, enforceCompanyStatus,
   workerRouter
+)
+app.use("/api/v1/time-off",
+  authenticateUser,
+  loadRestriction, enforceCompanyStatus,
+  timeOffRouter
 )
 app.use(
   "/api/v1/notification-preferences",
