@@ -5,6 +5,7 @@ import {
   BadRequestError,
   NotFoundError,
   UnauthenticatedError,
+  UnauthorizedError,
 } from "../errors/customErrors.js";
 import { MiddlewareFn } from "../interfaces/expresstype.js";
 import Company from "../models/company.js";
@@ -130,6 +131,13 @@ export const mobileLogin: MiddlewareFn = async (req, res) => {
 
   if (!isValidUser) {
     throw new UnauthenticatedError("invalid credentials");
+  }
+
+  // The mobile app is worker-only — admins/managers use the web dashboard.
+  // Credentials are otherwise valid, so this is an authorization failure
+  // (403), not an authentication one.
+  if (user.role !== "worker") {
+    throw new UnauthorizedError("This app is for workers only. Please use the web dashboard to sign in.");
   }
 
   const { accessToken, refreshToken } = await issueTokens(user, res);
