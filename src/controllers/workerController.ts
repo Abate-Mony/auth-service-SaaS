@@ -515,6 +515,35 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     const now = new Date();
     const scheduledStart = scheduledStartOf(job, tz);
     const scheduledEnd = scheduledEndOf(job, tz);
+
+    // Offline support: the mobile app queues a clock-in/out locally when it
+    // has no signal, then retries once reconnected — by then `now` (server
+    // receive time) could be minutes to hours after the worker actually did
+    // it. `occurredAt` lets the client report the real moment, honored only
+    // for the two time-sensitive transitions below. Bounded on both ends so
+    // a stale/garbage value can never silently corrupt a payroll timestamp:
+    // too far in the future is ignored (falls back to server time), too far
+    // in the past is rejected outright rather than guessed at.
+    const MAX_OFFLINE_DRIFT_MS = 12 * 60 * 60_000; // 12 hours
+    const MAX_CLOCK_SKEW_MS = 5 * 60_000; // allow for ordinary device clock drift
+
+    let effectiveNow = now;
+    let syncedOffline = false;
+    if ((status === "in-progress" || status === "completed") && req.body?.occurredAt) {
+        const occurredAt = new Date(req.body.occurredAt);
+        if (!Number.isNaN(occurredAt.getTime())) {
+            if (occurredAt.getTime() > now.getTime() + MAX_CLOCK_SKEW_MS) {
+                // Nonsensical future timestamp — ignore it, use server time.
+            } else if (occurredAt.getTime() < now.getTime() - MAX_OFFLINE_DRIFT_MS) {
+                throw new BadRequestError(
+                    "This clock event is too old to sync automatically. Ask your manager to record your hours manually."
+                );
+            } else {
+                effectiveNow = occurredAt;
+                syncedOffline = true;
+            }
+        }
+    }
     const emailJobRequirement = {
         _id: job._id.toString(),
         date: job.date,
@@ -829,12 +858,12 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             // ── time window ────────────────────────────────────────────────
             const graceMinutes = company?.clockInGraceMinutes ?? 30;
             const earliest = new Date(scheduledStart.getTime() - graceMinutes * 60_000);
-            if (now < earliest) {
+            if (effectiveNow < earliest) {
                 throw new BadRequestError(
                     `This shift starts at ${job.startTime} on ${dayjs(job.date).tz(tz).format("D MMM")}. You can clock in from ${dayjs(earliest).tz(tz).format("HH:mm")}.`
                 );
             }
-            if (now > scheduledEnd) {
+            if (effectiveNow > scheduledEnd) {
                 throw new BadRequestError("This shift has already ended. Contact your manager.");
             }
 
@@ -889,10 +918,11 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 assignment.checkInFlagged = mode !== "off" && geo.flagged;
             }
 
-            assignment.checkedInAt = now;
+            assignment.checkedInAt = effectiveNow;
+            assignment.checkInSyncedOffline = syncedOffline;
             assignment.status = "in-progress";
 
-            const minutesLate = Math.round((now.getTime() - scheduledStart.getTime()) / 60_000);
+            const minutesLate = Math.round((effectiveNow.getTime() - scheduledStart.getTime()) / 60_000);
 
             await logActivity({
                 job: assignment.job,
@@ -907,6 +937,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                     distanceMeters: geo.distanceMeters,
                     flagged: assignment.checkInFlagged,
                     accuracy: workerCoords?.accuracy ?? null,
+                    ...(syncedOffline ? { offlineSync: true, syncedAt: now.toISOString() } : {}),
                 },
             });
             break;
@@ -920,7 +951,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             }
 
             const openBreak = assignment.breaks?.find(b => !b.endedAt);
-            if (openBreak) openBreak.endedAt = now;
+            if (openBreak) openBreak.endedAt = effectiveNow;
 
             // ── location ─────────────────────────────────────────────────
             const location = req.body?.location ?? {};
@@ -964,12 +995,13 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 radiusMeters: job.geofenceRadiusMeters ?? company?.defaultGeofenceRadiusMeters ?? 150,
             });
 
-            assignment.checkedOutAt = now;
-            assignment.completedAt = now;
+            assignment.checkedOutAt = effectiveNow;
+            assignment.completedAt = effectiveNow;
+            assignment.checkOutSyncedOffline = syncedOffline;
             assignment.status = "completed";
 
             const grossMinutes = Math.round(
-                (now.getTime() - new Date(assignment.checkedInAt).getTime()) / 60_000
+                (effectiveNow.getTime() - new Date(assignment.checkedInAt).getTime()) / 60_000
             );
             const breakMinutes = [...(assignment.breaks ?? [])].reduce(
                 (sum, b) =>
@@ -1030,12 +1062,13 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                     breakCount: (assignment.breaks ?? []).length,
                     scheduledMinutes: job.minutes,
                     // Positive = left early, negative = stayed late
-                    minutesEarly: Math.round((scheduledEnd.getTime() - now.getTime()) / 60_000),
+                    minutesEarly: Math.round((scheduledEnd.getTime() - effectiveNow.getTime()) / 60_000),
                     distanceMeters: geo.distanceMeters,
                     flagged: geo.flagged,
                     accuracy: workerCoords?.accuracy ?? null,
                     overtimeMinutes,
                     overtimeStatus: assignment.overtimeStatus,
+                    ...(syncedOffline ? { offlineSync: true, syncedAt: now.toISOString() } : {}),
                 },
             });
 

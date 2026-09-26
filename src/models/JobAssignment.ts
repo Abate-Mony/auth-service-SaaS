@@ -141,6 +141,15 @@ const JobAssignmentSchema = new Schema(
     reminderSentAt: { type: Date, default: null },
     checkInDistanceMeters: Number,
     checkInFlagged: { type: Boolean, default: false, index: true },
+
+    // Set when checkedInAt/checkedOutAt came from the mobile app's offline
+    // queue (no signal at clock-in/out time, synced once reconnected) —
+    // the timestamp is self-reported by the device rather than the moment
+    // the server received the request. See updateWorkerJobStatus's
+    // `occurredAt` handling. Purely informational for managers reviewing
+    // timesheets; doesn't affect payroll calculation.
+    checkInSyncedOffline: { type: Boolean, default: false },
+    checkOutSyncedOffline: { type: Boolean, default: false },
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );
