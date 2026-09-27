@@ -41,18 +41,18 @@ import { sendOverduePaymentReminders } from "./utils/sendPaymentReminders.js";
 import { generateRecurringInvoices } from "./services/invoice/recurringInvoiceGenerator.js";
 import notificationPreferenceRouter
   from "./routes/notificationPreferenceRouter.js";
-  import timesheetRouter from "./routes/timesheetRouter.js";
-  import invitationRouter from "./routes/invitationRouter.js";
-  import recurringJobRouter from "./routes/recurringJobRouter.js";
-  import clientRouter from "./routes/clientRouter.js";
-  import siteRouter from "./routes/siteRouter.js";
-  import invoiceRouter from "./routes/invoiceRouter.js";
-  import invoiceTemplateRouter from "./routes/invoiceTemplateRouter.js";
-  import quoteRouter from "./routes/quoteRouter.js";
-  import userRestrictionRouter from "./routes/userRestrictionRouter.js";
-  import analyticsRouter from "./routes/analyticsRouter.js";
-  import reportRouter from "./routes/reportRouter.js";
-  import notificationRouter from "./routes/notificationRouter.js";
+import timesheetRouter from "./routes/timesheetRouter.js";
+import invitationRouter from "./routes/invitationRouter.js";
+import recurringJobRouter from "./routes/recurringJobRouter.js";
+import clientRouter from "./routes/clientRouter.js";
+import siteRouter from "./routes/siteRouter.js";
+import invoiceRouter from "./routes/invoiceRouter.js";
+import invoiceTemplateRouter from "./routes/invoiceTemplateRouter.js";
+import quoteRouter from "./routes/quoteRouter.js";
+import userRestrictionRouter from "./routes/userRestrictionRouter.js";
+import analyticsRouter from "./routes/analyticsRouter.js";
+import reportRouter from "./routes/reportRouter.js";
+import notificationRouter from "./routes/notificationRouter.js";
 const app = express();
 // crossOriginResourcePolicy defaults to "same-origin", which would block the
 // frontend (a different subdomain) from loading anything under /public —
@@ -76,7 +76,8 @@ const ALLOWED_ORIGINS = [
   "https://timeshift.inprn.com",
   "https://localhost:5173",
   "http://localhost:5173",
-  "http://192.168.1.81:5000"
+  "http://192.168.1.81:5000",
+  "https://app.innoshifts.com"
 ];
 
 app.use(
