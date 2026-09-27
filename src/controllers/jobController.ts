@@ -14,7 +14,7 @@ import { toUtcDay } from "../utils/dates.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity, logActivityMany } from "../utils/logActivity.js";
 import { assertCanCreateJob, assertFeatureEnabledForCompany } from "../utils/planLimits.js";
-import { sendShiftAssigned, sendRecurringShiftAssigned } from "../utils/mailTemplates.js";
+import { sendShiftAssigned, sendRecurringShiftAssigned, sendShiftTimeChanged } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
 import { sendExpoPushToUser } from "../utils/expoPush.js";
 import dayjs from "../utils/dayjsSetup.js";
@@ -22,6 +22,7 @@ import { TZ } from "../utils/dates.js";
 import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloudinaryUpload.js";
 import { formatAddress } from "../utils/formatAddress.js";
 import { notifyEligibleWorkersOfOpenShift } from "../utils/notifyOpenShiftWorkers.js";
+import { notifyUser } from "../utils/notifyUser.js";
 
 export const jobDurationMinutes = (startTime: string, endTime: string): number => {
     const [sh, sm] = startTime.split(":").map(Number);
@@ -949,7 +950,21 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     if (!startTime || !endTime) {
         throw new BadRequestError("Start time and end time are required.");
     }
-    
+
+    // Captured before anything is written — workers who already accepted
+    // (or are currently on) this shift aren't blocked from a date/time edit
+    // (see the lock check above, which only blocks past/completed/cancelled
+    // jobs), but nothing has ever told them it changed. Compared against
+    // the pre-update `job`, not `updateFields`, since a request that
+    // doesn't touch date at all must never look like a change.
+    const previousDate = job.date;
+    const previousStartTime = job.startTime;
+    const previousEndTime = job.endTime;
+    const scheduleChanged =
+        startTime !== previousStartTime ||
+        endTime !== previousEndTime ||
+        (req.body.date !== undefined && toUtcDay(req.body.date).getTime() !== job.date.getTime());
+
 
     // `workers` being entirely absent means "leave assignments alone" (e.g.
     // the caller is only editing the title) — an explicit [] is what clears
@@ -1260,6 +1275,71 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                 ])
             )
         ).catch(err => console.error(`Failed to send shift-assigned notification(s) for job ${updatedJob._id}:`, err));
+    }
+
+    // Workers who already accepted (or are currently working) this shift
+    // keep that acceptance as-is — a date/time edit doesn't reset it — but
+    // they've never been told the time changed under them until now.
+    // Newly-created assignments from this same request default to
+    // "pending", not accepted/in-progress, so there's no overlap with
+    // workersToNotify above.
+    if (newStatus !== "draft" && scheduleChanged) {
+        const affectedAssignments = await JobAssignment.find({
+            job: updatedJob._id,
+            isDeleted: false,
+            status: { $in: ["accepted", "in-progress"] },
+        }).populate("worker", "fullname email");
+
+        if (affectedAssignments.length) {
+            const notifyingCompany = await Company.findById(req.user.company_id).select("name emailSettings").lean();
+
+            Promise.all(
+                affectedAssignments.map(a => {
+                    const worker = a.worker as any;
+                    if (!worker) return Promise.resolve();
+
+                    return Promise.all([
+                        notifyUser({
+                            userId: worker._id.toString(),
+                            companyId: companyId.toString(),
+                            event: "shift_time_changed",
+                            title: "Shift time changed",
+                            body: `${updatedJob.title} is now ${updatedJob.startTime}–${updatedJob.endTime} on ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}`,
+                            link: `/worker/jobs/${updatedJob._id}`,
+                        }),
+                        sendPushToUser(worker._id.toString(), {
+                            title: "Shift time changed",
+                            body: `${updatedJob.title} is now ${updatedJob.startTime}–${updatedJob.endTime} on ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}`,
+                            tag: `shift-time-changed-${updatedJob._id}`,
+                            url: `/worker/jobs/${updatedJob._id}`,
+                        }),
+                        sendExpoPushToUser(worker._id.toString(), {
+                            title: "Shift time changed",
+                            body: `${updatedJob.title} is now ${updatedJob.startTime}–${updatedJob.endTime} on ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}`,
+                            tag: `shift-time-changed-${updatedJob._id}`,
+                            url: `/worker/jobs/${updatedJob._id}`,
+                        }),
+                        sendShiftTimeChanged({
+                            worker: { email: worker.email, fullname: worker.fullname },
+                            job: {
+                                _id: updatedJob._id.toString(),
+                                title: updatedJob.title,
+                                location: updatedJob.location,
+                                address: updatedJob.address,
+                                date: updatedJob.date,
+                                startTime: updatedJob.startTime,
+                                endTime: updatedJob.endTime,
+                                minutes: updatedJob.minutes,
+                            },
+                            previousDate,
+                            previousStartTime,
+                            previousEndTime,
+                            company: notifyingCompany ?? { name: "INPRN" },
+                        }),
+                    ]);
+                })
+            ).catch(err => console.error(`Failed to send shift-time-changed notification(s) for job ${updatedJob._id}:`, err));
+        }
     }
 
     // Same draft gate as createJob, plus: only when this request is what

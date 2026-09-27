@@ -33,6 +33,7 @@ export interface NotificationPreferenceDoc {
         timesheet_rejected: ChannelPreference;
         time_off_requested: ChannelPreference;
         time_off_reviewed: ChannelPreference;
+        shift_time_changed: ChannelPreference;
     };
 }
 
@@ -179,6 +180,15 @@ const NotificationPreferenceSchema = new Schema<NotificationPreferenceDoc>(
             },
 
             time_off_reviewed: {
+                type: ChannelPreferenceSchema,
+                default: () => ({
+                    email: true,
+                    push: true,
+                    inApp: true,
+                }),
+            },
+
+            shift_time_changed: {
                 type: ChannelPreferenceSchema,
                 default: () => ({
                     email: true,

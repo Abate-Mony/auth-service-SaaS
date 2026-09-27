@@ -1127,3 +1127,56 @@ export async function sendTimeOffReviewed({
     html: layout({ heading: approved ? "Time off approved" : "Time off declined", body }),
   });
 }
+
+/** Sent to a worker who already accepted (or is currently working) a shift
+ *  whose date/time a manager then changed — their acceptance stays valid,
+ *  this is purely so the new time doesn't blindside them. */
+export async function sendShiftTimeChanged({
+  worker,
+  job,
+  previousDate,
+  previousStartTime,
+  previousEndTime,
+  company,
+}: {
+  worker: { email: string; fullname: string };
+  job: ShiftJob;
+  previousDate: Date | string;
+  previousStartTime: string;
+  previousEndTime: string;
+  company: CompanyEmailInfo;
+}) {
+  const firstName = worker.fullname.split(" ")[0];
+  const newWhen = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const oldWhen = dayjs(previousDate).tz(TZ).format("dddd D MMMM");
+  const link = `${process.env.CLIENT_URL}/worker/jobs/${job._id}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, the time for a shift you're on has changed. You don't need to re-accept it — just note the new time below.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Was", `${oldWhen}, ${previousStartTime} – ${previousEndTime}`)}
+      ${detailRow("Now", `${newWhen}, ${job.startTime} – ${job.endTime}`)}
+      ${detailRow("Location", job.address ? `${job.location}, ${job.address}` : job.location)}
+    </table>
+
+    ${button(link, "View shift")}`;
+
+  await sendCompanyEmail({
+    company,
+    to: worker.email,
+    subject: `Shift time changed: ${job.title}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `The time for a shift you're on has changed. You don't need to re-accept it — just note the new time.\n\n` +
+      `Job: ${job.title}\n` +
+      `Was: ${oldWhen}, ${previousStartTime} – ${previousEndTime}\n` +
+      `Now: ${newWhen}, ${job.startTime} – ${job.endTime}\n` +
+      `Location: ${job.location}\n\n` +
+      `View shift: ${link}`,
+    html: layout({ heading: "Your shift time changed", body }),
+  });
+}

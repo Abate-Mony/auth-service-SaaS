@@ -91,6 +91,12 @@ function getDefaultPreference(
       push: true,
       inApp: true,
     },
+
+    shift_time_changed: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
   };
 
   return defaults[event][channel];
