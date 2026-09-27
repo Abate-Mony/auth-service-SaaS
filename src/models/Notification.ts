@@ -20,6 +20,12 @@ const NotificationSchema = new Schema(
 
 NotificationSchema.index({ user: 1, createdAt: -1 });
 
+// This is the "did you see this yet" inbox, not the durable record —
+// ActivityLog already keeps a 2-year audit trail of everything that
+// actually happened. Nothing is lost when one of these expires, so it's
+// kept short to bound growth on a small shared MongoDB tier.
+NotificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 30 });
+
 export type Notification = InferSchemaType<typeof NotificationSchema>;
 
 export default mongoose.model("Notification", NotificationSchema);

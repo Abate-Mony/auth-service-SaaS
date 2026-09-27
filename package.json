@@ -15,7 +15,8 @@
     "seed:invoice-templates": "node dist/scripts/seedInvoiceTemplates.js",
     "platform:grant": "node dist/scripts/grantPlatformRole.js",
     "platform:revoke": "node dist/scripts/revokePlatformRole.js",
-    "platform:create-admin": "node dist/scripts/createPlatformAdmin.js"
+    "platform:create-admin": "node dist/scripts/createPlatformAdmin.js",
+    "sync:notification-indexes": "node dist/scripts/syncNotificationIndexes.js"
   },
   "keywords": [],
   "author": "",
