@@ -12,6 +12,8 @@
     "migrate:clients:dry-run": "node dist/scripts/migrateClientsToEntities.js --dry-run",
     "migrate:company-owners": "node dist/scripts/backfillCompanyOwners.js",
     "migrate:company-owners:dry-run": "node dist/scripts/backfillCompanyOwners.js --dry-run",
+    "migrate:recurring-job-company": "node dist/scripts/backfillRecurringJobCompany.js",
+    "migrate:recurring-job-company:dry-run": "node dist/scripts/backfillRecurringJobCompany.js --dry-run",
     "seed:invoice-templates": "node dist/scripts/seedInvoiceTemplates.js",
     "platform:grant": "node dist/scripts/grantPlatformRole.js",
     "platform:revoke": "node dist/scripts/revokePlatformRole.js",
