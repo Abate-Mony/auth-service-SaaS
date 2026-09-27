@@ -619,6 +619,15 @@ export const getAllJobs: MiddlewareFn = async (
 
     const query: Record<string, unknown> = {
         isDeleted: false,
+        // A recurring schedule's hidden template (status: "draft",
+        // isTemplate: true — see createJob) was never meant to be visible
+        // anywhere; it exists purely so generateOccurrences has something to
+        // copy from. Unconditional (not tucked behind the status filter
+        // below), so it stays excluded even when a manager explicitly picks
+        // "Draft" or "All" — otherwise it shows up looking like a real job
+        // with zero workers assigned, when the actual assigned worker is on
+        // the generated occurrences instead.
+        isTemplate: { $ne: true },
         // createdBy: req.user.user_id
         company: req.user.company_id
     };
@@ -833,6 +842,7 @@ export const getJob: MiddlewareFn = async (
     const job = await Job.findOne({
         _id: req.params.id,
         isDeleted: false,
+        isTemplate: { $ne: true },
         company: getReqUser(req).company_id.toString(),
     })
         .populate("client", "name status contacts phone billingEmail address defaultChargeType defaultChargeRate")
