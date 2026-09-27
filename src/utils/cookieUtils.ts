@@ -11,7 +11,8 @@ export const setCookies = (time: number | null = ACCESS_TOKEN_COOKIE_MS): cookie
     httpOnly: true,
     expires: time ? new Date(Date.now() + time) : new Date(Date.now()),
     secure: true,
-    sameSite: isProduction ? "none" : "lax",
+    // sameSite: isProduction ? "none" : "lax",
+    sameSite: isProduction ? "lax" : "lax",
   };
   return {
     ...obj,
