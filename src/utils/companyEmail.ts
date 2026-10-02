@@ -15,7 +15,7 @@ import { sendMail } from "./sendMailsUtils.js";
 export interface CompanyEmailInfo {
   name?: string | null;
   emailSettings?: {
-    provider?: "inprn" | "custom" | null;
+    provider?: "onclockly" | "custom" | null;
     senderName?: string | null;
     senderEmail?: string | null;
     replyToEmail?: string | null;
@@ -34,7 +34,16 @@ export interface ResolvedSender {
 // "fallback". INPRN_FALLBACK_FROM_EMAIL falls back to the pre-existing
 // EMAIL_FROM env var so this doesn't require a new deployment config to
 // work in every environment that already sends mail today.
-const FALLBACK_FROM_EMAIL = process.env.INPRN_FALLBACK_FROM_EMAIL || process.env.EMAIL_FROM || "notifications@inprn.com";
+//
+// Read lazily (a function, not a module-level const) — in ESM, every
+// statically-imported module is evaluated before the importing file's own
+// top-level code runs. server.ts's dotenv.config() is textually first, but
+// if anything in the authRouter.js import chain pulls this module in, this
+// would evaluate before dotenv.config() ever ran, permanently freezing on
+// the hardcoded fallback regardless of what .env actually says.
+function getFallbackFromEmail(): string {
+  return process.env.INPRN_FALLBACK_FROM_EMAIL || process.env.EMAIL_FROM || "notifications@inprn.com";
+}
 
 // Custom sending only actually applies once domainStatus is "verified" —
 // "pending"/"failed"/removed all silently fall back. This is deliberately
@@ -58,7 +67,7 @@ export function resolveCompanySender(company: CompanyEmailInfo | null | undefine
   }
 
   return {
-    from: `INPRN <${FALLBACK_FROM_EMAIL}>`,
+    from: `OnClockly <${getFallbackFromEmail()}>`,
     replyTo: settings?.replyToEmail || undefined,
     usingCustomDomain: false,
   };

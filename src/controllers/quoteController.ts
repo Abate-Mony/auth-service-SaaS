@@ -416,7 +416,7 @@ async function buildQuotePdfDocument(
     opts: { persistTemplate: boolean; explicitTemplateId?: string }
 ) {
     const company = await Company.findById(companyId).select("name phone logo").lean();
-    const companyName = company?.name ?? "INPRN";
+    const companyName = company?.name ?? "OnClockly";
     const logoBuffer = await fetchImageBuffer(company?.logo?.url);
 
     const addr = quote.clientSnapshot?.address;
@@ -543,7 +543,7 @@ export const sendQuoteHandler: MiddlewareFn = async (req, res) => {
     await sendQuoteEmail({
         email: billingEmail,
         clientContactName: quote.clientSnapshot?.contactName,
-        company: company ?? { name: "INPRN" },
+        company: company ?? { name: "OnClockly" },
         quoteNumber: quote.quoteNumber,
         title: quote.title,
         total: quote.total,
@@ -726,7 +726,7 @@ export const respondToPublicQuote: MiddlewareFn = async (req, res) => {
             clientName: quote.clientSnapshot?.name ?? "The client",
             accepted: data.action === "accept",
             declineReason: quote.declineReason || undefined,
-            company: company ?? { name: "INPRN" },
+            company: company ?? { name: "OnClockly" },
         }).catch(err => console.error("sendQuoteResponseNotice failed:", err));
     }
 
@@ -740,7 +740,7 @@ export const respondToPublicQuote: MiddlewareFn = async (req, res) => {
             clientContactName: quote.clientSnapshot?.contactName,
             quoteNumber: quote.quoteNumber,
             title: quote.title,
-            company: company ?? { name: "INPRN" },
+            company: company ?? { name: "OnClockly" },
             customMessage: quote.thankYouMessage || undefined,
         }).catch(err => console.error("sendQuoteThankYouEmail failed:", err));
     }

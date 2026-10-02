@@ -60,7 +60,7 @@ function normalizeRecords(records: unknown): DnsRecordDto[] {
 function friendlyError(error: { name?: string; message?: string } | null | undefined, fallback: string): Error {
   if (error?.name === "restricted_api_key") {
     return new Error(
-      "Email domain management isn't available right now — this needs attention from INPRN support, not a retry."
+      "Email domain management isn't available right now — this needs attention from OnClockly support, not a retry."
     );
   }
   return new Error(fallback);

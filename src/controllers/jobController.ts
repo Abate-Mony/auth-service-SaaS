@@ -477,7 +477,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                             firstDate,
                             lastDate,
                             daysLabel,
-                            company: notifyingCompany ?? { name: "INPRN" },
+                            company: notifyingCompany ?? { name: "OnClockly" },
                         }),
                         sendPushToUser(w._id.toString(), {
                             title: "Added to a recurring shift",
@@ -562,7 +562,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                                 endTime: job.endTime,
                                 minutes: job.minutes,
                             },
-                            company: notifyingCompany ?? { name: "INPRN" },
+                            company: notifyingCompany ?? { name: "OnClockly" },
                         }),
                         // Tagged per job (distinct from the shift-start-reminder
                         // tag namespace) so re-saving/updating doesn't stack duplicates.
@@ -1160,10 +1160,24 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         }
     }
 
-    const updatedJob = await Job.findByIdAndUpdate(job._id, updateFields, {
-        new: true,
-        runValidators: true,
-    });
+    let updatedJob;
+    try {
+        updatedJob = await Job.findByIdAndUpdate(job._id, updateFields, {
+            new: true,
+            runValidators: true,
+        });
+    } catch (err: any) {
+        // The recurringJob+date unique index (jobModel.ts) rejecting this is a
+        // real conflict, not a bug — another occurrence in the same series
+        // already owns that date. Surfaced as a clear message instead of the
+        // raw MongoServerError, which otherwise bubbles up as an opaque 500.
+        if (err?.code === 11000 && err?.keyPattern?.recurringJob && err?.keyPattern?.date) {
+            throw new BadRequestError(
+                "This recurring schedule already has a shift on that date. Pick a different date, or edit that occurrence directly instead."
+            );
+        }
+        throw err;
+    }
 
     if (!updatedJob) {
         throw new BadRequestError("Job not found.");
@@ -1268,7 +1282,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                             endTime: updatedJob.endTime,
                             minutes: updatedJob.minutes,
                         },
-                        company: notifyingCompany ?? { name: "INPRN" },
+                        company: notifyingCompany ?? { name: "OnClockly" },
                     }),
                     sendPushToUser(u._id.toString(), {
                         title: "New shift assigned",
@@ -1344,7 +1358,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                             previousDate,
                             previousStartTime,
                             previousEndTime,
-                            company: notifyingCompany ?? { name: "INPRN" },
+                            company: notifyingCompany ?? { name: "OnClockly" },
                         }),
                     ]);
                 })

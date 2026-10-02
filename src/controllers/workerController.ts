@@ -2013,7 +2013,7 @@ export const requestAccountDeletion: MiddlewareFn = async (req, res) => {
           <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;color:#0F172A;">
             <h2 style="font-size:18px;margin:0 0 12px;">Account deletion requested</h2>
             <p style="font-size:14px;line-height:1.5;">
-              <strong>${worker.fullname}</strong> (${worker.email}) has asked for their INPRN account to be deleted.
+              <strong>${worker.fullname}</strong> (${worker.email}) has asked for their OnClockly account to be deleted.
             </p>
             ${reason ? `<p style="font-size:14px;line-height:1.5;"><strong>Reason given:</strong> ${reason}</p>` : ""}
             <p style="font-size:14px;line-height:1.5;">
@@ -2026,7 +2026,7 @@ export const requestAccountDeletion: MiddlewareFn = async (req, res) => {
                 sendMail({
                     to: admin.email,
                     subject: `Account deletion requested — ${worker.fullname}`,
-                    text: `${worker.fullname} (${worker.email}) has asked for their INPRN account to be deleted.${reason ? ` Reason: ${reason}` : ""} You can deactivate or remove them from your Team page.`,
+                    text: `${worker.fullname} (${worker.email}) has asked for their OnClockly account to be deleted.${reason ? ` Reason: ${reason}` : ""} You can deactivate or remove them from your Team page.`,
                     html,
                 }).catch(err => console.error(`Failed to send deletion-request email to ${admin.email}:`, err))
             )

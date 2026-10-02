@@ -60,7 +60,7 @@ function requireObjectId(id: string | string[], label: string): asserts id is st
 function serializeEmailSettings(emailSettings: any) {
   const s = emailSettings ?? {};
   return {
-    provider: s.provider ?? "inprn",
+    provider: s.provider ?? "onclockly",
     senderName: s.senderName ?? "",
     senderEmail: s.senderEmail ?? "",
     replyToEmail: s.replyToEmail ?? "",

@@ -39,7 +39,7 @@ export async function sendMail(opts: {
     const resend = getResend();
 
     const { data, error } = await resend.emails.send({
-        from: opts.from ?? `${opts.companyName ?? "INPRN"} <${process.env.EMAIL_FROM}>`,
+        from: opts.from ?? `${opts.companyName ?? "OnClockly"} <${process.env.EMAIL_FROM}>`,
         to: opts.to,
         subject: opts.subject,
         text: opts.text,
@@ -273,7 +273,7 @@ export async function sendWorkerJobStatusEmail({
             color:#64748b;
             margin-bottom:8px;
           ">
-            INPRN
+            OnClockly
           </div>
 
           <h1 style="

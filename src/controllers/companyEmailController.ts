@@ -68,7 +68,7 @@ const testEmailSchema = z.object({ email: z.string().trim().toLowerCase().email(
 function serializeEmailSettings(emailSettings: any) {
     const s = emailSettings ?? {};
     return {
-        provider: s.provider ?? "inprn",
+        provider: s.provider ?? "onclockly",
         senderName: s.senderName ?? "",
         senderEmail: s.senderEmail ?? "",
         replyToEmail: s.replyToEmail ?? "",
@@ -233,7 +233,7 @@ export const removeEmailDomain: MiddlewareFn = async (req, res) => {
     }
 
     const settings = {
-        provider: "inprn",
+        provider: "onclockly",
         senderName: existing.senderName ?? "",
         senderEmail: "",
         replyToEmail: existing.replyToEmail ?? "",
@@ -262,7 +262,7 @@ export const sendTestEmail: MiddlewareFn = async (req, res) => {
     const html = `
       <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;color:#0F172A;">
         <h2 style="font-size:18px;margin:0 0 12px;">Your email sending is set up</h2>
-        <p style="font-size:14px;color:#475569;margin:0 0 16px;">This is a test email from INPRN — your configuration is working.</p>
+        <p style="font-size:14px;color:#475569;margin:0 0 16px;">This is a test email from OnClockly — your configuration is working.</p>
         <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
           <tr><td style="padding:8px 0;font-size:13px;color:#94A3B8;width:90px;">Sender</td><td style="padding:8px 0;font-size:14px;color:#0F172A;font-weight:600;">${sender.from}</td></tr>
           ${sender.replyTo ? `<tr><td style="padding:8px 0;font-size:13px;color:#94A3B8;">Reply-to</td><td style="padding:8px 0;font-size:14px;color:#0F172A;font-weight:600;">${sender.replyTo}</td></tr>` : ""}
@@ -272,9 +272,9 @@ export const sendTestEmail: MiddlewareFn = async (req, res) => {
     await sendCompanyEmail({
         company,
         to: data.email,
-        subject: "INPRN email setup test",
+        subject: "OnClockly email setup test",
         text:
-            `Your INPRN email sending configuration is working.\n\n` +
+            `Your OnClockly email sending configuration is working.\n\n` +
             `Sender: ${sender.from}\n` +
             (sender.replyTo ? `Reply-to: ${sender.replyTo}\n` : ""),
         html,

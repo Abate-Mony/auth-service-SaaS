@@ -196,6 +196,8 @@ const start = async (): Promise<void> => {
   try {
 
     app.listen(port, () => {
+
+      console.log(`email from : ${process.env.EMAIL_FROM}`)
       console.log(`app is running on port ${port} `);
     });
     await db.connect();

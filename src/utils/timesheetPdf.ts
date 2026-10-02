@@ -81,7 +81,7 @@ export const generateTimesheetPdf = ({
     .font("Helvetica")
     .fontSize(10)
     .fillColor("#64748B")
-    .text("INPRN", {
+    .text("OnClockly", {
       align: "right",
     });
 
@@ -369,7 +369,7 @@ export const generateTimesheetPdf = ({
     .text(
       `Generated ${dayjs().format(
         "DD MMM YYYY HH:mm"
-      )} by INPRN`,
+      )} by OnClockly`,
       40,
       doc.page.height - 40,
       {

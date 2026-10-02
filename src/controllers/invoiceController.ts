@@ -475,7 +475,7 @@ async function buildInvoicePdfDocument(
     opts: { persistTemplate: boolean; explicitTemplateId?: string }
 ) {
     const company = await Company.findById(companyId).select("name phone logo").lean();
-    const companyName = company?.name ?? "INPRN";
+    const companyName = company?.name ?? "OnClockly";
     const logoBuffer = await fetchImageBuffer(company?.logo?.url);
 
     const addr = invoice.clientSnapshot?.address;
@@ -590,7 +590,7 @@ export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
 
     await sendInvoiceEmail({
         to: billingEmail,
-        company: company ?? { name: "INPRN" },
+        company: company ?? { name: "OnClockly" },
         clientContactName: invoice.clientSnapshot?.contactName,
         invoiceNumber: invoice.invoiceNumber,
         total: invoice.total,

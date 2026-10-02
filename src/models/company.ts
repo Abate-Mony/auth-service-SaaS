@@ -159,8 +159,8 @@ const CompanySchema = new Schema(
     emailSettings: {
       provider: {
         type: String,
-        enum: ["inprn", "custom"],
-        default: "inprn",
+        enum: ["onclockly", "custom"],
+        default: "onclockly",
       },
 
       senderName: {
