@@ -146,17 +146,46 @@ export const getRecurringJob: MiddlewareFn = async (req, res) => {
  */
 export const updateRecurringJob: MiddlewareFn = async (req, res) => {
   const { id } = req.params;
-  const { frequency, interval, daysOfWeek, endDate, maxOccurrences, defaultWorkers, startTime, endTime } = req.body;
+  const {
+    frequency, interval, daysOfWeek, endDate, maxOccurrences, defaultWorkers, startTime, endTime,
+    payRate, chargeRate, chargeType, chargeAmount, geofenceMode, geofenceRadiusMeters,
+  } = req.body;
 
   const schedule = await recurringJobModel.findOne({ _id: id, company: getReqUser(req).company_id });
   if (!schedule) throw new NotFoundError("Recurring schedule not found");
 
-  // The shift's actual start/end time lives on the hidden template job, not
-  // on the schedule document — generateOccurrences() copies startTime/
-  // endTime/minutes from it verbatim for every future occurrence it creates.
-  // Updating it here (before the regeneration below) is what makes "change
-  // the duration for future shifts" actually take effect.
-  if (startTime !== undefined || endTime !== undefined) {
+  if (payRate !== undefined && (typeof payRate !== "number" || payRate < 0)) {
+    throw new BadRequestError("payRate must be a non-negative number");
+  }
+  if (chargeRate !== undefined && (typeof chargeRate !== "number" || chargeRate < 0)) {
+    throw new BadRequestError("chargeRate must be a non-negative number");
+  }
+  if (chargeType !== undefined && !["hourly", "fixed"].includes(chargeType)) {
+    throw new BadRequestError("chargeType must be 'hourly' or 'fixed'");
+  }
+  if (chargeAmount !== undefined && (typeof chargeAmount !== "number" || chargeAmount < 0)) {
+    throw new BadRequestError("chargeAmount must be a non-negative number");
+  }
+  if (geofenceMode !== undefined && ![null, "off", "warn", "enforce"].includes(geofenceMode)) {
+    throw new BadRequestError("geofenceMode must be 'off', 'warn', 'enforce', or null");
+  }
+  if (geofenceRadiusMeters !== undefined && (typeof geofenceRadiusMeters !== "number" || geofenceRadiusMeters < 0)) {
+    throw new BadRequestError("geofenceRadiusMeters must be a non-negative number");
+  }
+
+  // The shift's actual start/end time, pay/charge rate, and geofence settings
+  // all live on the hidden template job, not on the schedule document —
+  // generateOccurrences() copies them verbatim for every future occurrence it
+  // creates. Updating it here (before the regeneration below) is what makes
+  // "change X for future shifts" actually take effect. Same rule as
+  // everywhere else: already-generated shifts (especially ones a worker has
+  // already accepted) are never silently rewritten — only what gets
+  // (re)generated after this save picks up the new values.
+  const templateFieldsChanged =
+    startTime !== undefined || endTime !== undefined || payRate !== undefined || chargeRate !== undefined ||
+    chargeType !== undefined || chargeAmount !== undefined || geofenceMode !== undefined || geofenceRadiusMeters !== undefined;
+
+  if (templateFieldsChanged) {
     const templateJob = await Job.findById(schedule.templateJob);
     if (!templateJob) throw new NotFoundError("Template job not found for this schedule");
 
@@ -166,6 +195,15 @@ export const updateRecurringJob: MiddlewareFn = async (req, res) => {
     templateJob.startTime = nextStartTime;
     templateJob.endTime = nextEndTime;
     templateJob.minutes = jobDurationMinutes(nextStartTime, nextEndTime);
+    if (payRate !== undefined) templateJob.payRate = payRate;
+    if (chargeRate !== undefined) templateJob.chargeRate = chargeRate;
+    // Order matters: chargeType before chargeAmount, so the pre("validate")
+    // hook (jobModel.ts) checking "fixed requires chargeAmount" / "hourly
+    // zeroes chargeAmount" sees the final intended chargeType.
+    if (chargeType !== undefined) templateJob.chargeType = chargeType;
+    if (chargeAmount !== undefined) templateJob.chargeAmount = chargeAmount;
+    if (geofenceMode !== undefined) templateJob.geofenceMode = geofenceMode;
+    if (geofenceRadiusMeters !== undefined) templateJob.geofenceRadiusMeters = geofenceRadiusMeters;
     await templateJob.save();
   }
 

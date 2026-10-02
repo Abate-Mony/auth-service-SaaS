@@ -10,7 +10,7 @@ import { authorizePermissions } from "../middleware/authMiddleware.js";
 
 const router = Router();
 
-router.use(authorizePermissions("admin", "manager"));
+router.use(authorizePermissions("owner", "admin", "manager"));
 
 router.get("/", getRecurringJobs);
 router.get("/:id", getRecurringJob);
