@@ -115,7 +115,7 @@ const queryEligibleSources = async (
     throw new BadRequestError("A valid client is required.");
   }
 
-  const client = await Client.findOne({ _id: clientId, company: companyId, isDeleted: false });
+  const client = await Client.findOne({ _id: clientId, company: companyId, lifecycle: "client", isDeleted: false });
   if (!client) throw new NotFoundError("Client not found.");
 
   // Job.company is schema-typed String (a pre-existing quirk elsewhere in

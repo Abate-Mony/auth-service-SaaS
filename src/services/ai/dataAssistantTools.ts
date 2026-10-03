@@ -219,7 +219,7 @@ export function buildDataAssistantTools(companyId: string) {
       search: z.string().optional().describe("Filter by client name containing this text."),
     }),
     run: async ({ status, search }) => {
-      const match: Record<string, any> = { company: companyObjectId, isDeleted: false };
+      const match: Record<string, any> = { company: companyObjectId, lifecycle: "client", isDeleted: false };
       if (status) match.status = status;
       if (search?.trim()) match.name = { $regex: search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
 

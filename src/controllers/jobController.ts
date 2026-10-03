@@ -56,6 +56,7 @@ const resolveJobClient = async (
     const client = await Client.findOne({
         _id: clientId,
         company: companyId,
+        lifecycle: "client",
         isDeleted: false,
     });
     if (!client) throw new BadRequestError("Client not found.");

@@ -73,7 +73,7 @@ const resolveClient = async (input: string, companyId: mongoose.Types.ObjectId, 
     if (!trimmed) throw new BadRequestError("Client is required.");
 
     if (mongoose.Types.ObjectId.isValid(trimmed)) {
-        const byId = await Client.findOne({ _id: trimmed, company: companyId, isDeleted: false });
+        const byId = await Client.findOne({ _id: trimmed, company: companyId, lifecycle: "client", isDeleted: false });
         if (byId) return byId;
     }
 
@@ -81,11 +81,15 @@ const resolveClient = async (input: string, companyId: mongoose.Types.ObjectId, 
     let client = await Client.findOne({
         company: companyId,
         name: { $regex: `^${safe}$`, $options: "i" },
+        lifecycle: "client",
         isDeleted: false,
     });
 
     if (!client) {
-        client = await Client.create({ name: trimmed, company: companyId, createdBy });
+        // An invoice is only ever raised against a real client relationship
+        // — never a lead — so this fallback creation is explicit about it,
+        // same reasoning as clientController's createClient.
+        client = await Client.create({ name: trimmed, company: companyId, createdBy, lifecycle: "client" });
     }
 
     return client;
@@ -694,7 +698,7 @@ export const getClientBillingInfoHandler: MiddlewareFn = async (req, res) => {
     const { client: clientId } = parseOrThrow(billingInfoQuerySchema, req.query);
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
 
-    const client = await Client.findOne({ _id: clientId, company: companyId, isDeleted: false })
+    const client = await Client.findOne({ _id: clientId, company: companyId, lifecycle: "client", isDeleted: false })
         .select("billingFrequency billingDayOfWeek billingDayOfMonth paymentTermsDays")
         .lean();
     if (!client) throw new NotFoundError("Client not found.");

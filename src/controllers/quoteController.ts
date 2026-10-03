@@ -14,6 +14,7 @@ import { fetchImageBuffer } from "../utils/fetchImageBuffer.js";
 import { sendQuoteEmail, sendQuoteResponseNotice, sendQuoteThankYouEmail } from "../utils/mailTemplates.js";
 import { calculateVat, round2 } from "../services/invoice/calculations.js";
 import { createQuoteResponseToken, hashQuoteResponseToken } from "../utils/tokenUtils.js";
+import { convertLeadToClient } from "../services/leadConversionService.js";
 
 // Same escaping precedent as invoiceController/clientController's search.
 const escapeRegExp = (input: string): string => input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -42,16 +43,28 @@ const resolveClient = async (input: string, companyId: mongoose.Types.ObjectId, 
 
     if (mongoose.Types.ObjectId.isValid(trimmed)) {
         const byId = await Client.findOne({ _id: trimmed, company: companyId, isDeleted: false });
-        if (byId) return byId;
+        if (byId) {
+            // Quotes are the one place a lead AND a client are both valid
+            // (see leadController.ts) — only a lost opportunity is rejected,
+            // since it needs an explicit restore first.
+            if (byId.lifecycle === "lost") {
+                throw new BadRequestError("This lead was marked lost — restore it before sending a quote.");
+            }
+            return byId;
+        }
     }
 
     const safe = escapeRegExp(trimmed);
     let client = await Client.findOne({
         company: companyId,
         name: { $regex: `^${safe}$`, $options: "i" },
+        lifecycle: { $ne: "lost" },
         isDeleted: false,
     });
 
+    // Unknown name, no existing record — a quote is very often the first
+    // thing ever sent to a prospect, so this naturally creates a new lead
+    // (the schema's own lifecycle default) rather than a client.
     if (!client) {
         client = await Client.create({ name: trimmed, company: companyId, createdBy });
     }
@@ -560,6 +573,13 @@ export const sendQuoteHandler: MiddlewareFn = async (req, res) => {
     quote.lastSentAt = new Date();
     await quote.save();
 
+    // A quote actually going out is a real stage transition — draft
+    // creation isn't. Best-effort: a failed lead-stage bump must never
+    // make the (already-sent) quote look like it failed.
+    Client.updateOne({ _id: quote.client, lifecycle: "lead" }, { leadStage: "quote_sent" }).catch(err =>
+        console.error(`Failed to bump leadStage for quote ${quote._id}:`, err)
+    );
+
     res.status(StatusCodes.OK).json({ success: true, quote: serializeQuote(quote.toObject()) });
 };
 
@@ -702,6 +722,20 @@ export const respondToPublicQuote: MiddlewareFn = async (req, res) => {
         quote.status = "accepted";
         quote.acceptedAt = new Date();
         quote.acceptedBy = { name: data.name, email: data.email };
+
+        // Preferred default per the leads spec: accepting a quote converts
+        // the linked lead automatically rather than leaving a manager to do
+        // it manually. convertLeadToClient is idempotent, so this is safe
+        // even if the link is already a client (nothing to do) — and
+        // best-effort: a conversion hiccup must never make the client's own
+        // accept action look like it failed to them.
+        Client.findById(quote.client)
+            .then(linkedClient => {
+                if (linkedClient && linkedClient.lifecycle === "lead") {
+                    return convertLeadToClient(linkedClient);
+                }
+            })
+            .catch(err => console.error(`Failed to auto-convert lead for quote ${quote._id}:`, err));
     } else {
         quote.status = "declined";
         quote.declinedAt = new Date();

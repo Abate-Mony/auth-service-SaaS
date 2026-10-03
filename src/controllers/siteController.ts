@@ -79,7 +79,7 @@ const resolveSiteClient = async (clientId: unknown, companyId: mongoose.Types.Ob
     if (typeof clientId !== "string" || !mongoose.Types.ObjectId.isValid(clientId)) {
         throw new BadRequestError("Invalid client id.");
     }
-    const client = await Client.findOne({ _id: clientId, company: companyId, isDeleted: false });
+    const client = await Client.findOne({ _id: clientId, company: companyId, lifecycle: "client", isDeleted: false });
     if (!client) throw new BadRequestError("Client not found.");
     return client;
 };

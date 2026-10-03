@@ -46,6 +46,7 @@ import timesheetRouter from "./routes/timesheetRouter.js";
 import invitationRouter from "./routes/invitationRouter.js";
 import recurringJobRouter from "./routes/recurringJobRouter.js";
 import clientRouter from "./routes/clientRouter.js";
+import leadRouter from "./routes/leadRouter.js";
 import siteRouter from "./routes/siteRouter.js";
 import invoiceRouter from "./routes/invoiceRouter.js";
 import invoiceTemplateRouter from "./routes/invoiceTemplateRouter.js";
@@ -150,6 +151,7 @@ app.use("/api/v1/calendar", authenticateUser, loadRestriction, enforceCompanySta
 app.use("/api/v1/invitations", invitationRouter)
 app.use("/api/v1/recurring-jobs", authenticateUser, loadRestriction, enforceCompanyStatus, recurringJobRouter)
 app.use("/api/v1/clients", authenticateUser, loadRestriction, enforceCompanyStatus, clientRouter)
+app.use("/api/v1/leads", authenticateUser, loadRestriction, enforceCompanyStatus, leadRouter)
 app.use("/api/v1/sites", authenticateUser, loadRestriction, enforceCompanyStatus, siteRouter)
 app.use("/api/v1/invoices", authenticateUser, loadRestriction, enforceCompanyStatus, invoiceRouter)
 app.use("/api/v1/invoice-templates", authenticateUser, loadRestriction, enforceCompanyStatus, invoiceTemplateRouter)

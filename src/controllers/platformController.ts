@@ -232,7 +232,7 @@ export const getPlatformCompanyDetail: MiddlewareFn = async (req, res) => {
     User.countDocuments({ company: companyId, role: "worker", isActive: true }),
     User.countDocuments({ company: companyId, role: "manager", isActive: true }),
     User.countDocuments({ company: companyId, role: { $in: ["admin", "owner"] }, isActive: true }),
-    Client.countDocuments({ company: companyId, isDeleted: false }),
+    Client.countDocuments({ company: companyId, lifecycle: "client", isDeleted: false }),
     Site.countDocuments({ company: companyId, isDeleted: false }),
     // Job.company is schema-typed String (see planLimits.ts's own note).
     Job.countDocuments({ company: companyId.toString(), isDeleted: false, isTemplate: false }),

@@ -80,7 +80,10 @@ export const getAllClients: MiddlewareFn = async (req, res) => {
 
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
 
-    const match: Record<string, any> = { company: companyId, isDeleted: false };
+    // lifecycle:"client" only — leads/lost opportunities live in the same
+    // collection (see clientModel.ts) but have their own /leads pages and
+    // must never show up here. See leadController.ts for those.
+    const match: Record<string, any> = { company: companyId, lifecycle: "client", isDeleted: false };
     if (status && status !== "all" && ["active", "inactive"].includes(status)) {
         match.status = status;
     }
@@ -171,7 +174,7 @@ export const getClient: MiddlewareFn = async (req, res) => {
         throw new NotFoundError("Client not found.");
     }
 
-    const client = await Client.findOne({ _id: id, company: companyId, isDeleted: false }).lean();
+    const client = await Client.findOne({ _id: id, company: companyId, lifecycle: "client", isDeleted: false }).lean();
     if (!client) throw new NotFoundError("Client not found.");
 
     const today = toUtcDay(new Date());
@@ -247,6 +250,10 @@ export const createClient: MiddlewareFn = async (req, res) => {
     try {
         client = await Client.create({
             ...data,
+            // This is the "Add Client" form — a deliberate, known real
+            // client, never a lead. Explicit because the schema itself
+            // defaults lifecycle to "lead" (see clientModel.ts).
+            lifecycle: "client",
             company: req.user.company_id,
             createdBy: req.user.user_id,
         });
@@ -270,7 +277,7 @@ export const updateClient: MiddlewareFn = async (req, res) => {
     let client;
     try {
         client = await Client.findOneAndUpdate(
-            { _id: req.params.id, company: req.user.company_id, isDeleted: false },
+            { _id: req.params.id, company: req.user.company_id, lifecycle: "client", isDeleted: false },
             { $set: data },
             { new: true, runValidators: true }
         );
@@ -291,7 +298,7 @@ export const updateClient: MiddlewareFn = async (req, res) => {
 // references this client, so nothing is ever left pointing at a dead id.
 export const deleteClient: MiddlewareFn = async (req, res) => {
     const companyId = req.user.company_id;
-    const client = await Client.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
+    const client = await Client.findOne({ _id: req.params.id, company: companyId, lifecycle: "client", isDeleted: false });
     if (!client) throw new NotFoundError("Client not found.");
 
     const [jobCount, invoiceCount] = await Promise.all([
@@ -319,7 +326,7 @@ export const archiveClient: MiddlewareFn = async (req, res) => {
     const data = parseOrThrow(statusSchema, req.body);
 
     const client = await Client.findOneAndUpdate(
-        { _id: req.params.id, company: req.user.company_id, isDeleted: false },
+        { _id: req.params.id, company: req.user.company_id, lifecycle: "client", isDeleted: false },
         { status: data.status },
         { new: true }
     );

@@ -83,6 +83,7 @@ export async function generateRecurringInvoices() {
 
     const clients = await Client.find({
       company: { $in: companyIds },
+      lifecycle: "client",
       isDeleted: false,
       status: "active",
       billingFrequency: { $in: RECURRING_FREQUENCIES },

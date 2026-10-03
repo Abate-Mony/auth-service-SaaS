@@ -30,7 +30,7 @@ export const generateJobDraftHandler = async (req: Request, res: Response) => {
   const companyId = req.user!.company_id;
   await assertFeatureEnabledForCompany(companyId, "aiJobAssistant");
 
-  const clients = await Client.find({ company: companyId, isDeleted: false, status: "active" })
+  const clients = await Client.find({ company: companyId, lifecycle: "client", isDeleted: false, status: "active" })
     .select("name")
     .lean();
   const clientNames = clients.map(c => c.name);

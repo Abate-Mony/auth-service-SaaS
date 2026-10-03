@@ -55,7 +55,7 @@ export const getExternalClients: MiddlewareFn = async (req, res) => {
   const { companyId } = getExternalAuth(req);
   const { search } = req.query as { search?: string };
 
-  const match: Record<string, any> = { company: companyId, isDeleted: false, status: "active" };
+  const match: Record<string, any> = { company: companyId, lifecycle: "client", isDeleted: false, status: "active" };
   if (search?.trim()) {
     const safe = search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     match.name = { $regex: safe, $options: "i" };
@@ -182,7 +182,7 @@ export const createExternalJob: MiddlewareFn = async (req, res) => {
 
   const [company, client] = await Promise.all([
     Company.findById(companyId).select("owner"),
-    Client.findOne({ _id: data.clientId, company: companyId, isDeleted: false, status: "active" }),
+    Client.findOne({ _id: data.clientId, company: companyId, lifecycle: "client", isDeleted: false, status: "active" }),
   ]);
   if (!company) throw new NotFoundError("Company not found.");
   if (!client) throw new BadRequestError("Client not found, inactive, or doesn't belong to this company.");

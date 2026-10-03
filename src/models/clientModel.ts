@@ -18,12 +18,10 @@ const ClientSchema = new Schema(
       maxlength: 150,
     },
 
-    // Several contacts is the norm — one for operations, one for accounts.
-    // A single nested object would need migrating the first time that happens.
     contacts: [
       {
         name: { type: String, trim: true },
-        role: { type: String, trim: true }, // "Site Manager", "Accounts"
+        role: { type: String, trim: true },
         email: { type: String, trim: true, lowercase: true },
         phone: { type: String, trim: true },
         isPrimary: { type: Boolean, default: false },
@@ -46,97 +44,340 @@ const ClientSchema = new Schema(
       country: { type: String, trim: true, default: "United Kingdom" },
     },
 
-    // Prefills new jobs and invoices for this client, so a manager isn't
-    // retyping the same rate on every shift for the same account.
     defaultChargeType: {
       type: String,
       enum: ["hourly", "fixed"],
       default: "hourly",
     },
-    defaultChargeRate: { type: Number, default: 0, min: 0 },
-    paymentTermsDays: { type: Number, default: 30, min: 0 },
+
+    defaultChargeRate: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    paymentTermsDays: {
+      type: Number,
+      default: 30,
+      min: 0,
+    },
 
     // ── Billing policy ────────────────────────────────────────────────
-    // The default cadence used when picking a service period for this
-    // client's invoices. "manual" means no default period at all — a
-    // manager always chooses one. This is a default for the eligible-work
-    // picker, never a restriction: manual one-off invoices stay possible
-    // for every client regardless of this setting.
     billingFrequency: {
       type: String,
       enum: ["per_job", "weekly", "fortnightly", "monthly", "manual"],
       default: "monthly",
     },
-    // 0 = Sunday ... 6 = Saturday, same convention as Job/Date.getDay().
-    billingDayOfWeek: { type: Number, min: 0, max: 6 },
-    billingDayOfMonth: { type: Number, min: 1, max: 31 },
+
+    billingDayOfWeek: {
+      type: Number,
+      min: 0,
+      max: 6,
+    },
+
+    billingDayOfMonth: {
+      type: Number,
+      min: 1,
+      max: 31,
+    },
+
+    // ── Lifecycle ─────────────────────────────────────────────────────
+    // What this record currently represents commercially. Deliberately
+    // separate from `status` below: lifecycle is "who are they to us",
+    // status is "are we currently working with them".
+    lifecycle: {
+      type: String,
+      enum: ["lead", "client", "lost"],
+      default: "lead",
+      index: true,
+    },
+
+    // Only relevant while lifecycle === "lead". Cleared on conversion.
+    leadStage: {
+      type: String,
+      enum: ["new", "contacted", "call_booked", "quote_sent", "negotiating"],
+      default: null,
+      index: true,
+    },
+
+    leadSource: {
+      type: String,
+      enum: [
+        "website_quote",
+        "phone",
+        "email",
+        "referral",
+        "walk_in",
+        "other",
+      ],
+    },
+
+    nextFollowUpAt: {
+      type: Date,
+      default: null,
+    },
+
+    lastContactedAt: {
+      type: Date,
+      default: null,
+    },
+
+    assignedTo: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    // Manager's rough guess at deal size — drives the pipeline-value figure
+    // on the leads summary. Never touched by conversion; a client keeps
+    // whatever its last estimate was, for comparison against actual billing.
+    estimatedValue: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    convertedAt: {
+      type: Date,
+      default: null,
+    },
+
+    lostAt: {
+      type: Date,
+      default: null,
+    },
+
+    lostReason: {
+      type: String,
+      trim: true,
+      default: "",
+      maxlength: 500,
+    },
+
+    // Append-only trail of lifecycle moves. Exists so that converting a
+    // previously-lost lead can safely wipe lostAt/lostReason (which drive
+    // live queries) without destroying the fact that they once went cold
+    // and why — that history is the useful part when reviewing where
+    // leads actually come from.
+    lifecycleHistory: [
+      {
+        from: { type: String, enum: ["lead", "client", "lost"] },
+        to: { type: String, enum: ["lead", "client", "lost"] },
+        reason: { type: String, trim: true, maxlength: 500, default: "" },
+        at: { type: Date, default: Date.now },
+        by: { type: Schema.Types.ObjectId, ref: "User", default: null },
+        _id: false,
+      },
+    ],
 
     // ── State ─────────────────────────────────────────────────────────
-    // status = the commercial relationship; isDeleted = created by mistake.
-    // Queries listing clients filter on both.
+    // Operational state — separate from lifecycle.
     status: {
       type: String,
       enum: ["active", "inactive"],
       default: "active",
       index: true,
     },
-    isDeleted: { type: Boolean, default: false, index: true },
+
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    // ── Provenance ────────────────────────────────────────────────────
+    // True when the record was created by the public quote form rather
+    // than by a person inside the app. Paired with createdBy being
+    // nullable: an automated lead has no author, and inventing a system
+    // user just puts a fake name in every "created by" filter.
+    isAutomated: {
+      type: Boolean,
+      default: false,
+    },
 
     // ── Misc ──────────────────────────────────────────────────────────
-    notes: { type: String, trim: true, default: "", maxlength: 2000 },
+    notes: {
+      type: String,
+      trim: true,
+      default: "",
+      maxlength: 2000,
+    },
 
     createdBy: {
       type: Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      default: null,
     },
   },
   { timestamps: true }
 );
 
-// Primary list query shape
-ClientSchema.index({ company: 1, status: 1, isDeleted: 1 });
+// ── Indexes ───────────────────────────────────────────────────────────
 
-// The unique index below on the same {company, name} shape already serves
-// the job-form typeahead query — a second plain index here was redundant
-// (Mongoose warned: "Duplicate schema index").
+// Existing client list query
+ClientSchema.index({
+  company: 1,
+  status: 1,
+  isDeleted: 1,
+});
 
-// No two live clients with the same name in one company — stops "Tesco Extra"
-// and "Tesco Extra" becoming separate accounts. Partial so a soft-deleted
-// client doesn't block recreating the name.
+// Leads page
+ClientSchema.index({
+  company: 1,
+  lifecycle: 1,
+  status: 1,
+  nextFollowUpAt: 1,
+});
+
+// Allow duplicate lead names, but not duplicate live client names.
+// NOTE: converting a lead whose name matches an existing client throws
+// E11000 — the convert handler must catch code 11000 and offer
+// merge-or-rename rather than returning a 500.
 ClientSchema.index(
   { company: 1, name: 1 },
   {
     unique: true,
-    partialFilterExpression: { isDeleted: false },
+    partialFilterExpression: {
+      isDeleted: false,
+      lifecycle: "client",
+    },
   }
 );
 
-// Exactly one primary contact
+// Find-or-create keys for the public quote form, so a repeat visitor
+// doesn't become a second lead.
+ClientSchema.index(
+  { company: 1, billingEmail: 1 },
+  {
+    partialFilterExpression: {
+      billingEmail: { $type: "string" },
+    },
+  }
+);
+
+ClientSchema.index(
+  { company: 1, phone: 1 },
+  {
+    partialFilterExpression: {
+      phone: { $type: "string" },
+    },
+  }
+);
+
+// ── Validation / lifecycle rules ──────────────────────────────────────
+
 ClientSchema.pre("validate", async function () {
-  const primaries = (this.contacts ?? []).filter(c => c.isPrimary);
+  const primaries = (this.contacts ?? []).filter(
+    (contact) => contact.isPrimary
+  );
+
   if (primaries.length > 1) {
     throw new Error("Only one contact can be marked as primary");
   }
+
   if (!primaries.length && this.contacts?.length) {
     this.contacts[0].isPrimary = true;
   }
+
+  // Record the move before the branches below rewrite the fields that
+  // evidence it. isModified is false on a new document, so this only
+  // fires on a genuine transition.
+  if (!this.isNew && this.isModified("lifecycle")) {
+    this.lifecycleHistory.push({
+      from: (this as any).$locals?.previousLifecycle ?? undefined,
+      to: this.lifecycle,
+      reason: this.lifecycle === "lost" ? this.lostReason : "",
+      at: new Date(),
+      by: (this as any).$locals?.actorId ?? null,
+    });
+  }
+
+  // Converted from lead to client.
+  if (this.lifecycle === "client") {
+    if (!this.convertedAt) {
+      this.convertedAt = new Date();
+    }
+
+    this.leadStage = null;
+    this.nextFollowUpAt = null;
+
+    // A won lead is active again regardless of how it got here.
+    this.status = "active";
+
+    // Live query fields are cleared; the history entry above keeps the
+    // record that they were once lost.
+    this.lostAt = null;
+    this.lostReason = "";
+  }
+
+  // Lead lost.
+  if (this.lifecycle === "lost") {
+    if (!this.lostAt) {
+      this.lostAt = new Date();
+    }
+
+    this.status = "inactive";
+  }
+
+  // Normal active lead — including a lost lead being reopened, which must
+  // come back out of `inactive` or it is invisible to the leads list and
+  // followUpOverdue silently returns false forever.
+  if (this.lifecycle === "lead") {
+    if (!this.leadStage) {
+      this.leadStage = "new";
+    }
+
+    if (this.lostAt || this.status === "inactive") {
+      this.status = "active";
+      this.lostAt = null;
+      this.lostReason = "";
+    }
+  }
 });
 
-// Convenience for invoices and list rows
+// Capture the stored lifecycle before an edit overwrites it, so the
+// history entry above can record what it moved *from*.
+ClientSchema.post("init", function (doc: any) {
+  doc.$locals.previousLifecycle = doc.lifecycle;
+});
+
+// ── Virtuals ──────────────────────────────────────────────────────────
+
 ClientSchema.virtual("primaryContact").get(function (this: any) {
-  return (this.contacts ?? []).find((c: any) => c.isPrimary) ?? this.contacts?.[0] ?? null;
+  return (
+    (this.contacts ?? []).find((c: any) => c.isPrimary) ??
+    this.contacts?.[0] ??
+    null
+  );
 });
 
 ClientSchema.virtual("formattedAddress").get(function (this: any) {
   const a = this.address ?? {};
+
   return [a.line1, a.line2, a.city, a.county, a.postcode, a.country]
     .filter(Boolean)
     .join(", ");
+});
+
+ClientSchema.virtual("isLead").get(function (this: any) {
+  return this.lifecycle === "lead";
+});
+
+ClientSchema.virtual("followUpOverdue").get(function (this: any) {
+  if (
+    this.lifecycle !== "lead" ||
+    this.status !== "active" ||
+    !this.nextFollowUpAt
+  ) {
+    return false;
+  }
+
+  return this.nextFollowUpAt.getTime() < Date.now();
 });
 
 ClientSchema.set("toJSON", { virtuals: true });
 ClientSchema.set("toObject", { virtuals: true });
 
 export type Client = InferSchemaType<typeof ClientSchema>;
+
 export default mongoose.model("Client", ClientSchema);
