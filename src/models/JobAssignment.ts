@@ -64,6 +64,21 @@ const JobAssignmentSchema = new Schema(
     // worker — this flag is what lets the two cases be told apart.
     pendingApproval: { type: Boolean, default: false },
 
+    // ── Open giveaway ──────────────────────────────────────────────────
+    // A worker offering their accepted shift to anyone else at the company
+    // while staying on it until someone takes it — unlike "release", which
+    // drops them off immediately. See offerShiftGiveaway / takeShiftGiveaway
+    // in workerController.ts.
+    // On the giver's assignment: set while the offer is live.
+    giveawayOfferedAt: { type: Date, default: null },
+    giveawayNote: { type: String, default: "", trim: true },
+    // On the giver's assignment: the taker's still-pending claim (only when
+    // the job requiresApproval) — blocks a second taker until it's reviewed.
+    giveawayTakenBy: { type: Schema.Types.ObjectId, ref: "JobAssignment", default: null },
+    // On the taker's assignment: the giver's assignment it replaces. Lets
+    // reviewOpenShiftClaim finish the handover when it approves the claim.
+    giveawayFrom: { type: Schema.Types.ObjectId, ref: "JobAssignment", default: null },
+
     // ── Overtime / late clock-out review ──────────────────────────────
     // actualMinutes: raw checkedIn→checkedOut time, minus breaks — what
     // really happened, for the record. Never capped by the job's scheduled

@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto } from "../controllers/workerController.js"
+import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyClaims, getMyEarnings, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto, withdrawOpenShiftClaim, offerShiftGiveaway, cancelShiftGiveaway, takeShiftGiveaway } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 import { requireNotRestricted } from "../middleware/restrictionMiddleware.js";
@@ -11,6 +11,7 @@ router
     post(authorizePermissions("admin", "manager"), createWorker)
     .get(authorizePermissions("worker"), getMyJobs)
 router.route("/me/hours").get(authorizePermissions("worker"), getMyTotalHours);
+router.route("/me/earnings").get(authorizePermissions("worker"), getMyEarnings);
 router.route("/me/request-deletion").post(authorizePermissions("worker"), requestAccountDeletion);
 router.route("/stats").get(authorizePermissions("worker"), getWorkerDashboardStats);
 router.route("/active-job").get(authorizePermissions("worker"), getActiveJob)
@@ -21,6 +22,9 @@ router.route("/recurring-groups").get(authorizePermissions("worker"), getRecurri
 router.route("/recurring-jobs/:id/accept-all").patch(authorizePermissions("worker"), acceptRecurringSeries);
 router.route("/recurring-jobs/:id/decline-all").patch(authorizePermissions("worker"), declineRecurringSeries);
 router.route("/open-shifts").get(authorizePermissions("worker"), getOpenShifts);
+router.route("/claims").get(authorizePermissions("worker"), getMyClaims);
+router.route("/giveaways/:assignmentId/take")
+    .post(authorizePermissions("worker"), requireNotRestricted("claim_jobs"), takeShiftGiveaway);
 router.route("/open-shifts/:jobId/claim")
     .post(authorizePermissions("worker"), requireNotRestricted("claim_jobs"), claimOpenShift);
 router.route("/:id/status")
@@ -41,6 +45,11 @@ router.route("/assignments/:assignmentId/no-show")
     .patch(authorizePermissions("admin", "manager"), markAssignmentNoShow);
 router.route("/assignments/:assignmentId/claim-review")
     .patch(authorizePermissions("admin", "manager"), reviewOpenShiftClaim);
+router.route("/assignments/:assignmentId/withdraw-claim")
+    .patch(authorizePermissions("worker"), withdrawOpenShiftClaim);
+router.route("/assignments/:assignmentId/giveaway")
+    .patch(authorizePermissions("worker"), offerShiftGiveaway)
+    .delete(authorizePermissions("worker"), cancelShiftGiveaway);
 router.route("/assignments/:assignmentId/note")
     .patch(authorizePermissions("worker"), updateAssignmentNote);
 router.route("/assignments/:assignmentId/photos")

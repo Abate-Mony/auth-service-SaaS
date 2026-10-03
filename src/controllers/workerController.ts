@@ -138,6 +138,7 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
                 checkedOutAt: "$checkedOutAt",
                 completedAt: "$completedAt",
                 hoursWorked: "$hoursWorked",
+                pendingApproval: "$pendingApproval",
             },
         },
     };
@@ -457,6 +458,119 @@ export const getActiveJob: MiddlewareFn = async (req, res) => {
             status: assignment.status,
             workerJobDetails: assignment,
         },
+    });
+};
+
+// GET /workers/me/earnings?period=week|month&offset=0 — the worker's pay for
+// one calendar week (Mon–Sun) or month in the company's timezone, keyed by
+// shift date. offset steps back (negative) or forward from the current
+// period. "earned" is completed shifts at their payable minutes (the same
+// approvedMinutes-first rule getWorkerDashboardStats uses); "upcoming" is
+// accepted/in-progress shifts at their scheduled length — an estimate.
+export const getMyEarnings: MiddlewareFn = async (req, res) => {
+    const workerId = new mongoose.Types.ObjectId(req.user.user_id);
+    const period = req.query.period === "month" ? "month" : "week";
+    const offset = Math.min(12, Math.max(-104, parseInt(req.query.offset as string, 10) || 0));
+
+    const company = await Company.findById(req.user.company_id).select("timezone").lean();
+    const tz = company?.timezone ?? TZ;
+    const now = dayjs().tz(tz);
+
+    const start = period === "month"
+        ? now.startOf("month").add(offset, "month")
+        : now.startOf("isoWeek").add(offset, "week");
+    const end = period === "month" ? start.endOf("month") : start.add(6, "day");
+    const startDay = toUtcDay(start.format("YYYY-MM-DD"));
+    const endDay = toUtcDay(end.format("YYYY-MM-DD"));
+    const today = toUtcDay(now.format("YYYY-MM-DD"));
+
+    const rows = await JobAssignment.aggregate([
+        { $match: { worker: workerId, isDeleted: false, status: { $in: ["accepted", "in-progress", "completed"] } } },
+        {
+            $lookup: {
+                from: "jobs",
+                let: { jobId: "$job" },
+                pipeline: [
+                    {
+                        $match: {
+                            $expr: { $eq: ["$_id", "$$jobId"] },
+                            isDeleted: false,
+                            date: { $gte: startDay, $lte: endDay },
+                        },
+                    },
+                    { $project: { title: 1, date: 1, startTime: 1, endTime: 1, minutes: 1, location: 1 } },
+                ],
+                as: "job",
+            },
+        },
+        { $unwind: "$job" },
+        { $sort: { "job.date": 1, "job.startTime": 1 } },
+        {
+            $project: {
+                status: 1,
+                payRate: 1,
+                approvedMinutes: 1,
+                actualMinutes: 1,
+                overtimeStatus: 1,
+                overtimeMinutes: 1,
+                job: 1,
+            },
+        },
+    ]);
+
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const earned = { amount: 0, minutes: 0, shifts: 0 };
+    const upcoming = { amount: 0, minutes: 0, shifts: 0 };
+
+    const shifts = rows.flatMap(row => {
+        const rate = row.payRate ?? 0;
+        if (row.status === "completed") {
+            const minutes = row.approvedMinutes ?? row.actualMinutes ?? 0;
+            const amount = (minutes / 60) * rate;
+            earned.amount += amount;
+            earned.minutes += minutes;
+            earned.shifts += 1;
+            return [{
+                assignmentId: row._id,
+                job: row.job,
+                kind: "earned",
+                minutes,
+                payRate: rate,
+                amount: round2(amount),
+                // Extra time still waiting on a manager isn't in `minutes` yet.
+                overtimePendingMinutes: row.overtimeStatus === "pending" ? row.overtimeMinutes ?? 0 : 0,
+            }];
+        }
+        // An accepted shift whose day has passed without being worked was
+        // missed, not upcoming.
+        if (row.status === "accepted" && row.job.date < today) return [];
+        const minutes = row.job.minutes ?? 0;
+        const amount = (minutes / 60) * rate;
+        upcoming.amount += amount;
+        upcoming.minutes += minutes;
+        upcoming.shifts += 1;
+        return [{
+            assignmentId: row._id,
+            job: row.job,
+            kind: "upcoming",
+            minutes,
+            payRate: rate,
+            amount: round2(amount),
+            overtimePendingMinutes: 0,
+        }];
+    });
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        period: {
+            type: period,
+            offset,
+            start: start.format("YYYY-MM-DD"),
+            end: end.format("YYYY-MM-DD"),
+        },
+        earned: { ...earned, amount: round2(earned.amount) },
+        upcoming: { ...upcoming, amount: round2(upcoming.amount) },
+        shifts,
     });
 };
 
@@ -800,6 +914,9 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             assignment.cancelledAt = now;
             assignment.cancelledBy = workerId as any;
             assignment.cancellationType = "worker";
+            // Any live giveaway offer goes with it. A pending take on it is
+            // left as an ordinary claim on the slot this just freed.
+            assignment.giveawayOfferedAt = null;
 
             if (isRelease && !job.openToClaims) {
                 await jobModel.updateOne({ _id: job._id }, { openToClaims: true });
@@ -921,6 +1038,9 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
             assignment.checkedInAt = effectiveNow;
             assignment.checkInSyncedOffline = syncedOffline;
             assignment.status = "in-progress";
+            // Working it themselves — the offer comes down. (A pending take
+            // on it can no longer be approved; see reviewOpenShiftClaim.)
+            assignment.giveawayOfferedAt = null;
 
             const minutesLate = Math.round((effectiveNow.getTime() - scheduledStart.getTime()) / 60_000);
 
@@ -1751,30 +1871,59 @@ export const checkInJob: MiddlewareFn = async (req, res) => {
 };
 
 // GET /workers/open-shifts — published, openToClaims jobs this worker hasn't
-// already claimed and that still have an unfilled slot.
+// already claimed and that still have an unfilled slot, plus shifts other
+// workers have offered up (see offerShiftGiveaway). A giveaway entry carries
+// a `giveaway` field; the app takes it via takeShiftGiveaway instead of
+// claimOpenShift.
 export const getOpenShifts: MiddlewareFn = async (req, res) => {
     const companyId = req.user.company_id.toString();
     const workerId = req.user.user_id.toString();
     const today = toUtcDay(new Date());
 
-    const openJobs = await jobModel.find({
+    const liveJobMatch = {
         company: companyId,
         isDeleted: false,
         isTemplate: false,
-        status: "published",
-        openToClaims: true,
+        status: "published" as const,
         date: { $gte: today },
-    })
-        .populate("client", "name")
-        .sort({ date: 1, startTime: 1 })
-        .lean();
+    };
 
-    if (!openJobs.length) {
+    const [openJobs, offers] = await Promise.all([
+        jobModel.find({ ...liveJobMatch, openToClaims: true })
+            .populate("client", "name")
+            .sort({ date: 1, startTime: 1 })
+            .lean(),
+        JobAssignment.find({
+            company: companyId,
+            isDeleted: false,
+            status: "accepted",
+            checkedInAt: null,
+            giveawayOfferedAt: { $ne: null },
+            giveawayTakenBy: null,
+            worker: { $ne: workerId },
+        })
+            .select("job fullname giveawayNote giveawayOfferedAt")
+            .sort({ giveawayOfferedAt: 1 })
+            .lean(),
+    ]);
+
+    // One entry per job — the earliest offer wins.
+    const offerByJob = new Map<string, (typeof offers)[number]>();
+    for (const offer of offers) {
+        if (!offerByJob.has(offer.job.toString())) offerByJob.set(offer.job.toString(), offer);
+    }
+    const giveawayJobs = offerByJob.size
+        ? await jobModel.find({ ...liveJobMatch, _id: { $in: [...offerByJob.keys()] } })
+            .populate("client", "name")
+            .lean()
+        : [];
+
+    if (!openJobs.length && !giveawayJobs.length) {
         res.status(StatusCodes.OK).json({ success: true, jobs: [] });
         return;
     }
 
-    const jobIds = openJobs.map(job => job._id);
+    const jobIds = [...openJobs, ...giveawayJobs].map(job => job._id);
     const [fillCounts, myAssignments] = await Promise.all([
         // How many slots are actually filled — a declined/cancelled
         // assignment never counted as staffing, so it's excluded here.
@@ -1795,10 +1944,32 @@ export const getOpenShifts: MiddlewareFn = async (req, res) => {
     // A job stays "open" only while it still has an unfilled slot and this
     // worker isn't already on it — claimed-out or already-claimed shifts
     // simply don't show up, rather than showing up disabled.
-    const jobs = openJobs.filter(job => {
+    const slotJobs = openJobs.filter(job => {
         const filled = filledByJob.get(job._id.toString()) ?? 0;
         return !claimedJobIds.has(job._id.toString()) && filled < (job.requiredWorkers ?? 1);
     });
+
+    // A job with a genuinely free slot is shown as a plain open shift —
+    // claiming that slot doesn't need to take anyone's offer.
+    const slotJobIds = new Set(slotJobs.map(job => job._id.toString()));
+    const offeredJobs = giveawayJobs
+        .filter(job => !claimedJobIds.has(job._id.toString()) && !slotJobIds.has(job._id.toString()))
+        .map(job => {
+            const offer = offerByJob.get(job._id.toString())!;
+            return {
+                ...job,
+                giveaway: {
+                    assignmentId: offer._id,
+                    offeredBy: offer.fullname,
+                    note: offer.giveawayNote,
+                    offeredAt: offer.giveawayOfferedAt,
+                },
+            };
+        });
+
+    const jobs = [...slotJobs, ...offeredJobs].sort(
+        (a, b) => a.date.getTime() - b.date.getTime() || a.startTime.localeCompare(b.startTime)
+    );
 
     res.status(StatusCodes.OK).json({ success: true, jobs });
 };
@@ -1857,6 +2028,9 @@ export const claimOpenShift: MiddlewareFn = async (req, res) => {
             company: companyId,
             status: needsApproval ? "pending" : "accepted",
             pendingApproval: needsApproval,
+            // Same as a manager-made assignment (see jobController) — earnings
+            // and labour-cost reports read the rate off the assignment.
+            payRate: job.payRate ?? 0,
             ...(needsApproval ? {} : { acceptedAt: now }),
         });
     } catch (err: any) {
@@ -1927,6 +2101,19 @@ export const reviewOpenShiftClaim: MiddlewareFn = async (req, res) => {
     }
 
     const now = new Date();
+
+    // A claim on another worker's offered shift — approving it hands the
+    // shift over, so the giver comes off it. If the giver has already
+    // clocked in, the handover can't happen anymore.
+    const giver = assignment.giveawayFrom
+        ? await JobAssignment.findOne({ _id: assignment.giveawayFrom, isDeleted: false })
+        : null;
+    if (approve && giver && (giver.status === "in-progress" || giver.status === "completed")) {
+        throw new BadRequestError(
+            `${giver.fullname} has already started this shift, so it can't be handed over. Decline this claim instead.`
+        );
+    }
+
     if (approve) {
         assignment.status = "accepted";
         assignment.acceptedAt = now;
@@ -1937,6 +2124,41 @@ export const reviewOpenShiftClaim: MiddlewareFn = async (req, res) => {
     }
     assignment.pendingApproval = false;
     await assignment.save();
+
+    if (giver) {
+        if (approve && giver.status === "accepted") {
+            giver.status = "cancelled";
+            giver.cancelledAt = now;
+            giver.cancelledBy = giver.worker;
+            giver.cancellationType = "worker";
+            giver.cancellationReason = `Given away to ${assignment.fullname}`;
+            giver.giveawayOfferedAt = null;
+            await giver.save();
+
+            await logActivity({
+                job: job._id,
+                jobDate: job.date,
+                assignment: giver._id,
+                worker: giver.worker,
+                type: "assignment_cancelled",
+                actor: req.user.user_id,
+                metadata: { givenAwayTo: assignment.fullname },
+            });
+            notifyWorkerAboutShift(
+                giver.worker.toString(),
+                job.company,
+                job._id.toString(),
+                "Your shift was handed over",
+                `Your manager approved ${assignment.fullname} taking ${job.title}. You're no longer on this shift.`
+            ).catch(err => console.error("Failed to notify giver of approved giveaway:", err));
+        } else if (!approve) {
+            // Put the offer back up for someone else.
+            await JobAssignment.updateOne(
+                { _id: giver._id, giveawayTakenBy: assignment._id },
+                { giveawayTakenBy: null }
+            );
+        }
+    }
 
     await logActivity({
         job: job._id,
@@ -1964,7 +2186,338 @@ export const reviewOpenShiftClaim: MiddlewareFn = async (req, res) => {
         }).catch(err => console.error("Failed to send claim-review result email:", err));
     }
 
+    notifyWorkerAboutShift(
+        assignment.worker.toString(),
+        job.company,
+        job._id.toString(),
+        approve ? "Claim approved" : "Claim declined",
+        approve
+            ? `You're on ${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}, ${job.startTime}.`
+            : `Your manager declined your claim for ${job.title} on ${dayjs(job.date).tz(TZ).format("ddd D MMM")}.`
+    ).catch(err => console.error("Failed to notify worker of claim review:", err));
+
     res.status(StatusCodes.OK).json({ success: true, assignment });
+};
+
+// GET /workers/claims — every open shift this worker has self-claimed, with
+// where each claim ended up. A self-claim is the only kind of assignment the
+// worker creates for themselves (createdBy === worker) — manager-made ones
+// always carry the manager's id — so that's what identifies them here.
+export const getMyClaims: MiddlewareFn = async (req, res) => {
+    const workerId = new mongoose.Types.ObjectId(req.user.user_id);
+
+    const assignments = await JobAssignment.find({
+        worker: workerId,
+        createdBy: workerId,
+        isDeleted: false,
+    })
+        .populate({
+            path: "job",
+            match: { isDeleted: false },
+            populate: { path: "client", select: "name" },
+        })
+        .sort({ createdAt: -1 })
+        .limit(100)
+        .lean();
+
+    const claims = assignments
+        // populate's match leaves job null for a soft-deleted job
+        .filter(a => a.job)
+        .map(a => {
+            // pendingApproval → manager hasn't decided; declined → manager
+            // said no (the worker can't "decline" their own claim);
+            // cancelled by the worker while still pending → withdrawn.
+            const claimStatus = a.pendingApproval
+                ? "pending"
+                : a.status === "declined"
+                    ? "declined"
+                    : a.status === "cancelled"
+                        ? (a.cancellationType === "worker" && !a.acceptedAt ? "withdrawn" : "cancelled")
+                        : "approved";
+
+            return {
+                _id: a._id,
+                job: a.job,
+                status: a.status,
+                claimStatus,
+                isGiveaway: !!a.giveawayFrom,
+                claimedAt: a.createdAt,
+                acceptedAt: a.acceptedAt,
+                declinedAt: a.declinedAt,
+                cancelledAt: a.cancelledAt,
+                cancellationReason: a.cancellationReason,
+            };
+        });
+
+    res.status(StatusCodes.OK).json({ success: true, claims });
+};
+
+// PATCH /workers/assignments/:assignmentId/withdraw-claim — the worker
+// pulling their own claim before a manager has reviewed it. Once reviewed,
+// the normal accept/cancel/release flow in updateWorkerJobStatus applies.
+export const withdrawOpenShiftClaim: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const workerId = req.user.user_id;
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        worker: workerId,
+        isDeleted: false,
+        pendingApproval: true,
+        status: "pending",
+    });
+    if (!assignment) {
+        throw new NotFoundError("This claim is no longer awaiting approval — refresh to see its current status.");
+    }
+
+    const now = new Date();
+    assignment.status = "cancelled";
+    assignment.pendingApproval = false;
+    assignment.cancelledAt = now;
+    assignment.cancelledBy = workerId as any;
+    assignment.cancellationType = "worker";
+    assignment.cancellationReason = "Claim withdrawn by worker";
+    await assignment.save();
+
+    // Withdrawing a take on someone's offered shift puts the offer back up.
+    if (assignment.giveawayFrom) {
+        await JobAssignment.updateOne(
+            { _id: assignment.giveawayFrom, giveawayTakenBy: assignment._id },
+            { giveawayTakenBy: null }
+        );
+    }
+
+    // Logged as a plain cancellation (flagged in metadata) rather than a new
+    // activity type, so existing dashboards render it without changes.
+    await logActivity({
+        job: assignment.job,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_cancelled",
+        actor: workerId,
+        metadata: { claimWithdrawn: true },
+    });
+
+    res.status(StatusCodes.OK).json({ success: true, assignment });
+};
+
+// Push + in-app notice to a single worker about a change to one of their
+// shifts (giveaway taken/handed over, claim approved/declined).
+// Gated on "job_assigned" — the closest existing preference to "something
+// changed about which shifts are mine".
+async function notifyWorkerAboutShift(userId: string, companyId: unknown, jobId: string, title: string, body: string) {
+    const canPush = await shouldNotify(userId, "job_assigned", "push");
+    await Promise.all([
+        canPush
+            ? sendExpoPushToUser(userId, { title, body, tag: `shift-update-${jobId}`, url: `/worker/jobs/${jobId}` })
+            : Promise.resolve(),
+        notifyUser({ userId, companyId, event: "job_assigned", title, body, link: `/worker/jobs/${jobId}` }),
+    ]);
+}
+
+// PATCH /workers/assignments/:assignmentId/giveaway — offer an accepted
+// shift to anyone else at the company. The worker stays on it (and
+// responsible for it) until someone actually takes it.
+export const offerShiftGiveaway: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const note = typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 300) : "";
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        worker: req.user.user_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+    if (assignment.status !== "accepted" || assignment.checkedInAt) {
+        throw new BadRequestError("You can only offer a shift you've accepted but haven't started yet.");
+    }
+    if (assignment.giveawayOfferedAt) {
+        throw new BadRequestError("This shift is already on offer.");
+    }
+
+    const job = await jobModel.findOne({ _id: assignment.job, isDeleted: false }).lean();
+    if (!job) throw new NotFoundError("Job not found.");
+    if (job.date < toUtcDay(new Date())) {
+        throw new BadRequestError("This shift has already passed.");
+    }
+    await assertFeatureEnabledForCompany(job.company, "openShifts");
+
+    assignment.giveawayOfferedAt = new Date();
+    assignment.giveawayNote = note;
+    await assignment.save();
+
+    notifyEligibleWorkersOfOpenShift(job).catch(err =>
+        console.error(`Failed to send open-shift notification(s) for giveaway on job ${job._id}:`, err)
+    );
+
+    res.status(StatusCodes.OK).json({ success: true, assignment });
+};
+
+// DELETE /workers/assignments/:assignmentId/giveaway — take an offer back.
+// Not allowed once someone's take is waiting on a manager — that's the
+// manager's call now (declining their claim puts the offer back up).
+export const cancelShiftGiveaway: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        worker: req.user.user_id,
+        isDeleted: false,
+        giveawayOfferedAt: { $ne: null },
+    });
+    if (!assignment) throw new NotFoundError("This shift isn't on offer.");
+    if (assignment.giveawayTakenBy) {
+        throw new BadRequestError(
+            "Someone has already asked to take this shift — it's waiting on your manager's approval."
+        );
+    }
+
+    assignment.giveawayOfferedAt = null;
+    assignment.giveawayNote = "";
+    await assignment.save();
+
+    res.status(StatusCodes.OK).json({ success: true, assignment });
+};
+
+// POST /workers/giveaways/:assignmentId/take — pick up a shift another
+// worker has offered. Same approval rule as claiming an open shift: on a
+// requiresApproval job this only creates a pending claim, and the handover
+// happens when reviewOpenShiftClaim approves it.
+export const takeShiftGiveaway: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const companyId = req.user.company_id.toString();
+    const workerId = req.user.user_id;
+
+    const original = await JobAssignment.findOne({
+        _id: assignmentId,
+        company: companyId,
+        isDeleted: false,
+        status: "accepted",
+        checkedInAt: null,
+        giveawayOfferedAt: { $ne: null },
+        giveawayTakenBy: null,
+    });
+    if (!original) throw new NotFoundError("This shift is no longer up for grabs.");
+    if (original.worker.toString() === workerId.toString()) {
+        throw new BadRequestError("You can't take your own shift.");
+    }
+
+    const job = await jobModel.findOne({
+        _id: original.job,
+        company: companyId,
+        isDeleted: false,
+        isTemplate: false,
+        status: "published",
+        date: { $gte: toUtcDay(new Date()) },
+    }).lean();
+    if (!job) throw new NotFoundError("This shift is no longer up for grabs.");
+
+    const existing = await JobAssignment.findOne({ job: job._id, worker: workerId, isDeleted: false });
+    if (existing) throw new BadRequestError("You're already on this shift, or have claimed it before.");
+
+    const taker = await userModel.findById(workerId).select("fullname email");
+    if (!taker) throw new UnauthenticatedError("Login again.");
+
+    const needsApproval = job.requiresApproval !== false;
+    const now = new Date();
+
+    let assignment;
+    try {
+        assignment = await JobAssignment.create({
+            fullname: taker.fullname,
+            job: job._id,
+            worker: workerId,
+            createdBy: workerId,
+            company: companyId,
+            status: needsApproval ? "pending" : "accepted",
+            pendingApproval: needsApproval,
+            // Same as a manager-made assignment (see jobController) — earnings
+            // and labour-cost reports read the rate off the assignment.
+            payRate: job.payRate ?? 0,
+            giveawayFrom: original._id,
+            ...(needsApproval ? {} : { acceptedAt: now }),
+        });
+    } catch (err: any) {
+        if (err?.code === 11000) throw new BadRequestError("You're already on this shift, or have claimed it before.");
+        throw err;
+    }
+
+    // Conditional update so two workers taking the same offer at once can't
+    // both win — whoever loses has their just-created assignment removed.
+    // (Hard delete, not isDeleted: the {job, worker} unique index would
+    // otherwise block them from ever claiming this job again.)
+    const reserved = await JobAssignment.findOneAndUpdate(
+        { _id: original._id, status: "accepted", checkedInAt: null, giveawayOfferedAt: { $ne: null }, giveawayTakenBy: null },
+        needsApproval
+            ? { giveawayTakenBy: assignment._id }
+            : {
+                status: "cancelled",
+                cancelledAt: now,
+                cancelledBy: original.worker,
+                cancellationType: "worker",
+                cancellationReason: `Given away to ${taker.fullname}`,
+                giveawayOfferedAt: null,
+                giveawayTakenBy: assignment._id,
+            },
+        { new: true }
+    );
+    if (!reserved) {
+        await JobAssignment.deleteOne({ _id: assignment._id });
+        throw new BadRequestError("Someone else has just taken this shift.");
+    }
+
+    const jobId = job._id.toString();
+    const dateLabel = dayjs(job.date).tz(TZ).format("ddd D MMM");
+
+    notifyWorkerAboutShift(
+        original.worker.toString(),
+        companyId,
+        jobId,
+        needsApproval ? "Someone wants your shift" : "Your shift was taken",
+        needsApproval
+            ? `${taker.fullname} asked to take ${job.title} (${dateLabel}) — it's still yours until your manager approves.`
+            : `${taker.fullname} took ${job.title} (${dateLabel}). You're no longer on this shift.`
+    ).catch(err => console.error("Failed to notify giver of taken giveaway:", err));
+
+    const manager = await userModel.findById(job.createdBy).select("email");
+    if (manager?.email) {
+        sendOpenShiftClaimNotice({
+            managerEmail: manager.email,
+            workerFullname: taker.fullname,
+            job: {
+                _id: jobId,
+                title: job.title,
+                date: job.date,
+                startTime: job.startTime,
+                endTime: job.endTime,
+            },
+            needsApproval,
+            company: job.company,
+        }).catch(err => console.error("Failed to send giveaway claim notice:", err));
+    }
+
+    await logActivity({
+        job: job._id,
+        jobDate: job.date,
+        assignment: assignment._id,
+        worker: workerId,
+        type: "assignment_claimed",
+        actor: workerId,
+        metadata: { needsApproval, giveawayFrom: original._id, giveawayFromWorker: original.fullname },
+    });
+    if (!needsApproval) {
+        await logActivity({
+            job: job._id,
+            jobDate: job.date,
+            assignment: original._id,
+            worker: original.worker,
+            type: "assignment_cancelled",
+            actor: workerId,
+            metadata: { givenAwayTo: taker.fullname },
+        });
+    }
+
+    res.status(StatusCodes.CREATED).json({ success: true, assignment, needsApproval });
 };
 
 // PATCH /workers/assignments/:assignmentId/note — the worker's own note on

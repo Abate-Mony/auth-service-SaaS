@@ -491,6 +491,14 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                             tag: `recurring-assigned-${recurringJob._id}`,
                             url: "/worker/jobs",
                         }),
+                        notifyUser({
+                            userId: w._id.toString(),
+                            companyId: req.user.company_id,
+                            event: "job_assigned",
+                            title: "Added to a recurring shift",
+                            body: `${templateJob.title} — ${daysLabel}, ${generatedJobs.length} shifts scheduled`,
+                            link: "/worker/jobs",
+                        }),
                     ])
                 )
             ).catch(err => console.error(`Failed to send recurring shift-assigned notification(s) for recurringJob ${recurringJob._id}:`, err));
@@ -577,6 +585,14 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                             body: `${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}, ${job.startTime} at ${job.location}`,
                             tag: `shift-assigned-${job._id}`,
                             url: `/worker/jobs/${job._id}`,
+                        }),
+                        notifyUser({
+                            userId: w._id.toString(),
+                            companyId: req.user.company_id,
+                            event: "job_assigned",
+                            title: "New shift assigned",
+                            body: `${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}, ${job.startTime} at ${job.location}`,
+                            link: `/worker/jobs/${job._id}`,
                         }),
                     ])
                 )
@@ -1295,6 +1311,14 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                         body: `${updatedJob.title} — ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}, ${updatedJob.startTime} at ${updatedJob.location}`,
                         tag: `shift-assigned-${updatedJob._id}`,
                         url: `/worker/jobs/${updatedJob._id}`,
+                    }),
+                    notifyUser({
+                        userId: u._id.toString(),
+                        companyId: req.user.company_id,
+                        event: "job_assigned",
+                        title: "New shift assigned",
+                        body: `${updatedJob.title} — ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}, ${updatedJob.startTime} at ${updatedJob.location}`,
+                        link: `/worker/jobs/${updatedJob._id}`,
                     }),
                 ])
             )
