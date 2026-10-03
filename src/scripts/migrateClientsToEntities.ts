@@ -135,10 +135,17 @@ async function main() {
             if (clientDoc) {
                 clientsReused++;
             } else {
+                // Explicit lifecycle: "client" — these come from real jobs
+                // that already referenced this client by name, so they are
+                // existing clients, never new leads. Without this, Client's
+                // schema default (lifecycle: "lead") would silently turn
+                // every legacy client this script migrates into a brand-new
+                // lead the moment this runs on lifecycle-aware code.
                 clientDoc = await ClientModel.create({
                     company: group.company,
                     name: group.name,
                     createdBy: group.createdBy,
+                    lifecycle: "client",
                 });
                 clientsCreated++;
             }
