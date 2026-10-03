@@ -29,9 +29,9 @@ export interface ResolvedSender {
   usingCustomDomain: boolean;
 }
 
-// A customer's bad DNS configuration must never break operational INPRN
-// email — resolveCompanySender has no failure path, only "custom" or
-// "fallback". INPRN_FALLBACK_FROM_EMAIL falls back to the pre-existing
+// A customer's bad DNS configuration must never break operational
+// OnClockly email — resolveCompanySender has no failure path, only "custom"
+// or "fallback". INPRN_FALLBACK_FROM_EMAIL falls back to the pre-existing
 // EMAIL_FROM env var so this doesn't require a new deployment config to
 // work in every environment that already sends mail today.
 //
@@ -42,7 +42,7 @@ export interface ResolvedSender {
 // would evaluate before dotenv.config() ever ran, permanently freezing on
 // the hardcoded fallback regardless of what .env actually says.
 function getFallbackFromEmail(): string {
-  return process.env.INPRN_FALLBACK_FROM_EMAIL || process.env.EMAIL_FROM || "notifications@inprn.com";
+  return process.env.INPRN_FALLBACK_FROM_EMAIL || process.env.EMAIL_FROM || "no-reply@notification.onclockly.com";
 }
 
 // Custom sending only actually applies once domainStatus is "verified" —
