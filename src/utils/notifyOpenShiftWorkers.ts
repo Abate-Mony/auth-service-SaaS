@@ -10,6 +10,7 @@ import { sendPushToUser } from "./webPush.js";
 import { sendExpoPushToUser } from "./expoPush.js";
 import dayjs from "./dayjsSetup.js";
 import { TZ } from "./dates.js";
+import { getAvailabilityForShift } from "./availability.js";
 
 interface OpenShiftJobForNotify {
     _id: unknown;
@@ -32,7 +33,7 @@ export async function notifyEligibleWorkersOfOpenShift(job: OpenShiftJobForNotif
     const existingAssignments = await JobAssignment.find({ job: jobId, isDeleted: false }).select("worker").lean();
     const excludedWorkerIds = existingAssignments.map(a => a.worker.toString());
 
-    const eligibleWorkers = await userModel
+    const activeWorkers = await userModel
         .find({
             company: job.company,
             role: "worker",
@@ -40,6 +41,17 @@ export async function notifyEligibleWorkersOfOpenShift(job: OpenShiftJobForNotif
             _id: { $nin: excludedWorkerIds },
         })
         .select("_id fullname email");
+
+    // Skip anyone whose weekly availability or approved time off rules this
+    // shift out. Only alerts are narrowed — the shift still shows in their
+    // Open Shifts list, so they can pick it up if plans change.
+    const availability = await getAvailabilityForShift(
+        { date: new Date(job.date), startTime: job.startTime, endTime: job.endTime },
+        activeWorkers.map(w => w._id)
+    );
+    const eligibleWorkers = activeWorkers.filter(
+        w => availability.get(w._id.toString())?.status !== "unavailable"
+    );
 
     if (!eligibleWorkers.length) return;
 

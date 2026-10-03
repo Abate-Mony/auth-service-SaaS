@@ -29,6 +29,7 @@ import aiRouter from "./routes/aiRouter.js";
 import documentRouter from "./routes/documentRouter.js";
 import workerRouter from "./routes/workerRouter.js"
 import timeOffRouter from "./routes/timeOffRouter.js"
+import availabilityRouter from "./routes/availabilityRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
 import companyRouter from "./routes/companyRouter.js"
 import externalRouter from "./routes/externalRouter.js"
@@ -133,6 +134,7 @@ app.use(
   loadRestriction, enforceCompanyStatus,
   notificationPreferenceRouter
 );
+app.use("/api/v1/availability", authenticateUser, loadRestriction, enforceCompanyStatus, availabilityRouter)
 app.use("/api/v1/activity-logs", authenticateUser, loadRestriction, enforceCompanyStatus, activityLogRouter);
 app.use("/api/v1/companies", authenticateUser, loadRestriction, enforceCompanyStatus, companyRouter);
 app.use(
