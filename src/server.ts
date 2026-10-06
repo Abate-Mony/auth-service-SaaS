@@ -83,7 +83,8 @@ const ALLOWED_ORIGINS = [
   "http://192.168.1.81:5000",
   "https://app.innoshifts.com",
   "https://app.onclockly.com",
-  "http://localhost:3000"
+  "http://localhost:3000",
+  "https://quotes.onclockly.com"
 ];
 
 app.use(
