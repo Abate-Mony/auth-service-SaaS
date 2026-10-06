@@ -195,6 +195,37 @@ const ClientSchema = new Schema(
       default: false,
     },
 
+    // ── Public quote-intake submission ───────────────────────────────
+    // Set once, at creation, when this lead came from the public
+    // quote-request wizard (see publicQuoteIntakeController.ts) — never
+    // touched again afterwards, so it stays a faithful record of exactly
+    // what the visitor submitted even as the lead itself moves through the
+    // pipeline. `answers` is intentionally Mixed/free-form: the wizard's
+    // question set varies per company/service-type and there is no shared
+    // schema across them to validate against here — see quoteIntake.ts
+    // (quote.xeniapure.com) for the shape a given company's config emits.
+    quoteIntake: {
+      type: new Schema(
+        {
+          serviceType: { type: String, trim: true },
+          answers: { type: Schema.Types.Mixed, default: {} },
+          estimate: {
+            lines: [
+              {
+                label: { type: String, trim: true },
+                price: { type: Number },
+                _id: false,
+              },
+            ],
+            total: { type: Number },
+            requiresManualQuote: { type: Boolean, default: false },
+          },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
+
     // ── Misc ──────────────────────────────────────────────────────────
     notes: {
       type: String,

@@ -40,6 +40,7 @@ import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.j
 import { autoCloseAbandonedShifts } from "./utils/autoCloseAbandonedShifts.js";
 import { sendOverduePaymentReminders } from "./utils/sendPaymentReminders.js";
 import { generateRecurringInvoices } from "./services/invoice/recurringInvoiceGenerator.js";
+import { checkPendingEmailDomains } from "./utils/checkPendingEmailDomains.js";
 import notificationPreferenceRouter
   from "./routes/notificationPreferenceRouter.js";
 import timesheetRouter from "./routes/timesheetRouter.js";
@@ -51,6 +52,7 @@ import siteRouter from "./routes/siteRouter.js";
 import invoiceRouter from "./routes/invoiceRouter.js";
 import invoiceTemplateRouter from "./routes/invoiceTemplateRouter.js";
 import quoteRouter from "./routes/quoteRouter.js";
+import publicQuoteIntakeRouter from "./routes/publicQuoteIntakeRouter.js";
 import userRestrictionRouter from "./routes/userRestrictionRouter.js";
 import analyticsRouter from "./routes/analyticsRouter.js";
 import reportRouter from "./routes/reportRouter.js";
@@ -81,6 +83,7 @@ const ALLOWED_ORIGINS = [
   "http://192.168.1.81:5000",
   "https://app.innoshifts.com",
   "https://app.onclockly.com",
+  "http://localhost:3000"
 ];
 
 app.use(
@@ -160,6 +163,10 @@ app.use("/api/v1/invoice-templates", authenticateUser, loadRestriction, enforceC
 // reasoning as invitationRouter above. Authenticated quote routes apply
 // authenticateUser/authorizePermissions themselves inside quoteRouter.
 app.use("/api/v1/quotes", quoteRouter)
+// Entirely unauthenticated — a cold website visitor, not a client with an
+// existing quote. Resolves the company via Company.publicQuoteSlug, never
+// a session or API key. See publicQuoteIntakeController.ts.
+app.use("/api/v1/public/quote-intake", publicQuoteIntakeRouter)
 // Applies authenticateUser and loadRestriction itself (see userRestrictionRouter)
 // since GET /me and POST /me/appeal must stay reachable at every access level.
 app.use("/api/v1/restrictions", userRestrictionRouter)
@@ -220,6 +227,12 @@ const start = async (): Promise<void> => {
     // manager to review before the working day starts.
     cron.schedule("0 6 * * *", () => {
       generateRecurringInvoices();
+    });
+    // Every 10 minutes — catches a sending domain finishing DNS
+    // propagation without the owner needing to reopen Settings or click
+    // "Check DNS" themselves. See checkPendingEmailDomains.ts.
+    cron.schedule("*/10 * * * *", () => {
+      checkPendingEmailDomains();
     });
   } catch (err) {
     console.error(err);

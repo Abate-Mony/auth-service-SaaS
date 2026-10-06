@@ -222,6 +222,22 @@ const CompanySchema = new Schema(
         default: null,
       },
     },
+
+    // ── Public quote intake ────────────────────────────────────────────
+    // Identifies this company on the public, unauthenticated quote-request
+    // form (quotes.onclockly.com/<slug>) — see publicQuoteIntakeController.ts.
+    // Deliberately a standalone opaque identifier, never the company's own
+    // API key (utils/apiKeys.ts): that key can read client/site/schedule
+    // data and create jobs, which must never sit in a marketing URL. Unset
+    // until a company first requests a link; sparse so plenty of companies
+    // can share "no slug yet" without violating uniqueness.
+    publicQuoteSlug: {
+      type: String,
+      trim: true,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
   },
   {
     timestamps: true,

@@ -6,6 +6,7 @@ import Company from "../models/company.js";
 import { assertFeatureEnabledForCompany } from "../utils/planLimits.js";
 import { PLANS, PLAN_LIMITS, PLAN_CATALOG, PLAN_FEATURE_LABELS, type PlanFeatures } from "../utils/constant.js";
 import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloudinaryUpload.js";
+import { generatePublicSlug } from "../utils/publicSlug.js";
 
 // Kept in one place so GET and PATCH always agree on exactly which fields
 // count as "settings" (as opposed to company profile fields like name/owner).
@@ -180,6 +181,55 @@ export const updateCompanySettings: MiddlewareFn = async (req, res) => {
     if (!company) throw new NotFoundError("Company not found.");
 
     res.status(StatusCodes.OK).json({ success: true, settings: company });
+};
+
+// ─────────────────────────────────────────────────────────────
+// Public quote intake link
+// ─────────────────────────────────────────────────────────────
+// A dedicated opaque identifier for the public quote-request wizard
+// (quotes.onclockly.com/<slug> — publicQuoteIntakeController.ts), never
+// the company's real API key. Rotating it only breaks that one link, not
+// anything authenticated.
+
+function buildPublicQuoteUrl(slug: string): string {
+    const base = process.env.PUBLIC_QUOTE_URL;
+    return base ? `${base.replace(/\/$/, "")}/${slug}` : `/${slug}`;
+}
+
+export const getPublicQuoteLink: MiddlewareFn = async (req, res) => {
+    const company = await Company.findById(getReqUser(req).company_id).select("publicQuoteSlug").lean();
+    if (!company) throw new NotFoundError("Company not found.");
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        slug: company.publicQuoteSlug ?? null,
+        url: company.publicQuoteSlug ? buildPublicQuoteUrl(company.publicQuoteSlug) : null,
+    });
+};
+
+// Generates a slug on first call, replaces it on every call after —
+// "rotate" and "create" are the same operation here, there's nothing to
+// distinguish between a first-time setup and a deliberate reset.
+export const rotatePublicQuoteLink: MiddlewareFn = async (req, res) => {
+    const companyId = getReqUser(req).company_id;
+
+    let slug = generatePublicSlug();
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const taken = await Company.exists({ publicQuoteSlug: slug });
+        if (!taken) break;
+        slug = generatePublicSlug();
+    }
+
+    const company = await Company.findByIdAndUpdate(companyId, { $set: { publicQuoteSlug: slug } }, { new: true })
+        .select("publicQuoteSlug")
+        .lean();
+    if (!company) throw new NotFoundError("Company not found.");
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        slug: company.publicQuoteSlug,
+        url: buildPublicQuoteUrl(company.publicQuoteSlug!),
+    });
 };
 
 // ─────────────────────────────────────────────────────────────

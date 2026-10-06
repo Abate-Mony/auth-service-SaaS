@@ -1,5 +1,15 @@
 import { Router } from "express";
-import { deleteCompanyLogo, getCompanyPlan, getCompanySettings, getPlanCatalog, updateCompanyPlan, updateCompanySettings, uploadCompanyLogo } from "../controllers/companyController.js";
+import {
+    deleteCompanyLogo,
+    getCompanyPlan,
+    getCompanySettings,
+    getPlanCatalog,
+    getPublicQuoteLink,
+    rotatePublicQuoteLink,
+    updateCompanyPlan,
+    updateCompanySettings,
+    uploadCompanyLogo,
+} from "../controllers/companyController.js";
 import {
     connectEmailDomain,
     getEmailSettings,
@@ -10,6 +20,7 @@ import {
 } from "../controllers/companyEmailController.js";
 import { setDefaultInvoiceTemplate } from "../controllers/invoiceTemplateController.js";
 import { createApiKey, getApiKeys, revokeApiKey } from "../controllers/apiKeyController.js";
+import { getQuoteWorkflow, publishQuoteWorkflow, saveQuoteWorkflowDraft } from "../controllers/quoteWorkflowController.js";
 import { authorizePermissions } from "../middleware/authMiddleware.js";
 import { uploadAvatar } from "../middleware/multerMiddleware.js";
 
@@ -45,6 +56,20 @@ router.delete("/api-keys/:id", authorizePermissions("owner"), revokeApiKey);
 router.route("/logo")
     .post(authorizePermissions("admin"), uploadAvatar.single("logo"), uploadCompanyLogo)
     .delete(authorizePermissions("admin"), deleteCompanyLogo);
+
+// The public quote-request link — admin can view it, only owner can
+// generate/rotate it (same tier as email-domain/api-keys above: creating
+// or changing an externally-shared identifier for the company).
+router.get("/public-quote-link", authorizePermissions("admin"), getPublicQuoteLink);
+router.post("/public-quote-link/rotate", authorizePermissions("owner"), rotatePublicQuoteLink);
+
+// The quote-request wizard's content — admin can view/edit the draft and
+// publish; same tier as /settings above (an operational config, not a
+// credential), not owner-restricted like the link/email-domain group.
+router.route("/quote-workflow")
+    .get(authorizePermissions("admin"), getQuoteWorkflow)
+    .put(authorizePermissions("admin"), saveQuoteWorkflowDraft);
+router.post("/quote-workflow/publish", authorizePermissions("admin"), publishQuoteWorkflow);
 
 // Registered before "/plan" only as a matter of habit (they're distinct
 // literal segments so Express wouldn't actually confuse them) — the
