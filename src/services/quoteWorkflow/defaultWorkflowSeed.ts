@@ -22,6 +22,8 @@ export function buildDefaultWorkflowServiceTypes(): QuoteWorkflowServiceType[] {
             // is a lot to click through; this is also the seed's example
             // of the setting for whoever edits it.
             questionsPerPage: 3,
+            depositPercentage: 0,
+            autoSendQuoteOnSubmit: false,
             steps: [
                 {
                     id: "property-type",

@@ -101,6 +101,21 @@ const ServiceTypeSchema = new Schema(
     // doesn't change step order, validation, or pricing.
     questionsPerPage: { type: Number, default: 1, min: 1 },
 
+    // What % of the instant estimate to collect as a deposit when the
+    // client accepts the quote this service type produces — 0 (default)
+    // means no deposit invoice gets created on accept. Only meaningful
+    // alongside an instant price, so irrelevant when requiresManualQuote
+    // is true. See quoteController.ts's respondToPublicQuote.
+    depositPercentage: { type: Number, default: 0, min: 0, max: 100 },
+
+    // When true, a submission for this service skips the manual "Send
+    // quote" review step in the Leads CRM and emails the quote
+    // immediately — see publicQuoteIntakeController.ts's
+    // submitPublicQuoteIntake. Default false: a company opts into
+    // trusting its own configured pricing enough to skip the review
+    // click, rather than this being on by default.
+    autoSendQuoteOnSubmit: { type: Boolean, default: false },
+
     steps: { type: [StepDefinitionSchema], default: [] },
   },
   { _id: false }
@@ -181,6 +196,8 @@ export interface QuoteWorkflowServiceType {
   basePrice: number;
   requiresManualQuote: boolean;
   questionsPerPage: number;
+  depositPercentage: number;
+  autoSendQuoteOnSubmit: boolean;
   steps: QuoteWorkflowStep[];
 }
 

@@ -357,6 +357,30 @@ const QuoteSchema = new Schema(
       default: "",
     },
 
+    // What % of `total` to invoice as a deposit the moment this quote is
+    // accepted — see respondToPublicQuote. 0 (default) means no deposit
+    // invoice, which is every quote created by hand today; only a quote
+    // built from a published Quote Workflow service with a configured
+    // deposit % sets this above 0, snapshotted at quote-creation time so a
+    // later change to the service's setting never alters an already-sent
+    // quote's deposit.
+    depositPercentage: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100,
+    },
+
+    // Lets staff tell at a glance whether this came from the public quote
+    // wizard (createQuoteFromLeadIntake.ts) or was built by hand
+    // (createQuote above) — purely informational, nothing reads it to
+    // change behaviour.
+    source: {
+      type: String,
+      enum: ["manual", "public_wizard"],
+      default: "manual",
+    },
+
     createdBy: {
       type: Schema.Types.ObjectId,
       ref: "User",

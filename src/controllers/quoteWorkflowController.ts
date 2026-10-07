@@ -78,6 +78,8 @@ const serviceTypeSchema = z
         basePrice: z.number().min(0).default(0),
         requiresManualQuote: z.boolean().default(false),
         questionsPerPage: z.number().int().min(1).default(1),
+        depositPercentage: z.number().min(0).max(100).default(0),
+        autoSendQuoteOnSubmit: z.boolean().default(false),
         steps: z.array(stepDefinitionSchema),
     })
     .superRefine((svc, ctx) => {

@@ -4,11 +4,16 @@
 // (Client with lifecycle: "lead"), the same model/pipeline the in-app
 // Leads CRM already runs on — see leadController.ts.
 import { StatusCodes } from "http-status-codes";
+import mongoose from "mongoose";
 import { z } from "zod";
 import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
 import { MiddlewareFn } from "../interfaces/expresstype.js";
 import Company from "../models/company.js";
 import Client from "../models/clientModel.js";
+import QuoteWorkflow, { type QuoteWorkflowServiceType } from "../models/quoteWorkflowModel.js";
+import { computeServiceEstimate, type ComputedEstimate } from "../services/quoteWorkflow/estimatePrice.js";
+import { createQuoteFromLeadIntake } from "../services/quote/createQuoteFromLeadIntake.js";
+import { sendQuoteNow } from "./quoteController.js";
 
 const parseOrThrow = <T>(schema: z.ZodSchema<T>, body: unknown): T => {
     const result = schema.safeParse(body);
@@ -34,9 +39,10 @@ const submitQuoteIntakeSchema = z.object({
     address: z.string().trim().optional(),
     marketingConsent: z.boolean().optional(),
 
-    // Client-computed instant estimate, if the wizard reached one —
-    // informational only, never trusted as a real price. Staff still
-    // builds the actual Quote through the normal authenticated flow.
+    // Client-computed instant estimate, if the wizard reached one. Accepted
+    // for backward compatibility with what the wizard already sends, but
+    // never stored or trusted — see computeServiceEstimate below, which
+    // recomputes the real figure server-side from the published workflow.
     estimate: z
         .object({
             lines: z.array(z.object({ label: z.string(), price: z.number() })).default([]),
@@ -76,16 +82,97 @@ export const getPublicQuoteIntakeCompany: MiddlewareFn = async (req, res) => {
     });
 };
 
+// Looks up the visitor's chosen service in the company's published
+// workflow. Returns null if it can't be resolved (no published workflow,
+// or the service type doesn't match/isn't active — e.g. the workflow
+// changed between the visitor loading the page and submitting), in which
+// case no price is stored rather than trusting whatever the client sent.
+async function resolveMatchedService(companyId: unknown, serviceType: string): Promise<QuoteWorkflowServiceType | null> {
+    const workflow = await QuoteWorkflow.findOne({ company: companyId }).select("published");
+    return workflow?.published?.serviceTypes.find(s => s.key === serviceType && s.active) ?? null;
+}
+
+// Best-effort, fire-and-forget — a billing/email hiccup here must never
+// turn a successful quote-request submission into a failed one for the
+// visitor. Only runs when the matched service opted into
+// autoSendQuoteOnSubmit (see quoteWorkflowModel.ts); the manual
+// counterpart is leadController.ts's sendLeadQuote. There's no
+// authenticated user in this public request, so `createdBy` falls back to
+// the company owner — same convention recurringInvoiceGenerator.ts uses
+// for its own unattended document creation.
+function maybeAutoSendQuote(
+    lead: InstanceType<typeof Client>,
+    companyId: mongoose.Types.ObjectId,
+    service: QuoteWorkflowServiceType | null,
+    estimate: ComputedEstimate | null
+) {
+    if (!service?.autoSendQuoteOnSubmit || !estimate || estimate.requiresManualQuote) return;
+
+    Company.findById(companyId)
+        .select("owner")
+        .then(async companyDoc => {
+            if (!companyDoc?.owner) return;
+            const quote = await createQuoteFromLeadIntake({
+                companyId,
+                createdBy: companyDoc.owner as mongoose.Types.ObjectId,
+                lead,
+                service,
+                estimate,
+            });
+            await sendQuoteNow(quote, companyId);
+        })
+        .catch(err => console.error(`Failed to auto-send quote for lead ${lead._id}:`, err));
+}
+
+// Best-effort, fire-and-forget — same reasoning as maybeAutoSendQuote
+// above. For an existing CLIENT (not a lead), a repeat submission always
+// gets a real quote created — unlike the lead path, this doesn't require
+// autoSendQuoteOnSubmit to do anything at all, since there's no "first
+// intake" being overwritten here for staff to review via quoteIntake; the
+// quote itself, visible in the normal Quotes list, is the review surface.
+// The toggle still governs whether it's emailed immediately or left as a
+// draft for staff to send from there. Deliberately NOT called for
+// lifecycle "lost" — reviving a lost opportunity should be a deliberate
+// staff action, not an automatic side effect of a public form resubmit.
+function createOrSendQuoteForClient(
+    client: InstanceType<typeof Client>,
+    companyId: mongoose.Types.ObjectId,
+    service: QuoteWorkflowServiceType | null,
+    estimate: ComputedEstimate | null
+) {
+    if (!service || !estimate || estimate.requiresManualQuote) return;
+
+    Company.findById(companyId)
+        .select("owner")
+        .then(async companyDoc => {
+            if (!companyDoc?.owner) return;
+            const quote = await createQuoteFromLeadIntake({
+                companyId,
+                createdBy: companyDoc.owner as mongoose.Types.ObjectId,
+                lead: client,
+                service,
+                estimate,
+            });
+            if (service.autoSendQuoteOnSubmit) {
+                await sendQuoteNow(quote, companyId);
+            }
+        })
+        .catch(err => console.error(`Failed to create quote for existing client ${client._id}:`, err));
+}
+
 // POST /public/quote-intake/:slug — the wizard's final submit.
 export const submitPublicQuoteIntake: MiddlewareFn = async (req, res) => {
     const company = await resolvePublicCompany(req.params.slug);
     const data = parseOrThrow(submitQuoteIntakeSchema, req.body);
 
+    const service = await resolveMatchedService(company._id, data.serviceType);
+    const estimate = service ? computeServiceEstimate(service, data.answers) : null;
+
     const fullName = [data.firstName, data.lastName].filter(Boolean).join(" ");
     const quoteIntake = {
         serviceType: data.serviceType,
         answers: data.answers,
-        estimate: data.estimate ?? null,
+        estimate,
     };
 
     // Find-or-create — a repeat visitor becomes one lead, not several (the
@@ -102,19 +189,26 @@ export const submitPublicQuoteIntake: MiddlewareFn = async (req, res) => {
     if (existing) {
         if (existing.lifecycle === "lead") {
             existing.quoteIntake = quoteIntake as any;
-            if (data.estimate?.total) existing.estimatedValue = data.estimate.total;
+            if (estimate?.total) existing.estimatedValue = estimate.total;
             await existing.save();
+            maybeAutoSendQuote(existing, company._id, service, estimate);
+        } else if (existing.lifecycle === "client") {
+            // A real customer requesting a further quote (a different
+            // service, another job) — goes straight to a Quote rather than
+            // touching their Client record. quoteIntake stays untouched: it's
+            // meant to be a faithful, never-overwritten record of this
+            // person's very first intake, not updated on every resubmit.
+            createOrSendQuoteForClient(existing, company._id, service, estimate);
         }
-        // Already a client or lost — a real relationship already exists
-        // with this company, so the form submission is acknowledged but
-        // doesn't touch their record. Staff can still see it via quoteIntake
-        // if this ever needs surfacing differently; out of scope for now.
+        // Lost leads are deliberately excluded — reviving one should be a
+        // deliberate staff action, not an automatic side effect of a public
+        // form resubmission.
         res.status(StatusCodes.OK).json({ success: true });
         return;
     }
 
     try {
-        await Client.create({
+        const created = await Client.create({
             company: company._id,
             name: fullName,
             lifecycle: "lead",
@@ -125,9 +219,10 @@ export const submitPublicQuoteIntake: MiddlewareFn = async (req, res) => {
             phone: data.phone,
             contacts: [{ name: fullName, email: data.email, phone: data.phone, isPrimary: true }],
             address: data.postcode || data.address ? { postcode: data.postcode, line1: data.address } : undefined,
-            estimatedValue: data.estimate?.total ?? 0,
+            estimatedValue: estimate?.total ?? 0,
             quoteIntake,
         });
+        maybeAutoSendQuote(created, company._id, service, estimate);
     } catch (err: any) {
         // Lost the race with a near-simultaneous duplicate submission —
         // fall back to the update path instead of surfacing a 500.
@@ -139,8 +234,9 @@ export const submitPublicQuoteIntake: MiddlewareFn = async (req, res) => {
         });
         if (raced && raced.lifecycle === "lead") {
             raced.quoteIntake = quoteIntake as any;
-            if (data.estimate?.total) raced.estimatedValue = data.estimate.total;
+            if (estimate?.total) raced.estimatedValue = estimate.total;
             await raced.save();
+            maybeAutoSendQuote(raced, company._id, service, estimate);
         }
     }
 

@@ -15,6 +15,9 @@ import { sendQuoteEmail, sendQuoteResponseNotice, sendQuoteThankYouEmail } from 
 import { calculateVat, round2 } from "../services/invoice/calculations.js";
 import { createQuoteResponseToken, hashQuoteResponseToken } from "../utils/tokenUtils.js";
 import { convertLeadToClient } from "../services/leadConversionService.js";
+import { createDepositInvoice } from "../services/invoice/createDepositInvoice.js";
+import { sendInvoiceNow } from "./invoiceController.js";
+import { buildClientSnapshot } from "../utils/buildClientSnapshot.js";
 
 // Same escaping precedent as invoiceController/clientController's search.
 const escapeRegExp = (input: string): string => input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -88,15 +91,6 @@ const resolveSite = async (
     return site;
 };
 
-const buildClientSnapshot = (client: InstanceType<typeof Client>) => ({
-    name: client.name,
-    billingEmail: client.billingEmail,
-    vatNumber: client.vatNumber,
-    phone: client.phone,
-    contactName: client.contacts?.find((c: any) => c.isPrimary)?.name ?? client.contacts?.[0]?.name,
-    address: client.address,
-});
-
 // Unlike Job's buildSiteSnapshot, Quote has no top-level address fields of
 // its own, so the site's address rides along here too.
 const buildSiteSnapshot = (site: InstanceType<typeof Site>) => ({
@@ -153,16 +147,26 @@ const buildQuoteItems = (input: z.infer<typeof quoteItemInputSchema>[]) =>
         };
     });
 
-const computeTotals = (items: { amount: number }[], taxRate: number) => {
+// Exported for createQuoteFromLeadIntake.ts — same reasoning as
+// buildClientSnapshot above.
+export const computeTotals = (items: { amount: number }[], taxRate: number) => {
     const subtotal = round2(items.reduce((sum, it) => sum + it.amount, 0));
     const taxAmount = calculateVat(subtotal, taxRate);
     const total = round2(subtotal + taxAmount);
     return { subtotal, taxAmount, total };
 };
 
-const nextQuoteNumber = async (companyId: mongoose.Types.ObjectId, attempt = 0): Promise<string> => {
-    const count = await Quote.countDocuments({ company: companyId });
-    return `QT-${String(count + 1 + attempt).padStart(4, "0")}`;
+// Based on the highest existing quote number for this company, not a
+// count — a count-based scheme (the original version of this function)
+// collides as soon as any quote is deleted (deleteQuote allows deleting
+// drafts outright), since the count then undershoots numbers already in
+// use by surviving quotes above the gap. Sorting by quoteNumber as a
+// string is safe here because every number is zero-padded to the same
+// width, so lexicographic order matches numeric order.
+export const nextQuoteNumber = async (companyId: mongoose.Types.ObjectId, attempt = 0): Promise<string> => {
+    const latest = await Quote.findOne({ company: companyId }).sort({ quoteNumber: -1 }).select("quoteNumber").lean();
+    const latestNum = latest ? parseInt(latest.quoteNumber.replace(/^QT-/, ""), 10) || 0 : 0;
+    return `QT-${String(latestNum + 1 + attempt).padStart(4, "0")}`;
 };
 
 // "expired" is a real stored status (flipped lazily by the public routes
@@ -176,7 +180,9 @@ const computeDisplayStatus = (q: any): string => {
     return q.status;
 };
 
-const serializeQuote = (q: any) => ({
+// Exported for leadController.ts's sendLeadQuote, which returns a quote it
+// built the same way this controller's own handlers do.
+export const serializeQuote = (q: any) => ({
     ...q,
     // `client` is overridden to the display name (matches Invoice's own
     // serializeInvoice convention) — clientId carries the real ObjectId
@@ -514,16 +520,21 @@ export const downloadQuotePdf: MiddlewareFn = async (req, res) => {
 // the public response token, and flips draft -> sent in one step.
 const sendQuoteSchema = z.object({ template: z.string().optional() }).strict();
 
+// The actual send: builds the PDF, generates/rotates the response token,
+// emails it, and flips the quote to "sent". Extracted from the HTTP handler
+// below so createQuoteFromLeadIntake.ts's manual-send and auto-send paths
+// (leadController.ts, publicQuoteIntakeController.ts) go through the exact
+// same code a staff-triggered send does — not a second copy of it.
+//
 // Covers both the first send (draft -> sent) and a resend (sent/viewed ->
-// sent) in one handler — a resend always rotates the response token, so a
+// sent) in one call — a resend always rotates the response token, so a
 // stale/lost email link can never be replayed after a fresh one goes out.
 // Terminal statuses are rejected with a reason specific enough to act on.
-export const sendQuoteHandler: MiddlewareFn = async (req, res) => {
-    const data = parseOrThrow(sendQuoteSchema, req.body);
-    const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
-    const quote = await Quote.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
-    if (!quote) throw new NotFoundError("Quote not found.");
-
+export async function sendQuoteNow(
+    quote: InstanceType<typeof Quote>,
+    companyId: mongoose.Types.ObjectId,
+    opts: { explicitTemplateId?: string } = {}
+): Promise<void> {
     if (quote.status === "accepted") throw new BadRequestError("This quote has already been accepted — it can't be resent.");
     if (quote.status === "declined") throw new BadRequestError("This quote was declined. Create a new quote instead of resending it.");
     if (quote.status === "expired") throw new BadRequestError("This quote has expired. Create a new quote instead of resending it.");
@@ -539,7 +550,7 @@ export const sendQuoteHandler: MiddlewareFn = async (req, res) => {
 
     const company = await Company.findById(companyId).select("name phone emailSettings").lean();
 
-    const doc = await buildQuotePdfDocument(quote, companyId, { persistTemplate: true, explicitTemplateId: data.template });
+    const doc = await buildQuotePdfDocument(quote, companyId, { persistTemplate: true, explicitTemplateId: opts.explicitTemplateId });
 
     const buffers: Buffer[] = [];
     doc.on("data", chunk => buffers.push(chunk));
@@ -579,6 +590,15 @@ export const sendQuoteHandler: MiddlewareFn = async (req, res) => {
     Client.updateOne({ _id: quote.client, lifecycle: "lead" }, { leadStage: "quote_sent" }).catch(err =>
         console.error(`Failed to bump leadStage for quote ${quote._id}:`, err)
     );
+}
+
+export const sendQuoteHandler: MiddlewareFn = async (req, res) => {
+    const data = parseOrThrow(sendQuoteSchema, req.body);
+    const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
+    const quote = await Quote.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
+    if (!quote) throw new NotFoundError("Quote not found.");
+
+    await sendQuoteNow(quote, companyId, { explicitTemplateId: data.template });
 
     res.status(StatusCodes.OK).json({ success: true, quote: serializeQuote(quote.toObject()) });
 };
@@ -736,6 +756,34 @@ export const respondToPublicQuote: MiddlewareFn = async (req, res) => {
                 }
             })
             .catch(err => console.error(`Failed to auto-convert lead for quote ${quote._id}:`, err));
+
+        // Only quotes built from a Quote Workflow service with a configured
+        // deposit % have depositPercentage > 0 (see createQuoteFromLeadIntake.ts)
+        // — every hand-built quote defaults to 0 and is unaffected. Auto-
+        // created and auto-sent immediately, not left as a draft: the
+        // user's explicit choice was that accepting a quote should
+        // immediately request the deposit, not wait on a manager noticing.
+        // Independent from the conversion above (not chained to it) since
+        // Client._id is stable across the lead->client flip either way.
+        // Best-effort for the same reason as the conversion: a billing
+        // hiccup must never make the client's own accept action look like
+        // it failed.
+        if (quote.depositPercentage && quote.depositPercentage > 0) {
+            Client.findById(quote.client)
+                .then(async billedClient => {
+                    if (!billedClient) return;
+                    const invoice = await createDepositInvoice({
+                        companyId: quote.company as mongoose.Types.ObjectId,
+                        createdBy: quote.createdBy as mongoose.Types.ObjectId,
+                        client: billedClient,
+                        quoteNumber: quote.quoteNumber,
+                        quoteTotal: quote.total,
+                        percentage: quote.depositPercentage!,
+                    });
+                    await sendInvoiceNow(invoice, quote.company as mongoose.Types.ObjectId);
+                })
+                .catch(err => console.error(`Failed to create/send deposit invoice for quote ${quote._id}:`, err));
+        }
     } else {
         quote.status = "declined";
         quote.declinedAt = new Date();

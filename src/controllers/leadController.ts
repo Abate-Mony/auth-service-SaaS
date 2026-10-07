@@ -14,8 +14,11 @@ import { MiddlewareFn, getReqUser } from "../interfaces/expresstype.js";
 import Client from "../models/clientModel.js";
 import Quote from "../models/quoteModel.js";
 import User from "../models/userModel.js";
+import QuoteWorkflow from "../models/quoteWorkflowModel.js";
 import { formatAddress } from "../utils/formatAddress.js";
 import { convertLeadToClient } from "../services/leadConversionService.js";
+import { createQuoteFromLeadIntake } from "../services/quote/createQuoteFromLeadIntake.js";
+import { sendQuoteNow, serializeQuote } from "./quoteController.js";
 import dayjs from "../utils/dayjsSetup.js";
 import { TZ } from "../utils/dates.js";
 
@@ -384,6 +387,47 @@ export const getLead: MiddlewareFn = async (req, res) => {
         lead: serializeLead(populated.toObject({ virtuals: true })),
         quotes,
     });
+};
+
+// ─────────────────────────────────────────────
+// POST /leads/:id/send-quote
+// ─────────────────────────────────────────────
+// Turns a lead's public-wizard submission (quoteIntake) into a real,
+// sendable Quote and emails it immediately — the manual counterpart to
+// publicQuoteIntakeController.ts's auto-send path, both going through the
+// same createQuoteFromLeadIntake + sendQuoteNow. Uses the estimate the
+// visitor actually saw and agreed to at submission time, not a fresh
+// recompute — re-pricing someone silently because the workflow changed
+// since they submitted would be a worse experience than it's worth.
+export const sendLeadQuote: MiddlewareFn = async (req, res) => {
+    const user = getReqUser(req);
+    const companyId = new mongoose.Types.ObjectId(user.company_id.toString());
+    const lead = await findLead(req.params.id as string, companyId, "lead");
+
+    const estimate = lead.quoteIntake?.estimate;
+    if (!lead.quoteIntake || !estimate) {
+        throw new BadRequestError("This lead has no quote estimate to send — build a quote manually instead.");
+    }
+    if (estimate.requiresManualQuote) {
+        throw new BadRequestError("This service requires a manual quote — build one by hand instead of sending the estimate.");
+    }
+
+    const workflow = await QuoteWorkflow.findOne({ company: companyId }).select("published");
+    const service = workflow?.published?.serviceTypes.find(s => s.key === lead.quoteIntake!.serviceType && s.active);
+    if (!service) {
+        throw new BadRequestError("This service is no longer available in your Quote Workflow — build a quote manually instead.");
+    }
+
+    const quote = await createQuoteFromLeadIntake({
+        companyId,
+        createdBy: new mongoose.Types.ObjectId(user.user_id.toString()),
+        lead,
+        service,
+        estimate: estimate as any,
+    });
+    await sendQuoteNow(quote, companyId);
+
+    res.status(StatusCodes.OK).json({ success: true, quote: serializeQuote(quote.toObject()) });
 };
 
 // ─────────────────────────────────────────────

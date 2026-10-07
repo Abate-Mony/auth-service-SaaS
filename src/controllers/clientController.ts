@@ -6,6 +6,7 @@ import { MiddlewareFn } from "../interfaces/expresstype.js";
 import Client from "../models/clientModel.js";
 import Job from "../models/jobModel.js";
 import Invoice from "../models/invoiceModel.js";
+import Quote from "../models/quoteModel.js";
 import { toUtcDay } from "../utils/dates.js";
 import { formatAddress } from "../utils/formatAddress.js";
 
@@ -183,7 +184,7 @@ export const getClient: MiddlewareFn = async (req, res) => {
     // this codebase), unlike Client/Invoice's ObjectId — cast separately.
     const companyIdStr = companyId.toString();
 
-    const [totalJobs, upcomingJobs, invoiceAgg, recentJobs] = await Promise.all([
+    const [totalJobs, upcomingJobs, invoiceAgg, recentJobs, quotes] = await Promise.all([
         Job.countDocuments({ client: client._id, company: companyIdStr, isDeleted: false }),
         Job.countDocuments({
             client: client._id,
@@ -224,6 +225,14 @@ export const getClient: MiddlewareFn = async (req, res) => {
             .sort({ date: -1 })
             .limit(10)
             .lean(),
+        // Includes quotes a public-wizard resubmission created for this
+        // client (see publicQuoteIntakeController.ts's
+        // createOrSendQuoteForClient) alongside hand-built ones — same list,
+        // same shape leadController.ts's getLead already returns.
+        Quote.find({ client: client._id, company: companyId, isDeleted: false })
+            .select("quoteNumber title status total currency validUntil sentAt acceptedAt declinedAt createdAt")
+            .sort({ createdAt: -1 })
+            .lean(),
     ]);
 
     res.status(StatusCodes.OK).json({
@@ -240,6 +249,7 @@ export const getClient: MiddlewareFn = async (req, res) => {
             outstandingBalance: invoiceAgg[0]?.outstandingBalance ?? 0,
         },
         recentJobs,
+        quotes,
     });
 };
 

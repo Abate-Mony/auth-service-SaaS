@@ -569,12 +569,15 @@ export const downloadInvoicePdf: MiddlewareFn = async (req, res) => {
 // status-only "Mark as Sent" toggle.
 const sendInvoiceSchema = z.object({ template: z.string().optional() }).strict();
 
-export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
-    const data = parseOrThrow(sendInvoiceSchema, req.body);
-    const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
-    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
-    if (!invoice) throw new NotFoundError("Invoice not found.");
-
+// The actual send: builds the PDF, emails it, and flips the invoice to
+// "sent". Extracted from the HTTP handler below so createDepositInvoice.ts's
+// accept-triggered send (quoteController.ts's respondToPublicQuote) goes
+// through the exact same code a staff-triggered send does.
+export async function sendInvoiceNow(
+    invoice: InstanceType<typeof Invoice>,
+    companyId: mongoose.Types.ObjectId,
+    opts: { explicitTemplateId?: string } = {}
+): Promise<void> {
     const billingEmail = invoice.clientSnapshot?.billingEmail;
     if (!billingEmail) {
         throw new BadRequestError("This client has no billing email on file — add one before sending.");
@@ -582,7 +585,7 @@ export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
 
     const company = await Company.findById(companyId).select("name phone emailSettings").lean();
 
-    const doc = await buildInvoicePdfDocument(invoice, companyId, { persistTemplate: true, explicitTemplateId: data.template });
+    const doc = await buildInvoicePdfDocument(invoice, companyId, { persistTemplate: true, explicitTemplateId: opts.explicitTemplateId });
 
     const buffers: Buffer[] = [];
     doc.on("data", chunk => buffers.push(chunk));
@@ -608,6 +611,15 @@ export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
     invoice.lastSentAt = new Date();
     invoice.sentTo = Array.from(new Set([...(invoice.sentTo ?? []), billingEmail]));
     await invoice.save();
+}
+
+export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
+    const data = parseOrThrow(sendInvoiceSchema, req.body);
+    const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
+    const invoice = await Invoice.findOne({ _id: req.params.id, company: companyId, isDeleted: false });
+    if (!invoice) throw new NotFoundError("Invoice not found.");
+
+    await sendInvoiceNow(invoice, companyId, { explicitTemplateId: data.template });
 
     res.status(StatusCodes.OK).json({ success: true, invoice: serializeInvoice(invoice.toObject()) });
 };

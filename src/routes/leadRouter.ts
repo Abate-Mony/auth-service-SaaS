@@ -15,6 +15,7 @@ import {
     markLeadLost,
     restoreLead,
     archiveLead,
+    sendLeadQuote,
 } from "../controllers/leadController.js";
 import { authorizePermissions } from "../middleware/authMiddleware.js";
 
@@ -49,5 +50,6 @@ router.patch("/:id/contacted", markContacted);
 router.post("/:id/convert", convertLead);
 router.post("/:id/lost", markLeadLost);
 router.post("/:id/restore", restoreLead);
+router.post("/:id/send-quote", sendLeadQuote);
 
 export default router;
