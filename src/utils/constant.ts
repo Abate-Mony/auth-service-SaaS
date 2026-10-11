@@ -193,6 +193,20 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
       "time_off_reviewed",
 
       "shift_time_changed",
+
+      // A visitor submitted the public quote-request wizard (see
+      // publicQuoteIntakeController.ts) — a new lead, a lead resubmitting,
+      // or an existing client requesting a further quote all fire this;
+      // staff otherwise has no way to know a request came in except by
+      // happening to open the Leads/Quotes page.
+      "quote_request_submitted",
+
+      // A wizard-submitted quote (see above) sat as an unsent draft for too
+      // long — see utils/sendStaleQuoteRequestReminders.ts. Separate event
+      // from quote_request_submitted so staff can mute the "heads up, a
+      // request came in" ping without also muting the "you forgot to send
+      // this" nudge.
+      "quote_request_unaddressed",
   ] as const;
   export const NOTIFICATION_CHANNELS = [
       "email",

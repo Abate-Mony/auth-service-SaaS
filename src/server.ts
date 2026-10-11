@@ -39,6 +39,7 @@ import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGenerati
 import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
 import { autoCloseAbandonedShifts } from "./utils/autoCloseAbandonedShifts.js";
 import { sendOverduePaymentReminders } from "./utils/sendPaymentReminders.js";
+import { sendStaleQuoteRequestReminders } from "./utils/sendStaleQuoteRequestReminders.js";
 import { generateRecurringInvoices } from "./services/invoice/recurringInvoiceGenerator.js";
 import { checkPendingEmailDomains } from "./utils/checkPendingEmailDomains.js";
 import notificationPreferenceRouter
@@ -223,6 +224,12 @@ const start = async (): Promise<void> => {
     // 8am UTC — a reminder email landing at 1am does nobody any good.
     cron.schedule("0 8 * * *", () => {
       sendOverduePaymentReminders();
+    });
+    // Every hour — catches an unsent wizard-submitted quote reasonably
+    // soon after it crosses the 24h-unaddressed threshold, without being
+    // as noisy/expensive as the every-minute jobs above.
+    cron.schedule("0 * * * *", () => {
+      sendStaleQuoteRequestReminders();
     });
     // 6am UTC, ahead of the payment-reminder run — drafts are ready for a
     // manager to review before the working day starts.

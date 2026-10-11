@@ -373,12 +373,24 @@ const QuoteSchema = new Schema(
 
     // Lets staff tell at a glance whether this came from the public quote
     // wizard (createQuoteFromLeadIntake.ts) or was built by hand
-    // (createQuote above) — purely informational, nothing reads it to
-    // change behaviour.
+    // (createQuote above). Also read by
+    // sendStaleQuoteRequestReminders.ts — only a public_wizard draft left
+    // unsent gets nudged; a manually-built draft is a work-in-progress
+    // staff is still editing, not a missed request.
     source: {
       type: String,
       enum: ["manual", "public_wizard"],
       default: "manual",
+    },
+
+    // Stamped once sendStaleQuoteRequestReminders.ts has nudged staff that
+    // this public_wizard draft has sat unsent too long — null until then,
+    // so the cron's query can find "due and not yet reminded" quotes and
+    // never nudges the same one twice. Left null forever on any quote that
+    // gets sent before the reminder window elapses.
+    reminderSentAt: {
+      type: Date,
+      default: null,
     },
 
     createdBy: {

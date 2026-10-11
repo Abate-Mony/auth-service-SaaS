@@ -1180,3 +1180,110 @@ export async function sendShiftTimeChanged({
     html: layout({ heading: "Your shift time changed", body }),
   });
 }
+
+// Shared by sendQuoteRequestSubmittedEmail/sendQuoteRequestUnaddressedEmail
+// below — same facts, just a different heading/urgency depending on
+// whether this is the first notice or a nobody's-looked-at-this-yet nudge.
+function quoteRequestEmailBody(opts: {
+  personName: string;
+  serviceLabel: string;
+  estimateTotal: number | null;
+  currency: string;
+  link: string;
+  intro: string;
+}) {
+  const symbol = opts.currency === "USD" ? "$" : opts.currency === "EUR" ? "€" : "£";
+  return `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      ${opts.intro}
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Requested by", opts.personName)}
+      ${detailRow("Service", opts.serviceLabel)}
+      ${opts.estimateTotal != null ? detailRow("Estimated total", `${symbol}${opts.estimateTotal.toFixed(2)}`) : ""}
+    </table>
+
+    ${button(opts.link, "View request")}`;
+}
+
+/** Sent to a company's staff the moment a visitor submits the public quote-request wizard. */
+export async function sendQuoteRequestSubmittedEmail({
+  staffEmail,
+  personName,
+  serviceLabel,
+  estimateTotal,
+  currency,
+  link,
+  company,
+}: {
+  staffEmail: string;
+  personName: string;
+  serviceLabel: string;
+  estimateTotal: number | null;
+  currency: string;
+  link: string;
+  company: CompanyRef;
+}) {
+  const absoluteLink = `${process.env.CLIENT_URL}${link}`;
+  const body = quoteRequestEmailBody({
+    personName,
+    serviceLabel,
+    estimateTotal,
+    currency,
+    link: absoluteLink,
+    intro: `${personName} requested a quote for ${serviceLabel}.`,
+  });
+
+  await sendCompanyEmail({
+    company,
+    to: staffEmail,
+    subject: `New quote request — ${personName} (${serviceLabel})`,
+    text:
+      `${personName} requested a quote for ${serviceLabel}.` +
+      `${estimateTotal != null ? `\nEstimated total: ${estimateTotal.toFixed(2)}` : ""}\n\n` +
+      `View request: ${absoluteLink}`,
+    html: layout({ heading: "New quote request", body }),
+  });
+}
+
+/** Sent to a company's staff when a wizard-submitted quote has sat as an
+ *  unsent draft for too long — see utils/sendStaleQuoteRequestReminders.ts. */
+export async function sendQuoteRequestUnaddressedEmail({
+  staffEmail,
+  personName,
+  serviceLabel,
+  estimateTotal,
+  currency,
+  link,
+  company,
+}: {
+  staffEmail: string;
+  personName: string;
+  serviceLabel: string;
+  estimateTotal: number | null;
+  currency: string;
+  link: string;
+  company: CompanyRef;
+}) {
+  const absoluteLink = `${process.env.CLIENT_URL}${link}`;
+  const body = quoteRequestEmailBody({
+    personName,
+    serviceLabel,
+    estimateTotal,
+    currency,
+    link: absoluteLink,
+    intro: `${personName}'s quote request for ${serviceLabel} hasn't been sent yet — it's still waiting in your Quotes list.`,
+  });
+
+  await sendCompanyEmail({
+    company,
+    to: staffEmail,
+    subject: `Reminder: quote request from ${personName} still unsent`,
+    text:
+      `${personName}'s quote request for ${serviceLabel} hasn't been sent yet — it's still waiting in your Quotes list.` +
+      `${estimateTotal != null ? `\nEstimated total: ${estimateTotal.toFixed(2)}` : ""}\n\n` +
+      `View request: ${absoluteLink}`,
+    html: layout({ heading: "A quote request is still waiting", body }),
+  });
+}

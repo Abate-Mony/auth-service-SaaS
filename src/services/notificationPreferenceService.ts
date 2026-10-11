@@ -97,6 +97,18 @@ function getDefaultPreference(
       push: true,
       inApp: true,
     },
+
+    quote_request_submitted: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
+
+    quote_request_unaddressed: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
   };
 
   return defaults[event][channel];
