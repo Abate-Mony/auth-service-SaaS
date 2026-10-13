@@ -194,6 +194,11 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
 
       "shift_time_changed",
 
+      // A worker's assignment was cancelled along with the job itself —
+      // either a direct staff cancellation or an approved client cancel
+      // request (jobChangeRequestController.ts). Worker-facing.
+      "shift_cancelled",
+
       // A visitor submitted the public quote-request wizard (see
       // publicQuoteIntakeController.ts) — a new lead, a lead resubmitting,
       // or an existing client requesting a further quote all fire this;
@@ -207,6 +212,22 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
       // request came in" ping without also muting the "you forgot to send
       // this" nudge.
       "quote_request_unaddressed",
+
+      // A client-portal user submitted a new booking request
+      // (src/controllers/portalBookingRequestController.ts) — staff-facing.
+      "booking_request_submitted",
+
+      // Staff declined a client's booking request
+      // (src/controllers/bookingRequestController.ts) — client-facing.
+      "booking_request_declined",
+
+      // A client-portal user requested a reschedule or cancellation on an
+      // existing booking (portalJobChangeRequestController.ts) — staff-facing.
+      "job_change_request_submitted",
+
+      // Staff declined a client's reschedule/cancel request
+      // (jobChangeRequestController.ts) — client-facing.
+      "job_change_request_declined",
   ] as const;
   export const NOTIFICATION_CHANNELS = [
       "email",

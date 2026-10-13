@@ -9,12 +9,14 @@ import Client from "../models/clientModel.js";
 import Site from "../models/siteModel.js";
 import recurringJobModel from "../models/recurringJobModel.js";
 import Quote from "../models/quoteModel.js";
+import BookingRequest from "../models/BookingRequest.js";
+import JobChangeRequest from "../models/JobChangeRequest.js";
 import userModel from "../models/userModel.js";
 import { toUtcDay } from "../utils/dates.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity, logActivityMany } from "../utils/logActivity.js";
 import { assertCanCreateJob, assertFeatureEnabledForCompany } from "../utils/planLimits.js";
-import { sendShiftAssigned, sendRecurringShiftAssigned, sendShiftTimeChanged } from "../utils/mailTemplates.js";
+import { sendShiftAssigned, sendRecurringShiftAssigned, sendShiftTimeChanged, sendShiftCancelled } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
 import { sendExpoPushToUser } from "../utils/expoPush.js";
 import dayjs from "../utils/dayjsSetup.js";
@@ -180,7 +182,182 @@ const describeRecurrence = (
     return intervalNum === 1 ? "Every month" : `Every ${intervalNum} months`;
 };
 
+// The approval step for a client-portal booking request — see
+// BookingRequest.ts and CreateJob.tsx's ?bookingRequest=<id> prefill.
+// Deliberately NOT a standalone "approve" endpoint: a request only ever
+// becomes "approved" as a side effect of staff actually completing and
+// submitting a real Job from it here, never by a single status-flip
+// button, so a client's loose preferences can't become a live shift
+// without a staff member reviewing/confirming the missing details
+// (site, exact time, charge) first.
+//
+// Best-effort and never allowed to fail the job that was just
+// successfully created — if the request was already declined/cancelled
+// by someone else in the meantime, or the id is stale/invalid, this just
+// logs and the Job creation still stands as the primary, already-
+// -succeeded action.
+async function maybeApproveBookingRequest(
+    bookingRequestId: unknown,
+    companyId: string | mongoose.Types.ObjectId,
+    reviewerId: string | mongoose.Types.ObjectId,
+    job: InstanceType<typeof Job>
+): Promise<void> {
+    if (!bookingRequestId || typeof bookingRequestId !== "string") return;
+    try {
+        const request = await BookingRequest.findOne({
+            _id: bookingRequestId,
+            company: companyId,
+            status: "pending",
+            isDeleted: false,
+        });
+        if (!request) return;
 
+        request.status = "approved";
+        request.reviewedBy = reviewerId as any;
+        request.reviewedAt = new Date();
+        request.convertedJob = job._id as any;
+        await request.save();
+    } catch (err) {
+        console.error(`Failed to link booking request ${bookingRequestId} to job ${job._id}:`, err);
+    }
+}
+
+// Same best-effort, fire-and-forget, only-if-still-pending shape as
+// maybeApproveBookingRequest above — but this one runs from updateJob
+// instead of createJob, since a reschedule request targets an EXISTING job
+// rather than creating a new one. There is deliberately no standalone
+// approve-reschedule endpoint: approval only ever happens as a side effect
+// of staff actually completing and submitting the real Edit Job form (see
+// EditJobPage.tsx's ?jobChangeRequest=<id> prefill), same safety property
+// booking requests already established for new bookings.
+async function maybeApproveJobChangeRequest(
+    jobChangeRequestId: unknown,
+    companyId: string | mongoose.Types.ObjectId,
+    reviewerId: string | mongoose.Types.ObjectId,
+    job: InstanceType<typeof Job>
+): Promise<void> {
+    if (!jobChangeRequestId || typeof jobChangeRequestId !== "string") return;
+    try {
+        const request = await JobChangeRequest.findOne({
+            _id: jobChangeRequestId,
+            company: companyId,
+            job: job._id,
+            type: "reschedule",
+            status: "pending",
+            isDeleted: false,
+        });
+        if (!request) return;
+
+        request.status = "approved";
+        request.reviewedBy = reviewerId as any;
+        request.reviewedAt = new Date();
+        await request.save();
+    } catch (err) {
+        console.error(`Failed to link job change request ${jobChangeRequestId} to job ${job._id}:`, err);
+    }
+}
+
+// Shared by updateJob's own direct-cancel path and the staff "approve
+// cancellation request" endpoint (jobChangeRequestController.ts). Takes a
+// job whose status is ALREADY "cancelled" and saved — this only owns the
+// JobAssignment cascade, activity log, and (the actual gap being closed)
+// telling affected workers their shift is gone, which neither path did
+// before. Terminal assignments (already completed/declined/cancelled) are
+// left exactly as they are.
+export async function applyJobCancellationSideEffects(
+    updatedJob: InstanceType<typeof Job>,
+    opts: { actorId: string | mongoose.Types.ObjectId; reason?: string }
+): Promise<void> {
+    const cancelledAt = new Date();
+    const liveAssignments = await JobAssignment.find({
+        job: updatedJob._id,
+        isDeleted: false,
+        status: { $nin: ["completed", "declined", "cancelled"] },
+    }).populate("worker", "fullname email");
+
+    if (liveAssignments.length) {
+        await JobAssignment.updateMany(
+            { _id: { $in: liveAssignments.map(a => a._id) } },
+            {
+                $set: {
+                    status: "cancelled",
+                    cancelledAt,
+                    cancelledBy: opts.actorId,
+                    cancellationType: "job",
+                },
+            }
+        );
+
+        await logActivityMany(
+            liveAssignments.map(a => ({
+                job: updatedJob._id,
+                jobDate: updatedJob.date,
+                assignment: a._id,
+                worker: (a.worker as any)?._id ?? a.worker,
+                type: "assignment_cancelled",
+                actor: opts.actorId,
+                metadata: { reason: "job_cancelled" },
+            }))
+        );
+
+        // NEW — tells affected workers their shift was cancelled, same
+        // channel set as the shift-assigned/shift-time-changed notifications
+        // elsewhere in this file. Neither updateJob's existing direct-cancel
+        // path nor this new helper's other caller sent anything before.
+        const notifyingCompany = await Company.findById(updatedJob.company).select("name emailSettings").lean();
+        Promise.all(
+            liveAssignments.map(a => {
+                const worker = a.worker as any;
+                if (!worker?.email) return Promise.resolve();
+                return Promise.all([
+                    notifyUser({
+                        userId: worker._id.toString(),
+                        companyId: updatedJob.company,
+                        event: "shift_cancelled",
+                        title: "Shift cancelled",
+                        body: `${updatedJob.title} on ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")} has been cancelled`,
+                        link: `/worker/jobs/${updatedJob._id}`,
+                    }),
+                    sendPushToUser(worker._id.toString(), {
+                        title: "Shift cancelled",
+                        body: `${updatedJob.title} — ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}`,
+                        tag: `shift-cancelled-${updatedJob._id}`,
+                        url: `/worker/jobs/${updatedJob._id}`,
+                    }),
+                    sendExpoPushToUser(worker._id.toString(), {
+                        title: "Shift cancelled",
+                        body: `${updatedJob.title} — ${dayjs(updatedJob.date).tz(TZ).format("ddd D MMM")}`,
+                        tag: `shift-cancelled-${updatedJob._id}`,
+                        url: `/worker/jobs/${updatedJob._id}`,
+                    }),
+                    sendShiftCancelled({
+                        worker: { email: worker.email, fullname: worker.fullname },
+                        job: {
+                            _id: updatedJob._id.toString(),
+                            title: updatedJob.title,
+                            location: updatedJob.location,
+                            address: updatedJob.address,
+                            date: updatedJob.date,
+                            startTime: updatedJob.startTime,
+                            endTime: updatedJob.endTime,
+                            minutes: updatedJob.minutes,
+                        },
+                        reason: opts.reason,
+                        company: notifyingCompany ?? { name: "OnClockly" },
+                    }),
+                ]);
+            })
+        ).catch(err => console.error(`Failed to send shift-cancelled notification(s) for job ${updatedJob._id}:`, err));
+    }
+
+    await logActivity({
+        job: updatedJob._id,
+        jobDate: updatedJob.date,
+        type: "job_cancelled",
+        actor: opts.actorId,
+        ...(opts.reason ? { metadata: { reason: opts.reason } } : {}),
+    });
+}
 
 export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     const {
@@ -221,6 +398,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
          requiresApproval,
          sourceQuote,
          checklist,
+         bookingRequestId,
     } = req.body;
 
     // Only these two are ever settable at creation — "completed"/"cancelled"
@@ -505,6 +683,8 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             ).catch(err => console.error(`Failed to send recurring shift-assigned notification(s) for recurringJob ${recurringJob._id}:`, err));
         }
 
+        await maybeApproveBookingRequest(bookingRequestId, req.user.company_id, currentUserId, templateJob);
+
         res.status(StatusCodes.CREATED).json({
             success: true,
             recurringJob,
@@ -608,6 +788,8 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             console.error(`Failed to send open-shift notification(s) for job ${job._id}:`, err)
         );
     }
+
+    await maybeApproveBookingRequest(bookingRequestId, req.user.company_id, currentUserId, job);
 
     res.status(StatusCodes.CREATED).json({ success: true, job });
 };
@@ -944,7 +1126,8 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     // isJobLocked() in utils/jobLock.ts, which mutes the edit entry points.
     if (job.status !== "draft") {
         const isPastDate = toUtcDay(job.date) < toUtcDay(new Date());
-        const isLocked = isPastDate || job.status === "completed" || job.status === "cancelled";
+        const isInvoiced = job.billingStatus === "invoiced";
+        const isLocked = isPastDate || job.status === "completed" || job.status === "cancelled" || isInvoiced;
 
         if (isLocked) {
             const numDiffers = (raw: unknown, current: number) => raw !== undefined && Number(raw) !== current;
@@ -961,8 +1144,14 @@ export const updateJob: MiddlewareFn = async (req, res) => {
             if (numDiffers(req.body.chargeAmount, job.chargeAmount)) attemptedChanges.push("charge amount");
 
             if (attemptedChanges.length) {
+                // "Already invoiced" only when that's actually why it's
+                // locked — a past/completed/cancelled invoiced job keeps the
+                // original framing, since both are true there anyway.
+                const reason = isInvoiced && !isPastDate && job.status !== "completed" && job.status !== "cancelled"
+                    ? "this job has already been invoiced"
+                    : "this job has already happened";
                 throw new BadRequestError(
-                    `This job has already happened, so its ${attemptedChanges.join(", ")} can no longer be changed.`
+                    `${reason[0].toUpperCase()}${reason.slice(1)}, so its ${attemptedChanges.join(", ")} can no longer be changed.`
                 );
             }
         }
@@ -1223,47 +1412,11 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     // A cancelled job takes its still-live assignments down with it — nobody
     // is actually going to work a shift the job itself called off. Terminal
     // assignments (already completed/declined/cancelled) are left exactly as
-    // they are; a worker who'd already finished or bowed out keeps that record.
+    // they are; a worker who'd already finished or bowed out keeps that
+    // record. Shared with the staff "approve cancellation request" endpoint
+    // (jobChangeRequestController.ts) — see applyJobCancellationSideEffects.
     if (newStatus === "cancelled" && oldStatus !== "cancelled") {
-        const cancelledAt = new Date();
-        const liveAssignments = await JobAssignment.find({
-            job: updatedJob._id,
-            isDeleted: false,
-            status: { $nin: ["completed", "declined", "cancelled"] },
-        }).select("_id worker");
-
-        if (liveAssignments.length) {
-            await JobAssignment.updateMany(
-                { _id: { $in: liveAssignments.map(a => a._id) } },
-                {
-                    $set: {
-                        status: "cancelled",
-                        cancelledAt,
-                        cancelledBy: currentUserId,
-                        cancellationType: "job",
-                    },
-                }
-            );
-
-            await logActivityMany(
-                liveAssignments.map(a => ({
-                    job: updatedJob._id,
-                    jobDate: updatedJob.date,
-                    assignment: a._id,
-                    worker: a.worker,
-                    type: "assignment_cancelled",
-                    actor: currentUserId,
-                    metadata: { reason: "job_cancelled" },
-                }))
-            );
-        }
-
-        await logActivity({
-            job: updatedJob._id,
-            jobDate: updatedJob.date,
-            type: "job_cancelled",
-            actor: currentUserId,
-        });
+        await applyJobCancellationSideEffects(updatedJob, { actorId: currentUserId });
     }
 
     let workersToNotify: { _id: mongoose.Types.ObjectId; email: string; fullname: string }[] = [];
@@ -1399,6 +1552,12 @@ export const updateJob: MiddlewareFn = async (req, res) => {
             console.error(`Failed to send open-shift notification(s) for job ${updatedJob._id}:`, err)
         );
     }
+
+    // Not in UPDATE_JOB_ALLOWED_FIELDS — it isn't a Job field at all, same
+    // treatment as client/site above. Best-effort, never fails this
+    // already-successful edit; see maybeApproveJobChangeRequest's own
+    // comment for why there's no separate approve-reschedule endpoint.
+    await maybeApproveJobChangeRequest(req.body.jobChangeRequestId, req.user.company_id, currentUserId, updatedJob);
 
     /**
      * Return updated job with assignments

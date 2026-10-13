@@ -663,8 +663,9 @@ async function findQuoteByToken(token: unknown) {
 
 // Gate for the write path only — accepting/declining a quote that's a
 // draft, already terminal, or expired must be rejected outright, unlike
-// viewing it.
-function assertRespondable(quote: InstanceType<typeof Quote>) {
+// viewing it. Exported for portalController.ts's authenticated
+// accept/decline handlers — no token-specific logic in here, reusable as-is.
+export function assertRespondable(quote: InstanceType<typeof Quote>) {
     if (quote.status === "draft") throw new BadRequestError("This quote hasn't been sent yet.", "QUOTE_NOT_SENT");
     if (quote.status === "cancelled") throw new BadRequestError("This quote has been cancelled.", "QUOTE_CANCELLED");
     if (quote.status === "accepted") throw new BadRequestError("This quote has already been accepted.", "QUOTE_ACCEPTED");
@@ -732,12 +733,18 @@ const respondSchema = z
     })
     .strict();
 
-// POST /quotes/public/:token/respond — the client accepting or declining.
-export const respondToPublicQuote: MiddlewareFn = async (req, res) => {
-    const data = parseOrThrow(respondSchema, req.body);
-    const quote = await findQuoteByToken(req.params.token);
-    assertRespondable(quote);
-
+// Shared accept/decline mutation + side-effects (status flip, best-effort
+// lead-to-client conversion, best-effort deposit invoice, best-effort
+// creator/thank-you notifications) — called by both the unauthenticated
+// public-token flow below and portalController.ts's authenticated portal
+// flow, so neither duplicates this. name/email differ by caller: the
+// public form has the visitor re-type them (no real account exists on
+// that path); the portal passes the real logged-in User's own fullname/
+// email instead of letting them re-type their own identity.
+export async function applyQuoteResponse(
+    quote: InstanceType<typeof Quote>,
+    data: { action: "accept" | "decline"; name: string; email: string; declineReason?: string }
+) {
     if (data.action === "accept") {
         quote.status = "accepted";
         quote.acceptedAt = new Date();
@@ -826,6 +833,27 @@ export const respondToPublicQuote: MiddlewareFn = async (req, res) => {
             customMessage: quote.thankYouMessage || undefined,
         }).catch(err => console.error("sendQuoteThankYouEmail failed:", err));
     }
+}
+
+// POST /quotes/public/:token/respond — the client accepting or declining.
+export const respondToPublicQuote: MiddlewareFn = async (req, res) => {
+    const data = parseOrThrow(respondSchema, req.body);
+    const quote = await findQuoteByToken(req.params.token);
+    assertRespondable(quote);
+    // Rebuilt field-by-field rather than passed as `data` directly —
+    // parseOrThrow<T>'s generic return apparently widens every field to
+    // optional for applyQuoteResponse's stricter parameter type (visible
+    // even through an explicit `as z.infer<typeof respondSchema>` cast on
+    // `data` itself), a pre-existing inference quirk that never surfaced
+    // while every other caller only ever did property access on the
+    // result. Safe: respondSchema.parse already guarantees these are
+    // present or parseOrThrow would have thrown first.
+    await applyQuoteResponse(quote, {
+        action: data.action,
+        name: data.name,
+        email: data.email,
+        declineReason: data.declineReason,
+    });
 
     res.status(StatusCodes.OK).json({ success: true, status: quote.status });
 };

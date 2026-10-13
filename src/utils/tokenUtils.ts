@@ -6,7 +6,11 @@ import mongoose from "mongoose";
 interface Payload {
   user_id: string | mongoose.Types.ObjectId;
   role: string;
-  company_id: string | mongoose.Types.ObjectId
+  company_id: string | mongoose.Types.ObjectId;
+  // Only present for role:"client" tokens — the Client this portal account
+  // is scoped to. Every /portal/* handler derives its scope from this, never
+  // from a client-supplied id.
+  client_id?: string | mongoose.Types.ObjectId;
 }
 
 // Short-lived: only proves identity for API calls. Kept separate from the

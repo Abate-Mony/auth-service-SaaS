@@ -312,6 +312,65 @@ export async function sendInvitationEmail({
   });
 }
 
+const CLIENT_ROLE_LABELS: Record<string, string> = {
+  owner: "Owner",
+  manager: "Manager",
+  booking: "Booking",
+  billing: "Billing",
+  viewer: "Viewer",
+};
+
+/** Sent to a business customer's contact when staff invites them to the
+ *  client portal — the recipient represents the CLIENT business, not the
+ *  tenant sending the email, so the copy is worded around that. */
+export async function sendClientPortalInvitationEmail({
+  email,
+  fullname,
+  companyName,
+  clientName,
+  inviterName,
+  clientRole,
+  invitationToken,
+  company,
+}: {
+  email: string;
+  fullname?: string;
+  companyName: string;
+  clientName: string;
+  inviterName: string;
+  clientRole: string;
+  invitationToken: string;
+  company: CompanyRef;
+}) {
+  const greeting = fullname ? fullname.split(" ")[0] : "there";
+  const roleLabel = CLIENT_ROLE_LABELS[clientRole] ?? clientRole;
+  const link = `${process.env.CLIENT_PORTAL_URL}/invite/${encodeURIComponent(invitationToken)}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${greeting}, ${inviterName} from ${companyName} invited you to access the
+      <strong>${clientName}</strong> portal as ${roleLabel}.
+    </p>
+
+    ${button(link, "Create your account")}
+
+    <p style="margin:0;font-size:13px;color:#94A3B8;">
+      This invitation expires in 7 days. If you weren't expecting this, you can ignore this email.
+    </p>`;
+
+  await sendCompanyEmail({
+    company,
+    to: email,
+    subject: `You've been invited to the ${clientName} portal`,
+    text:
+      `Hi ${greeting},\n\n` +
+      `${inviterName} from ${companyName} invited you to access the ${clientName} portal as ${roleLabel}.\n\n` +
+      `Create your account: ${link}\n\n` +
+      `This invitation expires in 7 days. If you weren't expecting this, you can ignore this email.`,
+    html: layout({ heading: `You're invited to the ${clientName} portal`, body }),
+  });
+}
+
 export async function sendVerificationEmail({
   email,
   fullname,
@@ -351,13 +410,21 @@ export async function sendPasswordResetEmail({
   email,
   fullname,
   resetToken,
+  isPortalAccount,
 }: {
   email: string;
   fullname: string;
   resetToken: string;
+  // A client-portal account's reset link must land on the portal app
+  // (its own domain/branding/post-reset destination), never the staff
+  // app — resetPassword itself is role-agnostic, so without this a
+  // client would otherwise always be sent to the wrong app.
+  isPortalAccount?: boolean;
 }) {
   const firstName = fullname.split(" ")[0];
-  const link = `${process.env.CLIENT_URL}/auth/reset-password?token=${resetToken}`;
+  const link = isPortalAccount
+    ? `${process.env.CLIENT_PORTAL_URL}/reset-password/${resetToken}`
+    : `${process.env.CLIENT_URL}/auth/reset-password?token=${resetToken}`;
 
   const body = `
     <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
@@ -1181,6 +1248,49 @@ export async function sendShiftTimeChanged({
   });
 }
 
+/** Sent to a worker whose assignment was cancelled along with the job —
+ *  closes a pre-existing gap where cancellation sent no notice at all. */
+export async function sendShiftCancelled({
+  worker,
+  job,
+  reason,
+  company,
+}: {
+  worker: { email: string; fullname: string };
+  job: ShiftJob;
+  reason?: string;
+  company: CompanyRef;
+}) {
+  const firstName = worker.fullname.split(" ")[0];
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, a shift you were on has been cancelled.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Was", `${when}, ${job.startTime} – ${job.endTime}`)}
+      ${detailRow("Location", job.address ? `${job.location}, ${job.address}` : job.location)}
+      ${reason ? detailRow("Reason", reason) : ""}
+    </table>`;
+
+  await sendCompanyEmail({
+    company,
+    to: worker.email,
+    subject: `Shift cancelled: ${job.title}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `A shift you were on has been cancelled.\n\n` +
+      `Job: ${job.title}\n` +
+      `Was: ${when}, ${job.startTime} – ${job.endTime}\n` +
+      `Location: ${job.location}` +
+      `${reason ? `\nReason: ${reason}` : ""}`,
+    html: layout({ heading: "Shift cancelled", body }),
+  });
+}
+
 // Shared by sendQuoteRequestSubmittedEmail/sendQuoteRequestUnaddressedEmail
 // below — same facts, just a different heading/urgency depending on
 // whether this is the first notice or a nobody's-looked-at-this-yet nudge.
@@ -1285,5 +1395,167 @@ export async function sendQuoteRequestUnaddressedEmail({
       `${estimateTotal != null ? `\nEstimated total: ${estimateTotal.toFixed(2)}` : ""}\n\n` +
       `View request: ${absoluteLink}`,
     html: layout({ heading: "A quote request is still waiting", body }),
+  });
+}
+
+/** Sent to a company's staff when a client-portal user submits a new
+ *  booking request. */
+export async function sendBookingRequestSubmittedEmail({
+  staffEmail,
+  requesterName,
+  service,
+  link,
+  company,
+}: {
+  staffEmail: string;
+  requesterName: string;
+  service: string;
+  link: string;
+  company: CompanyRef;
+}) {
+  const absoluteLink = `${process.env.CLIENT_URL}${link}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      ${requesterName} requested a new booking for ${service}.
+    </p>
+
+    ${button(absoluteLink, "Review request")}`;
+
+  await sendCompanyEmail({
+    company,
+    to: staffEmail,
+    subject: `New booking request — ${requesterName} (${service})`,
+    text:
+      `${requesterName} requested a new booking for ${service}.\n\n` +
+      `Review request: ${absoluteLink}`,
+    html: layout({ heading: "New booking request", body }),
+  });
+}
+
+/** Sent to the client-portal user who submitted a booking request, once
+ *  staff declines it. */
+export async function sendBookingRequestDeclinedEmail({
+  email,
+  fullname,
+  service,
+  preferredDate,
+  reviewNotes,
+  company,
+}: {
+  email: string;
+  fullname: string;
+  service: string;
+  preferredDate: Date | string;
+  reviewNotes?: string;
+  company: CompanyRef;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const when = dayjs(preferredDate).tz(TZ).format("D MMMM YYYY");
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, your booking request for ${service} on ${when} wasn't able to go ahead.
+    </p>
+
+    ${reviewNotes
+      ? `<table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+          ${detailRow("Note", reviewNotes)}
+        </table>`
+      : ""
+    }`;
+
+  await sendCompanyEmail({
+    company,
+    to: email,
+    subject: `Your booking request for ${service} was declined`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `Your booking request for ${service} on ${when} wasn't able to go ahead.` +
+      `${reviewNotes ? `\n\nNote: ${reviewNotes}` : ""}`,
+    html: layout({ heading: "Booking request declined", body }),
+  });
+}
+
+/** Sent to staff when a client-portal user requests a reschedule or
+ *  cancellation on an existing booking. */
+export async function sendJobChangeRequestSubmittedEmail({
+  staffEmail,
+  requesterName,
+  jobTitle,
+  type,
+  link,
+  company,
+}: {
+  staffEmail: string;
+  requesterName: string;
+  jobTitle: string;
+  type: "reschedule" | "cancel";
+  link: string;
+  company: CompanyRef;
+}) {
+  const absoluteLink = `${process.env.CLIENT_URL}${link}`;
+  const verb = type === "reschedule" ? "reschedule" : "cancel";
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      ${requesterName} requested to ${verb} "${jobTitle}".
+    </p>
+
+    ${button(absoluteLink, "Review request")}`;
+
+  await sendCompanyEmail({
+    company,
+    to: staffEmail,
+    subject: `${type === "reschedule" ? "Reschedule" : "Cancellation"} request — ${requesterName} (${jobTitle})`,
+    text:
+      `${requesterName} requested to ${verb} "${jobTitle}".\n\n` +
+      `Review request: ${absoluteLink}`,
+    html: layout({ heading: `New ${verb} request`, body }),
+  });
+}
+
+/** Sent to the client-portal user who submitted a reschedule/cancel
+ *  request, once staff declines it. */
+export async function sendJobChangeRequestDeclinedEmail({
+  email,
+  fullname,
+  type,
+  originalDate,
+  reviewNotes,
+  company,
+}: {
+  email: string;
+  fullname: string;
+  type: "reschedule" | "cancel";
+  originalDate: Date | string;
+  reviewNotes?: string;
+  company: CompanyRef;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const when = dayjs(originalDate).tz(TZ).format("D MMMM YYYY");
+  const verb = type === "reschedule" ? "reschedule" : "cancellation";
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, your ${verb} request for the booking on ${when} wasn't able to go ahead.
+    </p>
+
+    ${reviewNotes
+      ? `<table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+          ${detailRow("Note", reviewNotes)}
+        </table>`
+      : ""
+    }`;
+
+  await sendCompanyEmail({
+    company,
+    to: email,
+    subject: `Your ${verb} request wasn't able to go ahead`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `Your ${verb} request for the booking on ${when} wasn't able to go ahead.` +
+      `${reviewNotes ? `\n\nNote: ${reviewNotes}` : ""}`,
+    html: layout({ heading: `${verb[0].toUpperCase()}${verb.slice(1)} request declined`, body }),
   });
 }

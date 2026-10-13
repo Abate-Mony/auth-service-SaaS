@@ -31,11 +31,15 @@ const REFRESH_TOKEN_COOKIE_MS = (Number(process.env.REFRESH_TOKEN_EXPIRES_IN_DAY
 // Issues an access + refresh token pair for `user`, persists the refresh
 // token's hash on the user doc (so it can be looked up/revoked later), and
 // sets both as httpOnly cookies on `res`.
-export const issueTokens = async (user: mongoose.Document & { _id: any; role: string; company?: any }, res: import("express").Response) => {
+export const issueTokens = async (user: mongoose.Document & { _id: any; role: string; company?: any; client?: any }, res: import("express").Response) => {
   const accessToken = createAccessToken({
     user_id: user._id.toString(),
     role: user.role,
     company_id: user.company as unknown as string,
+    // Only role:"client" users ever have this set (enforced by
+    // userModel.ts's pre("validate") hook) — every /portal/* route derives
+    // its scope from this, never from anything client-supplied.
+    ...(user.role === "client" && user.client ? { client_id: user.client.toString() } : {}),
   });
   const { token: refreshToken, hash, expiresAt } = createRefreshToken();
 
@@ -116,6 +120,13 @@ export const login: MiddlewareFn = async (req, res) => {
   const user = await User.findOne({ email: email }).select("+password");
   const isValidUser = user && (await comparePassword(password, user.password));
   if (!isValidUser) throw new UnauthenticatedError("invalid credentials");
+
+  // This is the staff app — a client-portal account authenticates through
+  // /client-auth/login instead (clientAuthController.ts). Same reasoning
+  // as mobileLogin's worker-only gate just below, opposite direction.
+  if (user.role === "client") {
+    throw new UnauthorizedError("Please sign in through the client portal.");
+  }
 
   await issueTokens(user, res);
 
@@ -242,7 +253,12 @@ export const refresh: MiddlewareFn = async (req, res) => {
   const hash = hashRefreshToken(refreshToken);
   const user = await User.findOne({ refreshToken: hash }).select("+refreshToken +refreshTokenExpiresAt");
 
-  if (!user || !user.refreshTokenExpiresAt || user.refreshTokenExpiresAt < new Date()) {
+  // isActive is checked here (not just at login) because authenticateUser
+  // is purely stateless JWT verification with no DB lookup — disabling a
+  // user doesn't invalidate an already-issued access token, only blocks
+  // it from being renewed past its ~15-minute lifetime. This is where
+  // "disabled" actually takes effect, for staff and portal users alike.
+  if (!user || !user.refreshTokenExpiresAt || user.refreshTokenExpiresAt < new Date() || !user.isActive) {
     res.cookie("token", "logout", setCookies());
     res.cookie("refreshToken", "logout", setCookies());
     throw new UnauthenticatedError("authentication invalid");
@@ -321,7 +337,7 @@ export const forgotPassword: MiddlewareFn = async (req, res) => {
     user.passwordResetExpiresAt = expiresAt;
     await user.save();
 
-    sendPasswordResetEmail({ email: user.email, fullname: user.fullname, resetToken }).catch(err =>
+    sendPasswordResetEmail({ email: user.email, fullname: user.fullname, resetToken, isPortalAccount: user.role === "client" }).catch(err =>
       console.error(`Failed to send password reset email to ${user.email}:`, err)
     );
   }

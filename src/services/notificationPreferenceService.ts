@@ -98,6 +98,12 @@ function getDefaultPreference(
       inApp: true,
     },
 
+    shift_cancelled: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
+
     quote_request_submitted: {
       email: true,
       push: true,
@@ -105,6 +111,30 @@ function getDefaultPreference(
     },
 
     quote_request_unaddressed: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
+
+    booking_request_submitted: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
+
+    booking_request_declined: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
+
+    job_change_request_submitted: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
+
+    job_change_request_declined: {
       email: true,
       push: true,
       inApp: true,

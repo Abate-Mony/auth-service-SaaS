@@ -1,6 +1,6 @@
 import { NOTIFICATION_CHANNELS, NOTIFICATION_EVENTS } from "./constant.js";
 
-export type USER_ROLES  = 'owner' | 'admin' | 'user'|"moderator" | "worker" | "manager";
+export type USER_ROLES  = 'owner' | 'admin' | 'user'|"moderator" | "worker" | "manager" | "client";
 export type JobStatusNotificationType =
   | "accept-job"
   | "reject-job"

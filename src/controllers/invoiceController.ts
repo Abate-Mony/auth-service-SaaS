@@ -462,7 +462,8 @@ export const updateInvoiceStatusHandler: MiddlewareFn = async (req, res) => {
 // Shared by sendInvoiceHandler and downloadInvoicePdf so the PDF a manager
 // downloads to "see what it looks like" is built from the exact same code
 // path as the one that actually gets emailed — never two renderers that
-// could quietly drift apart.
+// could quietly drift apart. Exported for portalController.ts's
+// client-scoped PDF download too, same reasoning.
 //
 // persistTemplate controls whether resolving the template (when the
 // invoice has no snapshot yet) gets saved onto the invoice or stays a
@@ -473,7 +474,7 @@ export const updateInvoiceStatusHandler: MiddlewareFn = async (req, res) => {
 //     keep reflecting the current company default on every download, not
 //     freeze on whichever one happened to be picked the first time someone
 //     clicked "Download" while still deciding.
-async function buildInvoicePdfDocument(
+export async function buildInvoicePdfDocument(
     invoice: InstanceType<typeof Invoice>,
     companyId: mongoose.Types.ObjectId,
     opts: { persistTemplate: boolean; explicitTemplateId?: string }

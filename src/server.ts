@@ -15,6 +15,8 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import { v2 as cloudinary } from 'cloudinary';
 import authRouter from "./routes/authRouter.js";
+import clientAuthRouter from "./routes/clientAuthRouter.js";
+import portalRouter from "./routes/portalRouter.js";
 import userRouter from "./routes/userRouter.js";
 import Database from "./db/connections.js";
 import errorHandlerMiddleware from "./middleware/errorHandlerMiddleware.js";
@@ -29,6 +31,8 @@ import aiRouter from "./routes/aiRouter.js";
 import documentRouter from "./routes/documentRouter.js";
 import workerRouter from "./routes/workerRouter.js"
 import timeOffRouter from "./routes/timeOffRouter.js"
+import bookingRequestRouter from "./routes/bookingRequestRouter.js"
+import jobChangeRequestRouter from "./routes/jobChangeRequestRouter.js"
 import availabilityRouter from "./routes/availabilityRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
 import companyRouter from "./routes/companyRouter.js"
@@ -85,7 +89,9 @@ const ALLOWED_ORIGINS = [
   "https://app.innoshifts.com",
   "https://app.onclockly.com",
   "http://localhost:3000",
-  "https://quotes.onclockly.com"
+  "https://quotes.onclockly.com",
+  "https://portal.onclockly.com",
+  "http://localhost:5174"
 ];
 
 app.use(
@@ -111,6 +117,15 @@ app.use(
 );
 // DONE WITH AUTH DOCUMENTATION ON POSTMAN
 app.use(`/api/v1/auth`, authRouter);
+// Client-portal auth is deliberately a separate router/endpoint, not a
+// branch inside authRouter — a client token must never be issuable from
+// the same code path a staff login goes through. See
+// clientAuthController.ts.
+app.use(`/api/v1/client-auth`, clientAuthRouter);
+// Mixes public (invite validate/accept) and authenticated (/me) routes —
+// same reasoning as invitationRouter.ts, middleware applied per-route
+// inside the router rather than at this mount point.
+app.use(`/api/v1/portal`, portalRouter);
 // Public — the same static plan catalog every visitor sees, no company/user
 // data involved. Exists so the public marketing page's pricing section can
 // show real, enforced numbers (see utils/constant.ts's own note on this)
@@ -133,6 +148,16 @@ app.use("/api/v1/time-off",
   authenticateUser,
   loadRestriction, enforceCompanyStatus,
   timeOffRouter
+)
+app.use("/api/v1/booking-requests",
+  authenticateUser,
+  loadRestriction, enforceCompanyStatus,
+  bookingRequestRouter
+)
+app.use("/api/v1/job-change-requests",
+  authenticateUser,
+  loadRestriction, enforceCompanyStatus,
+  jobChangeRequestRouter
 )
 app.use(
   "/api/v1/notification-preferences",

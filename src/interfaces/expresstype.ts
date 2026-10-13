@@ -5,7 +5,9 @@ import { UnauthenticatedError } from "../errors/customErrors.js";
 export interface IReqUser {
   user_id: string | mongoose.Types.ObjectId;
   role: string;
-  company_id: string | mongoose.Types.ObjectId
+  company_id: string | mongoose.Types.ObjectId;
+  // Only present for role:"client" requests — see tokenUtils.ts's Payload.
+  client_id?: string | mongoose.Types.ObjectId;
 }
 
 declare global {

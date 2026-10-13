@@ -39,8 +39,29 @@ const UserSchema = new Schema(
 
     role: {
       type: String,
-      enum: ["owner", "admin", "manager", "worker"],
+      enum: ["owner", "admin", "manager", "worker","client"],
       default: "worker",
+    },
+
+    // Only set when role === "client" — links a portal-login account back
+    // to the business/customer record it manages. Multiple User docs with
+    // role:"client" can share the same client (an owner/manager/booking/
+    // billing/viewer team, not one shared login) — see clientRole below.
+    // Enforced together with clientRole by the pre("validate") hook.
+    client: {
+      type: Schema.Types.ObjectId,
+      ref: "Client",
+      default: null,
+    },
+
+    // Portal-side permission level — distinct from `role`, which only ever
+    // says "this is a client-portal account," not what it can do within
+    // the portal. Capability enforcement per level is Milestone 2+; this
+    // milestone only validates the value is one of these five.
+    clientRole: {
+      type: String,
+      enum: ["owner", "manager", "booking", "billing", "viewer"],
+      default: null,
     },
     platformRole: {
       type: String,
@@ -167,7 +188,25 @@ UserSchema.methods.toJSON = function () {
   delete obj.password;
   return obj;
 };
-// UserSchema.pre("validate",async function(){
+
+// A role:"client" account must be a complete portal identity — both
+// `client` (who they represent) and `clientRole` (what they can do) — or
+// Milestone 2's capability checks would have to special-case a half-set
+// account. Any other role never carries these fields, so a role change
+// away from "client" can't leave a stale client/clientRole behind.
+UserSchema.pre("validate", function () {
+  if (this.role === "client") {
+    if (!this.client) {
+      throw new Error("Client users must be linked to a client");
+    }
+    if (!this.clientRole) {
+      throw new Error("Client users must have a client role");
+    }
+  } else {
+    this.client = undefined;
+    this.clientRole = undefined;
+  }
+});
 
 export type User = InferSchemaType<typeof UserSchema>;
 export default mongoose.model("User", UserSchema);
