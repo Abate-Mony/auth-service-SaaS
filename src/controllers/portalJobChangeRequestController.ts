@@ -78,7 +78,11 @@ function notifyStaffOfJobChangeRequest(
         .catch(err => console.error(`Failed to notify staff of job change request:`, err));
 }
 
-async function loadEligibleJob(jobId: string, req: any) {
+// Express 5's route-param typing allows string[] (repeated-name segments,
+// which this route never actually has) alongside the normal string —
+// accepted here so the two call sites below can pass req.params.id as-is,
+// same reasoning as requireObjectId's assertion in platformController.ts.
+async function loadEligibleJob(jobId: string | string[], req: any) {
     const job = await Job.findOne({
         _id: jobId,
         client: req.user.client_id,
