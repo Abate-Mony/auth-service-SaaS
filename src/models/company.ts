@@ -72,6 +72,31 @@ const CompanySchema = new Schema(
       default: null,
     },
 
+    // ── Stripe billing ──────────────────────────────────────────────────
+    // Populated once a company's admin completes their first Checkout
+    // Session (see controllers/billingController.ts) — null for every
+    // company still on Free that's never entered real billing. `plan`
+    // above stays the single field every enforcement check (planLimits.ts)
+    // reads; everything below exists only to drive the Billing Portal and
+    // webhook sync, never consulted by assertCanAddWorker/
+    // assertCanCreateJob/assertFeatureEnabled.
+    stripeCustomerId: { type: String, default: null, index: true },
+    stripeSubscriptionId: { type: String, default: null, index: true },
+    // Mirrors the Stripe Subscription's own `status` verbatim (active,
+    // past_due, canceled, incomplete, incomplete_expired, unpaid) —
+    // deliberately not re-modeled as a narrower enum, so a Stripe-side
+    // status this app hasn't explicitly handled yet still gets stored
+    // rather than rejected. `plan` is what gates access; this is
+    // informational/billing-UI only (e.g. showing a "payment failed" banner).
+    subscriptionStatus: { type: String, default: null },
+    // Current billing period end, straight off the Stripe subscription —
+    // shown in the UI ("renews on ..." / "access until ...").
+    currentPeriodEnd: { type: Date, default: null },
+    // True between the Portal's "cancel" action and the subscription's
+    // actual end — the company keeps paid-tier access (plan untouched)
+    // until customer.subscription.deleted actually flips plan to "free".
+    cancelAtPeriodEnd: { type: Boolean, default: false },
+
     // ── Time & attendance ──────────────────────────────────────────────
     clockInGraceMinutes: { type: Number, default: 30 },
     lateThresholdMinutes: { type: Number, default: 10 },

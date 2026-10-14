@@ -10,6 +10,7 @@ import {
     updateCompanySettings,
     uploadCompanyLogo,
 } from "../controllers/companyController.js";
+import { createCheckoutSession, createPortalSession } from "../controllers/billingController.js";
 import {
     connectEmailDomain,
     getEmailSettings,
@@ -79,5 +80,8 @@ router.get("/plans", getPlanCatalog);
 router.route("/plan")
     .get(getCompanyPlan)
     .patch(authorizePermissions("admin"), updateCompanyPlan);
+
+router.post("/plan/checkout-session", authorizePermissions("admin"), createCheckoutSession);
+router.post("/plan/portal-session", authorizePermissions("admin"), createPortalSession);
 
 export default router;

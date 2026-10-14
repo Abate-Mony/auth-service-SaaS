@@ -109,6 +109,14 @@ export interface PlanCatalogEntry {
   // Perks this app doesn't gate on (yet) — CSV export, support tier, etc.
   // Layered on top of the PLAN_LIMITS-derived bullets, never replacing them.
   extraFeatures: string[];
+  // Stripe Price ids for this tier's two billing intervals — only ever set
+  // for starter/professional (free has no checkout, enterprise is
+  // contact-sales only). Populated from env below, never hardcoded, never
+  // included in getPlanCatalog's public response (companyController.ts) —
+  // server-internal, read only by billingController.ts's checkout-session
+  // creation and its price->plan reverse lookup.
+  stripePriceIdMonthly?: string;
+  stripePriceIdAnnual?: string;
 }
 
 export const PLAN_CATALOG: Record<Plan, PlanCatalogEntry> = {
@@ -153,6 +161,16 @@ export const PLAN_CATALOG: Record<Plan, PlanCatalogEntry> = {
     extraFeatures: ["Multi-site management", "Dedicated account manager", "Custom integrations", "SLA guarantee"],
   },
 };
+
+// Deliberately NOT populated here at module load — ES module imports are
+// hoisted and resolve before server.ts's own dotenv.config() call ever
+// runs, so reading process.env.STRIPE_* at this file's top level would
+// always see undefined regardless of what's actually in .env. These two
+// fields exist on the type for documentation, but billingController.ts
+// (the only consumer — they're never included in getPlanCatalog's public
+// response) reads process.env.STRIPE_PRICE_* directly inside its own
+// functions instead, which only ever run after the server has fully
+// started and dotenv has already loaded.
 // lettinge
 /**
  * Only events that require admin attention should generate email.
