@@ -6,6 +6,7 @@ import { NOTIFICATION_CHANNELS, NOTIFICATION_EVENTS } from "../utils/constant.js
 import { NotificationChannel, NotificationEvent } from "../utils/types.js";
 import NotificationPreferenceModel from "../models/NotificationPreferenceModel.js";
 import { MiddlewareFn } from "../interfaces/expresstype.js";
+import { DEFAULT_EVENT_PREFERENCES } from "../services/notificationPreferenceService.js";
 
 export const getMyNotificationPreferences: MiddlewareFn = async (
     req,
@@ -21,6 +22,22 @@ export const getMyNotificationPreferences: MiddlewareFn = async (
         throw new NotFoundError(
             "Notification preferences not found."
         );
+    }
+
+    // Backfill any event missing from this document — the schema's
+    // per-field defaults only apply to documents created after that event
+    // existed, so a preferences doc saved before e.g. shift_time_changed
+    // was added has no entry for it. The frontend renders one row per
+    // NOTIFICATION_EVENT unconditionally, so a missing key here previously
+    // crashed the whole preferences screen for any worker with an older
+    // document.
+    for (const event of NOTIFICATION_EVENTS) {
+        if (!preferences.events?.[event]) {
+            preferences.events = {
+                ...preferences.events,
+                [event]: DEFAULT_EVENT_PREFERENCES[event],
+            } as typeof preferences.events;
+        }
     }
 
     res.status(StatusCodes.OK).json({

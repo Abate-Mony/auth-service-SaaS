@@ -4,15 +4,16 @@ import NotificationPreferenceModel from "../models/NotificationPreferenceModel.j
 import { NotificationChannel, NotificationEvent } from "../utils/types.js";
 
 
-function getDefaultPreference(
-  event: NotificationEvent,
-  channel: NotificationChannel
-): boolean {
-
-  const defaults: Record<
-    NotificationEvent,
-    Record<NotificationChannel, boolean>
-  > = {
+// Shared source of truth for an event's default channel preferences —
+// used both for a user with no stored preference yet (see shouldNotify
+// below) and to backfill any event missing from an existing preferences
+// document (see getMyNotificationPreferences), since the schema's own
+// per-field defaults only apply to documents created after that event was
+// added, never to ones that already existed.
+export const DEFAULT_EVENT_PREFERENCES: Record<
+  NotificationEvent,
+  Record<NotificationChannel, boolean>
+> = {
 
     job_assigned: {
       email: true,
@@ -141,7 +142,11 @@ function getDefaultPreference(
     },
   };
 
-  return defaults[event][channel];
+function getDefaultPreference(
+  event: NotificationEvent,
+  channel: NotificationChannel
+): boolean {
+  return DEFAULT_EVENT_PREFERENCES[event][channel];
 }
 export async function shouldNotify(
   userId: string,
