@@ -38,6 +38,7 @@ import activityLogRouter from "./routes/activity_logs_router.js"
 import companyRouter from "./routes/companyRouter.js"
 import externalRouter from "./routes/externalRouter.js"
 import { getPlanCatalog } from "./controllers/companyController.js"
+import { stripeWebhookHandler } from "./controllers/billingController.js"
 import cron from "node-cron";
 import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGeneration.js";
 import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
@@ -71,6 +72,19 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
   contentSecurityPolicy: false,
 }));
+
+// Must be mounted BEFORE the global express.json() below — Stripe's
+// signature verification needs the exact raw bytes of the request body,
+// which express.json() would already have parsed into an object by the
+// time any route handler saw it. Unauthenticated by design (Stripe calls
+// this directly, not a browser); verification is the signature check
+// inside stripeWebhookHandler itself, not a session.
+app.post(
+  "/api/v1/stripe/webhook",
+  express.raw({ type: "application/json" }),
+  stripeWebhookHandler
+);
+
 app.use(express.json());
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

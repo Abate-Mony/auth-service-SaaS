@@ -235,12 +235,10 @@ export const rotatePublicQuoteLink: MiddlewareFn = async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 // Plan
 // ─────────────────────────────────────────────────────────────
-// No payment processing behind this yet — changing plan is just setting the
-// field. Real billing (Stripe or similar, actually charging on upgrade) is
-// a separate, larger piece of work; this only makes the plan itself real
-// enough that its limits (see planLimits.ts) mean something.
-
-const planSchema = z.object({ plan: z.enum(PLANS) }).strict();
+// Real Stripe billing now lives in billingController.ts (checkout/portal
+// sessions + webhook sync) — this section keeps the public catalog read
+// and the own-plan read, plus the narrowed free-only downgrade endpoint
+// (see updateCompanyPlan's own comment below).
 
 // GET /companies/plans — the full pricing-page catalog for all four tiers.
 // Every number and feature bullet here is composed from PLAN_LIMITS, never
@@ -277,7 +275,9 @@ export const getPlanCatalog: MiddlewareFn = async (_req, res) => {
 };
 
 export const getCompanyPlan: MiddlewareFn = async (req, res) => {
-    const company = await Company.findById(getReqUser(req).company_id).select("plan maxWorkers").lean();
+    const company = await Company.findById(getReqUser(req).company_id)
+        .select("plan maxWorkers stripeCustomerId subscriptionStatus currentPeriodEnd cancelAtPeriodEnd")
+        .lean();
     if (!company) throw new NotFoundError("Company not found.");
 
     const plan = company.plan as keyof typeof PLAN_LIMITS;
@@ -286,8 +286,21 @@ export const getCompanyPlan: MiddlewareFn = async (req, res) => {
         plan,
         maxWorkers: company.maxWorkers ?? PLAN_LIMITS[plan].maxWorkers,
         limits: PLAN_LIMITS[plan],
+        hasStripeCustomer: !!company.stripeCustomerId,
+        subscriptionStatus: company.subscriptionStatus ?? null,
+        currentPeriodEnd: company.currentPeriodEnd ?? null,
+        cancelAtPeriodEnd: company.cancelAtPeriodEnd ?? false,
     });
 };
+
+// Real billing (billingController.ts) now owns every path that grants a
+// paid tier — this endpoint only ever accepts "free", and only once Stripe
+// confirms there's nothing live to protect. A company with a live (non-
+// cancelled) Stripe subscription must downgrade through the Billing
+// Portal's own cancel flow instead, so Stripe's billing status and
+// Company.plan stay in sync — self-assigning "free" here while Stripe kept
+// billing them would silently desync the two.
+const planSchema = z.object({ plan: z.literal("free") }).strict();
 
 export const updateCompanyPlan: MiddlewareFn = async (req, res) => {
     let data: z.infer<typeof planSchema>;
@@ -300,16 +313,19 @@ export const updateCompanyPlan: MiddlewareFn = async (req, res) => {
         throw err;
     }
 
-    // Downgrading below the current worker count is allowed here — there's
-    // no payment step to gate it on yet, so the only real consequence is
-    // that no NEW worker can be added until the count is back under the
-    // new plan's limit (assertCanAddWorker enforces that going forward).
-    const company = await Company.findByIdAndUpdate(
-        getReqUser(req).company_id,
-        { plan: data.plan },
-        { new: true }
-    ).select("plan maxWorkers");
+    const company = await Company.findById(getReqUser(req).company_id)
+        .select("plan maxWorkers stripeSubscriptionId subscriptionStatus");
     if (!company) throw new NotFoundError("Company not found.");
+
+    const hasLiveSubscription = company.stripeSubscriptionId
+        && company.subscriptionStatus
+        && !["canceled", "incomplete_expired"].includes(company.subscriptionStatus);
+    if (hasLiveSubscription) {
+        throw new BadRequestError("Cancel your subscription from Manage Billing to move to the Free plan.");
+    }
+
+    company.plan = data.plan;
+    await company.save();
 
     res.status(StatusCodes.OK).json({ success: true, plan: company.plan });
 };
