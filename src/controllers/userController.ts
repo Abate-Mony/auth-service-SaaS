@@ -192,7 +192,7 @@ export const getAllUser: MiddlewareFn = async (
         },
       },
     },
-    { $project: { password: 0, refreshToken: 0, stats: 0 } },
+    { $project: { password: 0, refreshToken: 0, sessions: 0, stats: 0 } },
   ]);
   const numberOfPage = Math.ceil(totalUsers / limit);
 

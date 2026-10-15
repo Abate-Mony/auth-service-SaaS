@@ -106,6 +106,29 @@ const UserSchema = new Schema(
 
     lastLogin: Date,
 
+    // One entry per logged-in device/session — replaces the old single-slot
+    // refreshToken/refreshTokenExpiresAt below, which could only ever hold
+    // ONE session at a time (logging in anywhere else silently invalidated
+    // every other device). issueTokens() pushes a new entry on login and
+    // rotates (pull+push) the matching entry on refresh, capped at the 10
+    // most recent sessions per user. See authControler.ts.
+    sessions: {
+      type: [
+        {
+          tokenHash: { type: String, required: true },
+          expiresAt: { type: Date, required: true },
+          createdAt: { type: Date, default: Date.now },
+        },
+      ],
+      select: false,
+      default: [],
+    },
+
+    // Deprecated — superseded by `sessions` above. Kept only so a refresh
+    // token issued before this field existed still works, via refresh()'s
+    // backward-compatible lookup, instead of being silently logged out by
+    // this deploy. Safe to delete this field (and that lookup branch) once
+    // REFRESH_TOKEN_EXPIRES_IN_DAYS has fully elapsed since this shipped.
     refreshToken: {
       type: String,
       select: false,
@@ -207,6 +230,12 @@ UserSchema.pre("validate", function () {
     this.clientRole = undefined;
   }
 });
+
+// Supports refresh()'s session lookup by token hash — the old single-slot
+// refreshToken field this replaces had no index at all (an unindexed
+// collection scan on every refresh/logout), so this is a net improvement,
+// not just carrying the gap forward into the new shape.
+UserSchema.index({ "sessions.tokenHash": 1 });
 
 export type User = InferSchemaType<typeof UserSchema>;
 export default mongoose.model("User", UserSchema);

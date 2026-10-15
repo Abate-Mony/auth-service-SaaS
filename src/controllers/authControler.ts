@@ -28,10 +28,27 @@ import NotificationPreferenceModel from "../models/NotificationPreferenceModel.j
 const ACCESS_TOKEN_COOKIE_MS = 15 * 60 * 1000;
 const REFRESH_TOKEN_COOKIE_MS = (Number(process.env.REFRESH_TOKEN_EXPIRES_IN_DAYS) || 30) * 24 * 60 * 60 * 1000;
 
+// Session cap — bounds how many devices/sessions one user can have live at
+// once, enforced via $slice below (MongoDB's own atomic "keep last N"
+// array trim, not a separate cleanup step). Covers a phone plus a few
+// browsers/tabs with headroom; easy to adjust.
+const MAX_SESSIONS_PER_USER = 10;
+
 // Issues an access + refresh token pair for `user`, persists the refresh
-// token's hash on the user doc (so it can be looked up/revoked later), and
-// sets both as httpOnly cookies on `res`.
-export const issueTokens = async (user: mongoose.Document & { _id: any; role: string; company?: any; client?: any }, res: import("express").Response) => {
+// token's hash as one entry in the user's `sessions` array (so multiple
+// devices can be logged in independently — see userModel.ts), and sets
+// both as httpOnly cookies on `res`.
+//
+// `replaceSessionHash` is set only when rotating an EXISTING session (from
+// refresh() below) — it removes that one entry before pushing the new one,
+// so a refresh replaces its own slot instead of accumulating a new array
+// entry every time. Every fresh-login call site omits it, which is
+// correct: a new login should ADD a session, not replace one.
+export const issueTokens = async (
+  user: mongoose.Document & { _id: any; role: string; company?: any; client?: any },
+  res: import("express").Response,
+  replaceSessionHash?: string
+) => {
   const accessToken = createAccessToken({
     user_id: user._id.toString(),
     role: user.role,
@@ -43,10 +60,26 @@ export const issueTokens = async (user: mongoose.Document & { _id: any; role: st
   });
   const { token: refreshToken, hash, expiresAt } = createRefreshToken();
 
+  // Two separate updateOne calls — MongoDB doesn't allow $pull and $push
+  // on the same array path within a single update document.
+  if (replaceSessionHash) {
+    await User.updateOne(
+      { _id: user._id },
+      { $pull: { sessions: { tokenHash: replaceSessionHash } } }
+    );
+  }
   await User.updateOne(
     { _id: user._id },
-    { refreshToken: hash, refreshTokenExpiresAt: expiresAt }
+    {
+      $push: {
+        sessions: {
+          $each: [{ tokenHash: hash, expiresAt, createdAt: new Date() }],
+          $slice: -MAX_SESSIONS_PER_USER,
+        },
+      },
+    }
   );
+
   res.cookie("refreshToken", refreshToken, setCookies(REFRESH_TOKEN_COOKIE_MS));
   res.cookie("token", accessToken, setCookies(ACCESS_TOKEN_COOKIE_MS));
   return {
@@ -251,20 +284,41 @@ export const refresh: MiddlewareFn = async (req, res) => {
   if (!refreshToken) throw new UnauthenticatedError("authentication invalid");
 
   const hash = hashRefreshToken(refreshToken);
-  const user = await User.findOne({ refreshToken: hash }).select("+refreshToken +refreshTokenExpiresAt");
+
+  // Matches either the current sessions[] shape or the legacy single-slot
+  // refreshToken field — a session issued before the multi-session deploy
+  // still has its hash sitting in the old field, not yet in sessions[].
+  // Matching both here means that deploy doesn't log anyone out; the first
+  // successful refresh below migrates it into sessions[] and clears the
+  // old field. Safe to drop the legacy half of this query once
+  // REFRESH_TOKEN_EXPIRES_IN_DAYS has fully elapsed since that deploy.
+  const user = await User.findOne({
+    $or: [{ refreshToken: hash }, { "sessions.tokenHash": hash }],
+  }).select("+refreshToken +refreshTokenExpiresAt +sessions");
+
+  const matchedSession = user?.sessions?.find((s) => s.tokenHash === hash);
+  const matchedLegacy = user && user.refreshToken === hash;
+  const matchedExpiresAt = matchedSession?.expiresAt ?? (matchedLegacy ? user!.refreshTokenExpiresAt : undefined);
 
   // isActive is checked here (not just at login) because authenticateUser
   // is purely stateless JWT verification with no DB lookup — disabling a
   // user doesn't invalidate an already-issued access token, only blocks
   // it from being renewed past its ~15-minute lifetime. This is where
   // "disabled" actually takes effect, for staff and portal users alike.
-  if (!user || !user.refreshTokenExpiresAt || user.refreshTokenExpiresAt < new Date() || !user.isActive) {
+  if (!user || !matchedExpiresAt || matchedExpiresAt < new Date() || !user.isActive) {
     res.cookie("token", "logout", setCookies());
     res.cookie("refreshToken", "logout", setCookies());
     throw new UnauthenticatedError("authentication invalid");
   }
 
-  const { accessToken, refreshToken: newRefreshToken } = await issueTokens(user, res);
+  const { accessToken, refreshToken: newRefreshToken } = await issueTokens(user, res, hash);
+
+  // The matched session came from the deprecated single-slot field — this
+  // is the migration: clear it now that the same session lives in
+  // sessions[] going forward (issueTokens already pushed it there).
+  if (matchedLegacy) {
+    await User.updateOne({ _id: user._id }, { $unset: { refreshToken: "", refreshTokenExpiresAt: "" } });
+  }
 
   // Cookies are set above for web; the body carries the same pair for
   // mobile, which has nowhere else to read a rotated token from.
@@ -365,8 +419,11 @@ export const resetPassword: MiddlewareFn = async (req, res) => {
   user.password = await hashPassword(password);
   user.passwordResetToken = undefined;
   user.passwordResetExpiresAt = undefined;
-  // A password reset invalidates any existing session — force re-login
-  // everywhere rather than leaving a stolen account's refresh token valid.
+  // A password reset invalidates EVERY session — force re-login on every
+  // device rather than leaving a stolen account's refresh tokens valid.
+  // Unlike logout (below), which only ends one session, this intentionally
+  // clears the whole sessions array.
+  user.sessions = [] as any;
   user.refreshToken = undefined;
   user.refreshTokenExpiresAt = undefined;
   await user.save();
@@ -378,11 +435,24 @@ export const resetPassword: MiddlewareFn = async (req, res) => {
 };
 
 export const logout: MiddlewareFn = async (req, res) => {
-  const { refreshToken } = req.cookies;
+  // Web sends it as an httpOnly cookie; mobile has no cookie jar, so it
+  // sends the one it stored in the body instead — same fallback refresh()
+  // already uses. (Previously this only checked the cookie, so mobile
+  // logout silently did nothing server-side.)
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
   if (refreshToken) {
+    const hash = hashRefreshToken(refreshToken);
+    // Only the ONE session being logged out of — not every device, unlike
+    // resetPassword above. $pull removes just the matching sessions[]
+    // entry; $unset also clears the legacy field in case this session was
+    // issued before the multi-session migration and never got the chance
+    // to refresh (and therefore migrate) first.
     await User.updateOne(
-      { refreshToken: hashRefreshToken(refreshToken) },
-      { $unset: { refreshToken: "", refreshTokenExpiresAt: "" } }
+      { $or: [{ refreshToken: hash }, { "sessions.tokenHash": hash }] },
+      {
+        $pull: { sessions: { tokenHash: hash } },
+        $unset: { refreshToken: "", refreshTokenExpiresAt: "" },
+      }
     );
   }
 
