@@ -30,10 +30,18 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      # Strips devDependencies (typescript, @types/*, etc.) out of
+      # node_modules in place, leaving exactly what dist/ needs at runtime.
+      # Done here (full CPU/RAM on the runner) instead of on the droplet —
+      # see the SSH step below for why.
+      - name: Prune devDependencies
+        run: npm prune --omit=dev
+
       - name: Prepare deployment package
         run: |
           mkdir -p deploy
           cp -r dist deploy/dist
+          cp -r node_modules deploy/node_modules
           cp package.json deploy/package.json
           cp package-lock.json deploy/package-lock.json
 
@@ -47,20 +55,21 @@ jobs:
           target: "/var/www/auth-service-SaaS"
           strip_components: 1
 
-      - name: Install production dependencies and restart PM2
+      # The droplet is a 1 vCPU/1GB box — running `npm ci` there used to
+      # regularly hang past this step's timeout and get killed mid-install,
+      # leaving a corrupted node_modules the app would then crash-loop on.
+      # node_modules is now built on the runner and shipped via scp above,
+      # so this step only ever restarts PM2 — nothing here can leave the
+      # droplet in a half-installed state again.
+      - name: Restart PM2
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.DO_HOST }}
           username: ${{ secrets.DO_USER }}
           key: ${{ secrets.DO_SSH_KEY }}
-          command_timeout: 10m
+          command_timeout: 5m
           script: |
             cd /var/www/auth-service-SaaS
-
-            node -v
-            npm -v
-
-            npm ci --omit=dev
 
             pm2 restart auth-service --update-env
 
