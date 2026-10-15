@@ -142,14 +142,22 @@ export async function computeDashboardStats(companyId: unknown) {
       .select("_id")
       .lean(),
 
-    jobModel.findOne({ company: companyIdStr, status: "published" }).then(async job => {
-      if (!job) return null;
-      const assignedCount = await JobAssignment.countDocuments({
-        job: job._id,
-        status: { $in: ["accepted", "in-progress", "completed"] },
-      });
-      return assignedCount === 0 ? job : null;
-    }),
+    // Scoped to today-or-later — a published job whose date has already
+    // passed can never be staffed now, so surfacing it here would leave the
+    // "needs attention" banner permanently stuck on a job nobody can act on.
+    // Sorted soonest-first so the one job surfaced is the most urgent, not
+    // whatever Mongo's natural order happens to return.
+    jobModel
+      .findOne({ company: companyIdStr, status: "published", date: { $gte: todayStart } })
+      .sort({ date: 1 })
+      .then(async job => {
+        if (!job) return null;
+        const assignedCount = await JobAssignment.countDocuments({
+          job: job._id,
+          status: { $in: ["accepted", "in-progress", "completed"] },
+        });
+        return assignedCount === 0 ? job : null;
+      }),
 
     Company.findById(companyId).select("weeklyHoursTarget").lean(),
 
