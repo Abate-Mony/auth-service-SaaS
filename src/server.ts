@@ -9,6 +9,7 @@ import dns from "node:dns";
 dns.setDefaultResultOrder("ipv4first");
 import "express-async-errors";
 import express from "express";
+import mongoose from "mongoose";
 import path, { dirname } from "path";
 import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
@@ -145,6 +146,16 @@ app.use(`/api/v1/portal`, portalRouter);
 // show real, enforced numbers (see utils/constant.ts's own note on this)
 // instead of a second hand-maintained copy of them.
 app.get("/api/v1/plans", getPlanCatalog);
+// Public, unauthenticated — for external uptime monitoring (and manual
+// `curl` checks) to confirm the process is actually serving requests and
+// can reach the database, not just that the port is open.
+app.get("/api/v1/health", (_req, res) => {
+  const dbConnected = mongoose.connection.readyState === 1;
+  res.status(dbConnected ? 200 : 503).json({
+    status: dbConnected ? "ok" : "degraded",
+    db: dbConnected,
+  });
+});
 // DONE WITH USERS DOCUMENTATION ON POSTMAN
 app.use(`/api/v1/users`,
   authenticateUser,
