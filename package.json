@@ -20,6 +20,7 @@
     "platform:grant": "node dist/scripts/grantPlatformRole.js",
     "platform:revoke": "node dist/scripts/revokePlatformRole.js",
     "platform:create-admin": "node dist/scripts/createPlatformAdmin.js",
+    "app-review:demo": "node dist/scripts/createAppReviewDemo.js",
     "sync:notification-indexes": "node dist/scripts/syncNotificationIndexes.js"
   },
   "keywords": [],
