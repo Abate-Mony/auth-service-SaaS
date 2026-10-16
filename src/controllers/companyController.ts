@@ -7,6 +7,7 @@ import { assertFeatureEnabledForCompany } from "../utils/planLimits.js";
 import { PLANS, PLAN_LIMITS, PLAN_CATALOG, PLAN_FEATURE_LABELS, type PlanFeatures } from "../utils/constant.js";
 import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloudinaryUpload.js";
 import { generatePublicSlug } from "../utils/publicSlug.js";
+import { GRANT_STATUSES } from "./billingController.js";
 
 // Kept in one place so GET and PATCH always agree on exactly which fields
 // count as "settings" (as opposed to company profile fields like name/owner).
@@ -276,11 +277,19 @@ export const getPlanCatalog: MiddlewareFn = async (_req, res) => {
 
 export const getCompanyPlan: MiddlewareFn = async (req, res) => {
     const company = await Company.findById(getReqUser(req).company_id)
-        .select("plan maxWorkers stripeCustomerId subscriptionStatus currentPeriodEnd cancelAtPeriodEnd")
+        .select("plan maxWorkers stripeCustomerId subscriptionStatus currentPeriodEnd cancelAtPeriodEnd trialEndsAt")
         .lean();
     if (!company) throw new NotFoundError("Company not found.");
 
     const plan = company.plan as keyof typeof PLAN_LIMITS;
+    // Only meaningful while still in the future AND not already superseded
+    // by a real paid subscription — a company that converted early keeps
+    // its (now past-tense) trialEndsAt in the DB, but it's no longer "on a
+    // trial" in any sense the frontend should act on.
+    const isOnTrial =
+        !!company.trialEndsAt &&
+        company.trialEndsAt > new Date() &&
+        !(company.stripeCustomerId && company.subscriptionStatus && GRANT_STATUSES.includes(company.subscriptionStatus));
     res.status(StatusCodes.OK).json({
         success: true,
         plan,
@@ -290,6 +299,8 @@ export const getCompanyPlan: MiddlewareFn = async (req, res) => {
         subscriptionStatus: company.subscriptionStatus ?? null,
         currentPeriodEnd: company.currentPeriodEnd ?? null,
         cancelAtPeriodEnd: company.cancelAtPeriodEnd ?? false,
+        isOnTrial,
+        trialEndsAt: isOnTrial ? company.trialEndsAt : null,
     });
 };
 

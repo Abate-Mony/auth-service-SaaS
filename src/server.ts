@@ -48,6 +48,7 @@ import { sendOverduePaymentReminders } from "./utils/sendPaymentReminders.js";
 import { sendStaleQuoteRequestReminders } from "./utils/sendStaleQuoteRequestReminders.js";
 import { generateRecurringInvoices } from "./services/invoice/recurringInvoiceGenerator.js";
 import { checkPendingEmailDomains } from "./utils/checkPendingEmailDomains.js";
+import { expireTrials } from "./utils/expireTrials.js";
 import notificationPreferenceRouter
   from "./routes/notificationPreferenceRouter.js";
 import timesheetRouter from "./routes/timesheetRouter.js";
@@ -285,6 +286,10 @@ const start = async (): Promise<void> => {
     // manager to review before the working day starts.
     cron.schedule("0 6 * * *", () => {
       generateRecurringInvoices();
+    });
+    // 2am UTC — reverts any company whose free trial ended back to "free".
+    cron.schedule("0 2 * * *", () => {
+      expireTrials();
     });
     // Every 10 minutes — catches a sending domain finishing DNS
     // propagation without the owner needing to reopen Settings or click

@@ -231,6 +231,11 @@ export const register: MiddlewareFn = async (req, res) => {
   // 3. Create Company with manual rollback on failure
   let company;
   try {
+    // Every new company starts on a 30-day, no-card Professional trial —
+    // see Company.trialEndsAt's own comment. Reverted automatically by
+    // utils/expireTrials.ts's daily cron once trialEndsAt passes, unless
+    // the company has since started a real paid Stripe subscription.
+    const trialEndsAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     company = await Company.create({
       name: companyName,
       businessType,
@@ -240,6 +245,9 @@ export const register: MiddlewareFn = async (req, res) => {
       phone: phone || "",
       owner: user._id,
       isActive: true,
+      plan: "professional",
+      trialEndsAt,
+      trialUsedAt: new Date(),
     });
   } catch (error) {
     // If company creation fails, delete the created user to prevent orphaned data

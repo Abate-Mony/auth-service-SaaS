@@ -57,11 +57,15 @@ function resolvePlanFromPriceId(priceId: string | undefined): Plan | null {
 // or a proration charge fails, the subscription's price may already point
 // at a different tier while never having actually been paid for, and
 // writing `plan` from price in that case would grant something that was
-// never paid for. Deliberately NOT including "trialing" either — no Price
-// in this app has a trial period configured, so there's no policy decision
-// yet about granting access before payment; that question doesn't need
-// answering until trials are a real feature.
-const GRANT_STATUSES = ["active"];
+// never paid for. Deliberately NOT including "trialing" — this app's free
+// trial (see Company.trialEndsAt, utils/expireTrials.ts) is a separate,
+// non-Stripe mechanism granted automatically at signup with no card, not a
+// Stripe-side trial on a real subscription.
+//
+// Exported for utils/expireTrials.ts, which needs the same "is this company
+// actually covered by a real paid subscription" check to avoid downgrading
+// a company that converted off its free trial onto real billing.
+export const GRANT_STATUSES = ["active"];
 
 // Statuses that block starting a second Checkout entirely — not just an
 // already-active subscription. "incomplete" is included deliberately:

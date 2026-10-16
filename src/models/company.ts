@@ -97,6 +97,26 @@ const CompanySchema = new Schema(
     // until customer.subscription.deleted actually flips plan to "free".
     cancelAtPeriodEnd: { type: Boolean, default: false },
 
+    // ── Free trial (non-Stripe) ──────────────────────────────────────────
+    // Granted automatically at registration (see registerController.ts),
+    // not something a company opts into or that ever touches Stripe — no
+    // card is collected. `plan` is set straight to "professional" at
+    // signup; utils/expireTrials.ts's daily cron reverts it to "free" once
+    // trialEndsAt passes, but only if the company hasn't since started a
+    // real paid Stripe subscription (checked there, not here).
+    //
+    // trialUsedAt is set once, permanently, at the same time as
+    // trialEndsAt, and is never cleared — a marker of "this company has
+    // already had its one free trial" independent of trialEndsAt's actual
+    // date, kept distinct in case a later feature needs to grant/extend
+    // trials through some other path than signup.
+    //
+    // Both null for any company created before this feature shipped —
+    // deliberately not backfilled, so existing companies' plans don't
+    // change out from under them the moment this deploys.
+    trialEndsAt: { type: Date, default: null, index: true },
+    trialUsedAt: { type: Date, default: null },
+
     // ── Time & attendance ──────────────────────────────────────────────
     clockInGraceMinutes: { type: Number, default: 30 },
     lateThresholdMinutes: { type: Number, default: 10 },
