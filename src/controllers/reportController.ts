@@ -11,6 +11,7 @@ import Invoice from "../models/invoiceModel.js";
 import Client from "../models/clientModel.js";
 import { TZ, toUtcDay } from "../utils/dates.js";
 import { assertFeatureEnabledForCompany } from "../utils/planLimits.js";
+import { splitAssignmentPay } from "../utils/pay.js";
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
 // Same "worked minutes, net of breaks" / "payable minutes" arithmetic as
@@ -54,15 +55,6 @@ const workedMinutesOf = (a: LeanAssignment): number => {
 
 const payableMinutesOf = (a: LeanAssignment): number =>
   a.approvedMinutes != null ? a.approvedMinutes : workedMinutesOf(a);
-
-// Only manager-approved overtime counts as "overtime" for reporting —
-// anything still pending review is already excluded from payableMinutes
-// (capped at the scheduled amount), so it isn't double-counted here.
-const overtimeSplitOf = (a: LeanAssignment): { regularMinutes: number; overtimeMinutes: number } => {
-  const payable = payableMinutesOf(a);
-  const overtime = a.overtimeStatus === "approved" ? (a.overtimeMinutes ?? 0) : 0;
-  return { regularMinutes: Math.max(0, payable - overtime), overtimeMinutes: overtime };
-};
 
 const parseRange = (req: Request): { start: Date; end: Date } => {
   const { start, end } = req.query as { start?: string; end?: string };
@@ -230,13 +222,18 @@ export const getReportsOverview: MiddlewareFn = async (req, res) => {
 /**
  * GET /api/v1/reports/payroll?start=&end=
  * One row per worker who did any completed, paid work in the range — hours,
- * an effective rate, overtime, and total pay (regular + 1.5x overtime).
+ * an effective rate, overtime, and total pay (regular + the company's own
+ * configured overtime multiplier — see utils/pay.ts).
  */
 export const getReportsPayroll: MiddlewareFn = async (req, res) => {
   const companyId = req.user.company_id.toString();
   const { start, end } = parseRange(req);
 
-  const { assignments } = await getJobsAndAssignments(companyId, start, end);
+  const [{ assignments }, company] = await Promise.all([
+    getJobsAndAssignments(companyId, start, end),
+    Company.findById(companyId).select("overtimeMultiplier").lean(),
+  ]);
+  const overtimeMultiplier = company?.overtimeMultiplier ?? 1.5;
   const completed = assignments.filter(a => a.status === "completed");
 
   const byWorker = new Map<string, {
@@ -256,12 +253,11 @@ export const getReportsPayroll: MiddlewareFn = async (req, res) => {
       regularPay: 0,
       overtimePay: 0,
     };
-    const { regularMinutes, overtimeMinutes } = overtimeSplitOf(a);
-    const rate = a.payRate ?? 0;
-    entry.regularMinutes += regularMinutes;
-    entry.overtimeMinutes += overtimeMinutes;
-    entry.regularPay += (regularMinutes / 60) * rate;
-    entry.overtimePay += (overtimeMinutes / 60) * rate * 1.5;
+    const split = splitAssignmentPay({ payableMinutes: payableMinutesOf(a), overtimeMinutes: a.overtimeMinutes, overtimeStatus: a.overtimeStatus, payRate: a.payRate }, overtimeMultiplier);
+    entry.regularMinutes += split.regularMinutes;
+    entry.overtimeMinutes += split.overtimeMinutes;
+    entry.regularPay += split.regularPay;
+    entry.overtimePay += split.overtimePay;
     byWorker.set(key, entry);
   }
 

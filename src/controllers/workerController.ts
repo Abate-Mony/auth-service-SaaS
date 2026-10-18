@@ -27,6 +27,7 @@ import { assertCanAddWorker, assertFeatureEnabledForCompany } from "../utils/pla
 import { MANAGEMENT_ROLES, ADMIN_LEVEL_ROLES } from "../utils/roles.js";
 import { notifyEligibleWorkersOfOpenShift } from "../utils/notifyOpenShiftWorkers.js";
 import { uploadFileToCloudinary } from "../utils/cloudinaryUpload.js";
+import { splitAssignmentPay } from "../utils/pay.js";
 
 // Which restriction the worker-status route enforces depends on the status
 // being requested, not the route itself — "declined" has no restrictable
@@ -239,87 +240,66 @@ export const getWorkerDashboardStats: MiddlewareFn = async (req, res) => {
     const monthStart = dayjs().startOf("month").toDate();
     const monthEnd = dayjs().endOf("month").toDate();
 
-    const [result] = await JobAssignment.aggregate([
-        {
-            $match: {
-                worker: workerId,
-                isDeleted: false,
+    const [[result], company] = await Promise.all([
+        JobAssignment.aggregate([
+            {
+                $match: {
+                    worker: workerId,
+                    isDeleted: false,
+                },
             },
-        },
 
-        {
-            $facet: {
-                statusCounts: [
-                    {
-                        $group: {
-                            _id: "$status",
-                            count: { $sum: 1 },
-                        },
-                    },
-                ],
-
-                monthlyStats: [
-                    {
-                        $match: {
-                            status: "completed",
-                            completedAt: {
-                                $gte: monthStart,
-                                $lte: monthEnd,
+            {
+                $facet: {
+                    statusCounts: [
+                        {
+                            $group: {
+                                _id: "$status",
+                                count: { $sum: 1 },
                             },
                         },
-                    },
+                    ],
 
-                    {
-                        $addFields: {
-                            payableMinutes: {
-                                $ifNull: [
-                                    "$approvedMinutes",
-                                    {
-                                        $ifNull: [
-                                            "$actualMinutes",
-                                            0,
-                                        ],
-                                    },
-                                ],
-                            },
-                        },
-                    },
-
-                    {
-                        $group: {
-                            _id: null,
-
-                            completedJobs: {
-                                $sum: 1,
-                            },
-
-                            totalMinutes: {
-                                $sum: "$payableMinutes",
-                            },
-
-                            averagePayRate: {
-                                $avg: "$payRate",
-                            },
-
-                            totalEarnings: {
-                                $sum: {
-                                    $multiply: [
-                                        {
-                                            $divide: [
-                                                "$payableMinutes",
-                                                60,
-                                            ],
-                                        },
-                                        "$payRate",
-                                    ],
+                    // Raw per-assignment fields only — totalEarnings isn't
+                    // computed here. It used to be (payableMinutes/60 ×
+                    // payRate, flat, no overtime premium at all), which
+                    // silently disagreed with the admin payroll report's
+                    // regular/overtime split once any approved overtime was
+                    // involved. Computed below instead, via the same
+                    // splitAssignmentPay() the payroll report uses.
+                    monthlyAssignments: [
+                        {
+                            $match: {
+                                status: "completed",
+                                completedAt: {
+                                    $gte: monthStart,
+                                    $lte: monthEnd,
                                 },
                             },
                         },
-                    },
-                ],
+
+                        {
+                            $project: {
+                                _id: 0,
+                                payableMinutes: {
+                                    $ifNull: [
+                                        "$approvedMinutes",
+                                        { $ifNull: ["$actualMinutes", 0] },
+                                    ],
+                                },
+                                overtimeMinutes: 1,
+                                overtimeStatus: 1,
+                                payRate: 1,
+                            },
+                        },
+                    ],
+                },
             },
-        },
+        ]),
+        Company.findById(req.user.company_id).select("overtimeMultiplier").lean(),
     ]);
+
+    const overtimeMultiplier = company?.overtimeMultiplier ?? 1.5;
 
     const jobStats = Object.fromEntries(
         ASSIGNMENT_STATUSES.map((status) => [
@@ -337,7 +317,23 @@ export const getWorkerDashboardStats: MiddlewareFn = async (req, res) => {
         ] = row.count;
     }
 
-    const monthly = result.monthlyStats[0] ?? {};
+    const monthlyAssignments: {
+        payableMinutes: number;
+        overtimeMinutes?: number;
+        overtimeStatus?: string;
+        payRate?: number;
+    }[] = result.monthlyAssignments ?? [];
+
+    let totalMinutes = 0;
+    let totalEarnings = 0;
+    let payRateSum = 0;
+    for (const a of monthlyAssignments) {
+        totalMinutes += a.payableMinutes;
+        totalEarnings += splitAssignmentPay(a, overtimeMultiplier).totalPay;
+        payRateSum += a.payRate ?? 0;
+    }
+    const completedJobs = monthlyAssignments.length;
+    const averagePayRate = completedJobs ? payRateSum / completedJobs : 0;
 
     const totalJobs = Object.values(jobStats).reduce(
         (total, count) => total + count,
@@ -350,23 +346,15 @@ export const getWorkerDashboardStats: MiddlewareFn = async (req, res) => {
         jobStats,
 
         monthly: {
-            earnings: Number(
-                (monthly.totalEarnings ?? 0).toFixed(2)
-            ),
+            earnings: Number(totalEarnings.toFixed(2)),
 
-            totalMinutes:
-                monthly.totalMinutes ?? 0,
+            totalMinutes,
 
-            hoursWorked: Number(
-                ((monthly.totalMinutes ?? 0) / 60).toFixed(2)
-            ),
+            hoursWorked: Number((totalMinutes / 60).toFixed(2)),
 
-            completedJobs:
-                monthly.completedJobs ?? 0,
+            completedJobs,
 
-            averagePayRate: Number(
-                (monthly.averagePayRate ?? 0).toFixed(2)
-            ),
+            averagePayRate: Number(averagePayRate.toFixed(2)),
         },
 
         totalJobs,
@@ -472,8 +460,9 @@ export const getMyEarnings: MiddlewareFn = async (req, res) => {
     const period = req.query.period === "month" ? "month" : "week";
     const offset = Math.min(12, Math.max(-104, parseInt(req.query.offset as string, 10) || 0));
 
-    const company = await Company.findById(req.user.company_id).select("timezone").lean();
+    const company = await Company.findById(req.user.company_id).select("timezone overtimeMultiplier").lean();
     const tz = company?.timezone ?? TZ;
+    const overtimeMultiplier = company?.overtimeMultiplier ?? 1.5;
     const now = dayjs().tz(tz);
 
     const start = period === "month"
@@ -526,7 +515,15 @@ export const getMyEarnings: MiddlewareFn = async (req, res) => {
         const rate = row.payRate ?? 0;
         if (row.status === "completed") {
             const minutes = row.approvedMinutes ?? row.actualMinutes ?? 0;
-            const amount = (minutes / 60) * rate;
+            // Same regular/overtime split the payroll report and dashboard
+            // stats use (utils/pay.ts) — a flat minutes × rate here used to
+            // silently drop the overtime premium whenever this worker had
+            // manager-approved overtime, under-reporting what they'd
+            // actually be paid.
+            const amount = splitAssignmentPay(
+                { payableMinutes: minutes, overtimeMinutes: row.overtimeMinutes, overtimeStatus: row.overtimeStatus, payRate: rate },
+                overtimeMultiplier
+            ).totalPay;
             earned.amount += amount;
             earned.minutes += minutes;
             earned.shifts += 1;
