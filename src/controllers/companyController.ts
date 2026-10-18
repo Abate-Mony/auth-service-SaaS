@@ -136,13 +136,22 @@ export const deleteCompanyLogo: MiddlewareFn = async (req, res) => {
 };
 
 export const getCompanySettings: MiddlewareFn = async (req, res) => {
+    // Deliberately NOT .lean() — a company created before one of these
+    // settings fields existed on the schema has it genuinely absent from
+    // the stored document (a Mongoose `default:` only applies going
+    // forward, never backfilling an existing document). .lean() returns
+    // the raw stored data as-is, missing field and all; a normal hydrated
+    // document applies the schema's own default for any path that's
+    // absent, so this always comes back complete without duplicating
+    // every default value here too. The frontend was silently relying on
+    // every field always being present and failing closed (no save
+    // possible at all, no visible error) the moment one wasn't.
     const company = await Company.findById(getReqUser(req).company_id)
-        .select([...COMPANY_SETTINGS_FIELDS, ...COMPANY_READ_ONLY_EXTRA_FIELDS].join(" "))
-        .lean();
+        .select([...COMPANY_SETTINGS_FIELDS, ...COMPANY_READ_ONLY_EXTRA_FIELDS].join(" "));
 
     if (!company) throw new NotFoundError("Company not found.");
 
-    res.status(StatusCodes.OK).json({ success: true, settings: company });
+    res.status(StatusCodes.OK).json({ success: true, settings: company.toObject() });
 };
 
 export const updateCompanySettings: MiddlewareFn = async (req, res) => {
