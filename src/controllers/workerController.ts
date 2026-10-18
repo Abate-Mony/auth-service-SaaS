@@ -1834,6 +1834,17 @@ export const savePushSubscription: MiddlewareFn = async (req, res) => {
         throw new BadRequestError("Invalid push subscription payload.");
     }
 
+    // A browser profile previously signed in as a different account (a
+    // different company, even) may still have this exact endpoint sitting
+    // in ITS pushSubscriptions — this only ever added, never stole it away,
+    // so that stale account kept receiving this device's notifications
+    // indefinitely after logging out. One subscription can only mean one
+    // currently-logged-in account on this device, so claim it exclusively.
+    await userModel.updateMany(
+        { _id: { $ne: req.user.user_id }, "pushSubscriptions.endpoint": endpoint },
+        { $pull: { pushSubscriptions: { endpoint } } }
+    );
+
     // The $ne guard makes this idempotent — re-subscribing the same device
     // (endpoint) won't create duplicate entries.
     await userModel.updateOne(
@@ -1853,6 +1864,18 @@ export const saveExpoPushToken: MiddlewareFn = async (req, res) => {
     if (!token || !Expo.isExpoPushToken(token)) {
         throw new BadRequestError("Invalid Expo push token.");
     }
+
+    // Same reasoning as savePushSubscription just above — a different
+    // account that was previously logged into this same physical device
+    // (a different company, even) may still have this exact token sitting
+    // in ITS expoPushTokens, and kept silently receiving this device's
+    // notifications after logging out, since this only ever added the
+    // token and never stole it away. A token can only meaningfully belong
+    // to whichever account is currently logged in on this device.
+    await userModel.updateMany(
+        { _id: { $ne: req.user.user_id }, expoPushTokens: token },
+        { $pull: { expoPushTokens: token } }
+    );
 
     // $addToSet makes this idempotent — re-registering the same device
     // won't create duplicate entries.
