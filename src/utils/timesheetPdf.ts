@@ -26,6 +26,13 @@ interface GenerateTimesheetPdfOptions {
 
   regularMinutes: number;
   overtimeMinutes: number;
+
+  /** Omit entirely to keep the PDF hours-only (e.g. a copy meant for a client). */
+  pay?: {
+    regularPay: number;
+    overtimePay: number;
+    currency: string;
+  };
 }
 
 const formatMinutes = (minutes: number) => {
@@ -40,6 +47,12 @@ const formatMinutes = (minutes: number) => {
 const formatHoursDecimal = (minutes: number) =>
   (minutes / 60).toFixed(2);
 
+const currencySymbol = (currency: string) =>
+  currency === "USD" ? "$" : currency === "EUR" ? "€" : "£";
+
+const formatMoney = (amount: number, currency: string) =>
+  `${currencySymbol(currency)}${amount.toFixed(2)}`;
+
 export const generateTimesheetPdf = ({
   employeeName,
   employeeEmail,
@@ -49,6 +62,7 @@ export const generateTimesheetPdf = ({
   rows,
   regularMinutes,
   overtimeMinutes,
+  pay,
 }: GenerateTimesheetPdfOptions) => {
   /*
    * Landscape A4 gives us enough room for:
@@ -360,6 +374,34 @@ export const generateTimesheetPdf = ({
     formatHoursDecimal(totalMinutes),
     true
   );
+
+  if (pay) {
+    y += 16;
+
+    summaryRow(
+      "Regular pay",
+      formatMoney(pay.regularPay, pay.currency)
+    );
+
+    summaryRow(
+      "Overtime pay",
+      formatMoney(pay.overtimePay, pay.currency)
+    );
+
+    doc
+      .moveTo(summaryX, y)
+      .lineTo(summaryX + 230, y)
+      .strokeColor("#CBD5E1")
+      .stroke();
+
+    y += 12;
+
+    summaryRow(
+      "Total pay",
+      formatMoney(pay.regularPay + pay.overtimePay, pay.currency),
+      true
+    );
+  }
 
   // Footer
   doc

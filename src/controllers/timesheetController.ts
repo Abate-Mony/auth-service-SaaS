@@ -8,6 +8,7 @@ import userModel from "../models/userModel.js";
 import Company from "../models/company.js";
 import { generateTimesheetPdf, TimesheetPdfRow } from "../utils/timesheetPdf.js";
 import { isManagementRole } from "../utils/roles.js";
+import { splitAssignmentPay } from "../utils/pay.js";
 
 type Period = "weekly" | "biweekly" | "monthly";
 
@@ -245,6 +246,9 @@ const streamTimesheetPdf = async (
 
     let regularMinutes = 0;
     let overtimeMinutes = 0;
+    let regularPay = 0;
+    let overtimePay = 0;
+    const overtimeMultiplier = company.overtimeMultiplier ?? 1.5;
 
     const rows: TimesheetPdfRow[] =
       assignments
@@ -331,6 +335,19 @@ const streamTimesheetPdf = async (
             approvedOvertimeMinutes
           );
 
+          const paySplit = splitAssignmentPay(
+            {
+              payableMinutes: approvedTotal,
+              overtimeMinutes: assignment.overtimeMinutes,
+              overtimeStatus: assignment.overtimeStatus,
+              payRate: assignment.payRate,
+            },
+            overtimeMultiplier
+          );
+
+          regularPay += paySplit.regularPay;
+          overtimePay += paySplit.overtimePay;
+
           return {
             date:
               job.date ??
@@ -388,6 +405,12 @@ const streamTimesheetPdf = async (
         regularMinutes,
 
         overtimeMinutes,
+
+        pay: {
+          regularPay,
+          overtimePay,
+          currency: company.currency ?? "GBP",
+        },
       });
 
     const filename =
