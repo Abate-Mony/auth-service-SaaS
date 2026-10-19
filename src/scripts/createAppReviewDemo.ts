@@ -173,6 +173,19 @@ async function main() {
       await staleOneOffJob.deleteOne();
     }
 
+    // Spans the full calendar day in the company's timezone rather than a
+    // narrower business-hours window. Clock-in eligibility is checked
+    // against the company's timezone (correct for a real workforce — the
+    // shift happens at a real-world place and time, not wherever the
+    // worker's phone thinks it is), so a reviewer outside the UK opening
+    // the app at an unpredictable moment could otherwise land inside a
+    // dead window (e.g. the old 06:00–22:00 UK shift was unclockable for
+    // ~8 hours a day from timezones like Malaysia) and be unable to test
+    // clock-in at all.
+    const DEMO_START_TIME = "00:00";
+    const DEMO_END_TIME = "23:59";
+    const DEMO_MINUTES = 23 * 60 + 59;
+
     let templateJob = await Job.findOne({
       company: company._id.toString(),
       title: "Office Cleaning — Demo Shift",
@@ -188,9 +201,9 @@ async function main() {
         address: "123 Demo Street, London",
         coordinates: { lat: 51.5074, lng: -0.1278 },
         date: today,
-        startTime: "06:00",
-        endTime: "22:00",
-        minutes: 16 * 60,
+        startTime: DEMO_START_TIME,
+        endTime: DEMO_END_TIME,
+        minutes: DEMO_MINUTES,
         status: "published",
         isTemplate: true,
         requiredWorkers: 1,
@@ -199,6 +212,12 @@ async function main() {
         chargeRate: 25,
         createdBy: owner._id,
       });
+    } else if (templateJob.startTime !== DEMO_START_TIME || templateJob.endTime !== DEMO_END_TIME) {
+      console.log("Widening demo job template to a full-day window.");
+      templateJob.startTime = DEMO_START_TIME;
+      templateJob.endTime = DEMO_END_TIME;
+      templateJob.minutes = DEMO_MINUTES;
+      await templateJob.save();
     }
 
     let recurring = await RecurringJob.findOne({ company: company._id, templateJob: templateJob._id });
@@ -222,6 +241,25 @@ async function main() {
     // tomorrow's 1am cron — re-running this script is harmless either way,
     // generateOccurrences skips dates that already exist.
     await generateOccurrences(recurring, today);
+
+    // The template change above only affects occurrences generated from
+    // here on — any already-existing upcoming occurrence (including today's,
+    // which generateOccurrences just skipped since it already exists) was
+    // cloned from the template before this run and still has the old
+    // narrower window. Widen those too so the fix is live immediately
+    // rather than waiting ~30 days for the old ones to roll off.
+    const widenResult = await Job.updateMany(
+      {
+        recurringJob: recurring._id,
+        isTemplate: false,
+        date: { $gte: today },
+        status: { $nin: ["completed", "cancelled"] },
+      },
+      { $set: { startTime: DEMO_START_TIME, endTime: DEMO_END_TIME, minutes: DEMO_MINUTES } }
+    );
+    if (widenResult.modifiedCount > 0) {
+      console.log(`Widened ${widenResult.modifiedCount} already-generated upcoming occurrence(s) to the full-day window.`);
+    }
 
     const todaysJob = await Job.findOne({ recurringJob: recurring._id, date: today });
     if (todaysJob) {

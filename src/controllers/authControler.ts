@@ -186,9 +186,17 @@ export const mobileLogin: MiddlewareFn = async (req, res) => {
 
   const { accessToken, refreshToken } = await issueTokens(user, res);
 
+  // The mobile app needs this to correctly gate clock-in against the
+  // shift's scheduled time in the COMPANY's timezone — a worker testing
+  // from a different timezone than the company (e.g. an App Review tester,
+  // or a genuinely remote worker) would otherwise have the app interpret
+  // job.date + startTime using the device's own local timezone instead,
+  // silently disagreeing with the backend's own company-timezone check.
+  const company = await Company.findById(user.company).select("timezone").lean();
+
   res.status(StatusCodes.OK).json({
     msg: "user logged in",
-    user: sanitizeUser(user),
+    user: { ...sanitizeUser(user), companyTimezone: company?.timezone ?? "Europe/London" },
     accessToken,
     refreshToken,
   });
