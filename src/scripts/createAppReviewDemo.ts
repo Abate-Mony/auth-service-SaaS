@@ -235,6 +235,18 @@ async function main() {
       });
     } else {
       console.log("Recurring demo schedule already exists.");
+      // defaultWorkers is only set at creation above — if the worker
+      // account was ever recreated (e.g. a tester changed the original
+      // demo worker's email via their own Edit Profile, orphaning it from
+      // this schedule), an existing recurring schedule would otherwise
+      // keep silently assigning new occurrences to the old worker id
+      // forever. Keep it pointed at whichever worker currently holds
+      // workerEmail.
+      if (!recurring.defaultWorkers?.some(id => id.equals(worker._id))) {
+        console.log("Re-pointing the recurring schedule's default worker to the current account.");
+        recurring.defaultWorkers = [worker._id];
+        await recurring.save();
+      }
     }
 
     // Generates (only) today's occurrence right now rather than waiting for
@@ -261,11 +273,32 @@ async function main() {
       console.log(`Widened ${widenResult.modifiedCount} already-generated upcoming occurrence(s) to the full-day window.`);
     }
 
-    const todaysJob = await Job.findOne({ recurringJob: recurring._id, date: today });
-    if (todaysJob) {
-      const assignment = await JobAssignment.findOne({ job: todaysJob._id, worker: worker._id });
-      if (assignment && assignment.status !== "accepted") {
-        console.log("Accepting the worker's assignment on today's occurrence.");
+    // Covers both: an occurrence generated under the old defaultWorkers
+    // before the re-point above (so generateOccurrences never created an
+    // assignment for the current worker at all), and the ordinary
+    // pending → accepted step for whatever it did create. Scoped to
+    // upcoming, non-cancelled occurrences only — never touches history.
+    const upcomingOccurrences = await Job.find({
+      recurringJob: recurring._id,
+      isTemplate: false,
+      date: { $gte: today },
+      status: { $nin: ["completed", "cancelled"] },
+    }).select("_id");
+
+    for (const occurrence of upcomingOccurrences) {
+      let assignment = await JobAssignment.findOne({ job: occurrence._id, worker: worker._id });
+      if (!assignment) {
+        console.log(`Assigning the current worker to an occurrence missing it (job ${occurrence._id}).`);
+        assignment = await JobAssignment.create({
+          job: occurrence._id,
+          worker: worker._id,
+          createdBy: owner._id,
+          company: company._id,
+          payRate: templateJob.payRate,
+          fullname: worker.fullname,
+        });
+      }
+      if (assignment.status !== "accepted") {
         assignment.status = "accepted";
         assignment.acceptedAt = new Date();
         await assignment.save();
