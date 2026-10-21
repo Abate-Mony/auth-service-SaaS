@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyClaims, getMyEarnings, getMyJobs, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto, withdrawOpenShiftClaim, offerShiftGiveaway, cancelShiftGiveaway, takeShiftGiveaway } from "../controllers/workerController.js"
+import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyClaims, getMyEarnings, getMyJobs, getMyRoute, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto, withdrawOpenShiftClaim, offerShiftGiveaway, cancelShiftGiveaway, takeShiftGiveaway } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 import { requireNotRestricted } from "../middleware/restrictionMiddleware.js";
@@ -12,6 +12,7 @@ router
     .get(authorizePermissions("worker"), getMyJobs)
 router.route("/me/hours").get(authorizePermissions("worker"), getMyTotalHours);
 router.route("/me/earnings").get(authorizePermissions("worker"), getMyEarnings);
+router.route("/me/route").get(authorizePermissions("worker"), getMyRoute);
 router.route("/me/request-deletion").post(authorizePermissions("worker"), requestAccountDeletion);
 router.route("/stats").get(authorizePermissions("worker"), getWorkerDashboardStats);
 router.route("/active-job").get(authorizePermissions("worker"), getActiveJob)

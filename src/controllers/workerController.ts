@@ -28,6 +28,7 @@ import { MANAGEMENT_ROLES, ADMIN_LEVEL_ROLES } from "../utils/roles.js";
 import { notifyEligibleWorkersOfOpenShift } from "../utils/notifyOpenShiftWorkers.js";
 import { uploadFileToCloudinary } from "../utils/cloudinaryUpload.js";
 import { splitAssignmentPay } from "../utils/pay.js";
+import { optimizeRoute, RouteStop } from "../utils/routeOptimizer.js";
 
 // Which restriction the worker-status route enforces depends on the status
 // being requested, not the route itself — "declined" has no restrictable
@@ -508,8 +509,13 @@ export const getMyEarnings: MiddlewareFn = async (req, res) => {
     ]);
 
     const round2 = (n: number) => Math.round(n * 100) / 100;
-    const earned = { amount: 0, minutes: 0, shifts: 0 };
+    const earned = { amount: 0, minutes: 0, shifts: 0, regularAmount: 0, overtimeAmount: 0 };
     const upcoming = { amount: 0, minutes: 0, shifts: 0 };
+    // Approved-overtime pay is already folded into earned.amount above (via
+    // splitAssignmentPay) — this tracks pay still waiting on a manager's
+    // review, kept separate so the UI can show it as a distinct "not yet
+    // included" figure instead of silently absent or double-counted.
+    let pendingOvertimeAmount = 0;
 
     const shifts = rows.flatMap(row => {
         const rate = row.payRate ?? 0;
@@ -520,20 +526,25 @@ export const getMyEarnings: MiddlewareFn = async (req, res) => {
             // silently drop the overtime premium whenever this worker had
             // manager-approved overtime, under-reporting what they'd
             // actually be paid.
-            const amount = splitAssignmentPay(
+            const split = splitAssignmentPay(
                 { payableMinutes: minutes, overtimeMinutes: row.overtimeMinutes, overtimeStatus: row.overtimeStatus, payRate: rate },
                 overtimeMultiplier
-            ).totalPay;
-            earned.amount += amount;
+            );
+            earned.amount += split.totalPay;
+            earned.regularAmount += split.regularPay;
+            earned.overtimeAmount += split.overtimePay;
             earned.minutes += minutes;
             earned.shifts += 1;
+            if (row.overtimeStatus === "pending" && row.overtimeMinutes) {
+                pendingOvertimeAmount += (row.overtimeMinutes / 60) * rate * overtimeMultiplier;
+            }
             return [{
                 assignmentId: row._id,
                 job: row.job,
                 kind: "earned",
                 minutes,
                 payRate: rate,
-                amount: round2(amount),
+                amount: round2(split.totalPay),
                 // Extra time still waiting on a manager isn't in `minutes` yet.
                 overtimePendingMinutes: row.overtimeStatus === "pending" ? row.overtimeMinutes ?? 0 : 0,
             }];
@@ -565,9 +576,92 @@ export const getMyEarnings: MiddlewareFn = async (req, res) => {
             start: start.format("YYYY-MM-DD"),
             end: end.format("YYYY-MM-DD"),
         },
-        earned: { ...earned, amount: round2(earned.amount) },
+        earned: {
+            ...earned,
+            amount: round2(earned.amount),
+            regularAmount: round2(earned.regularAmount),
+            overtimeAmount: round2(earned.overtimeAmount),
+        },
         upcoming: { ...upcoming, amount: round2(upcoming.amount) },
+        pendingOvertimeAmount: round2(pendingOvertimeAmount),
         shifts,
+    });
+};
+
+// GET /workers/me/route?date=YYYY-MM-DD&lat=&lng=
+//
+// Orders a worker's stops for one day into a short visiting route (see
+// utils/routeOptimizer.ts — straight-line distance only, no paid routing
+// API call). `lat`/`lng` are the worker's current position, if the app has
+// it — falling back to anchoring on whichever job is scheduled earliest.
+// Jobs with no saved coordinates (ad-hoc jobs that skipped location lookup)
+// are left out of the route and reported separately rather than silently
+// dropped or guessed at.
+export const getMyRoute: MiddlewareFn = async (req, res) => {
+    const workerId = new mongoose.Types.ObjectId(req.user.user_id);
+
+    const company = await Company.findById(req.user.company_id).select("timezone").lean();
+    const tz = company?.timezone ?? TZ;
+
+    const dateParam = req.query.date as string | undefined;
+    const day = dateParam ? toUtcDay(dateParam) : toUtcDay(dayjs().tz(tz).format("YYYY-MM-DD"));
+
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const start = Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : undefined;
+
+    const assignments = await JobAssignment.find({
+        worker: workerId,
+        isDeleted: false,
+        status: { $in: ["accepted", "in-progress"] },
+    })
+        .populate<{ job: { _id: mongoose.Types.ObjectId; title: string; location: string; address?: string; startTime: string; endTime: string; date: Date; coordinates?: { lat?: number; lng?: number } } | null }>(
+            "job",
+            "title location address startTime endTime date coordinates"
+        )
+        .lean();
+
+    const todaysJobs = assignments
+        .filter(a => a.job && a.job.date.getTime() === day.getTime())
+        .map(a => a.job!)
+        .sort((a, b) => a.startTime.localeCompare(b.startTime));
+
+    const withCoordinates = todaysJobs.filter(
+        (j): j is typeof j & { coordinates: { lat: number; lng: number } } =>
+            typeof j.coordinates?.lat === "number" && typeof j.coordinates?.lng === "number"
+    );
+    const skipped = todaysJobs
+        .filter(j => !(typeof j.coordinates?.lat === "number" && typeof j.coordinates?.lng === "number"))
+        .map(j => ({ jobId: j._id.toString(), title: j.title }));
+
+    const stops: RouteStop[] = withCoordinates.map(j => ({
+        id: j._id.toString(),
+        lat: j.coordinates.lat,
+        lng: j.coordinates.lng,
+    }));
+
+    const route = optimizeRoute(stops, start);
+    const jobById = new Map(withCoordinates.map(j => [j._id.toString(), j]));
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        date: dayjs(day).format("YYYY-MM-DD"),
+        totalDistanceKm: route.totalDistanceKm,
+        stops: route.stops.map(stop => {
+            const job = jobById.get(stop.id)!;
+            return {
+                jobId: stop.id,
+                order: stop.order,
+                distanceFromPreviousKm: Math.round(stop.distanceFromPreviousKm * 10) / 10,
+                title: job.title,
+                location: job.location,
+                address: job.address ?? "",
+                startTime: job.startTime,
+                endTime: job.endTime,
+                coordinates: { lat: stop.lat, lng: stop.lng },
+            };
+        }),
+        skipped,
     });
 };
 
