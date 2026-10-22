@@ -450,6 +450,133 @@ export const getActiveJob: MiddlewareFn = async (req, res) => {
     });
 };
 
+// The schema's placeholder for "no phone given" — never a real number.
+const PLACEHOLDER_PHONE = "0000-0000-0000";
+const realPhone = (phone?: string | null) => (phone && phone !== PLACEHOLDER_PHONE ? phone : null);
+
+// Closest point of contact first: day-to-day managers, then admins, then
+// the owner.
+const CONTACT_ROLE_ORDER: Record<string, number> = { manager: 0, admin: 1, owner: 2 };
+
+// GET /workers/me/contacts — who a worker can reach at their company: the
+// company's own details plus its active managers/admins/owner. Workers
+// can't list users in general (getAllUser rejects them); this exposes only
+// the management team's work contact details, which is the whole point of
+// the app's "Contact Manager" screen.
+export const getMyContacts: MiddlewareFn = async (req, res) => {
+    const companyId = req.user.company_id;
+
+    const [company, managers] = await Promise.all([
+        Company.findById(companyId).select("name phone website logo").lean(),
+        userModel
+            .find({ company: companyId, role: { $in: MANAGEMENT_ROLES }, isActive: true })
+            .select("fullname email phone role profilePhoto")
+            .lean(),
+    ]);
+    if (!company) throw new NotFoundError("Company not found.");
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        company: {
+            name: company.name,
+            phone: realPhone(company.phone),
+            website: company.website || null,
+            logoUrl: (company.logo as any)?.url ?? null,
+        },
+        managers: managers
+            .map(m => ({
+                _id: m._id,
+                fullname: m.fullname,
+                role: m.role,
+                email: m.email || null,
+                phone: realPhone(m.phone),
+                photoUrl: (m.profilePhoto as any)?.url ?? null,
+            }))
+            .sort((a, b) =>
+                (CONTACT_ROLE_ORDER[a.role as string] ?? 9) - (CONTACT_ROLE_ORDER[b.role as string] ?? 9)
+                || a.fullname.localeCompare(b.fullname)
+            ),
+    });
+};
+
+const TEAM_ROLE_ORDER: Record<string, number> = { owner: 0, admin: 1, manager: 2, worker: 3 };
+
+// GET /workers/me/team — the company roster: every active teammate's name,
+// role and photo. Deliberately lighter than getMyContacts above — no
+// phone/email here, since those are a manager's own choice to share
+// (getMyContacts), not something every coworker should see about every
+// other coworker by default. This is a directory, not a contact book.
+export const getMyTeam: MiddlewareFn = async (req, res) => {
+    const teammates = await userModel
+        .find({ company: req.user.company_id, isActive: true, _id: { $ne: req.user.user_id } })
+        .select("fullname role profilePhoto")
+        .lean();
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        teammates: teammates
+            .map(m => ({
+                _id: m._id,
+                fullname: m.fullname,
+                role: m.role,
+                photoUrl: (m.profilePhoto as any)?.url ?? null,
+            }))
+            .sort((a, b) =>
+                (TEAM_ROLE_ORDER[a.role as string] ?? 9) - (TEAM_ROLE_ORDER[b.role as string] ?? 9)
+                || a.fullname.localeCompare(b.fullname)
+            ),
+    });
+};
+
+// GET /workers/me/locations — every distinct site this worker has been
+// assigned to, most recently worked first. Built from their own job
+// history rather than a separate Sites list, so it only ever shows places
+// they've actually been scheduled — not every site the company has.
+export const getMyLocations: MiddlewareFn = async (req, res) => {
+    const workerId = new mongoose.Types.ObjectId(req.user.user_id);
+
+    const rows = await JobAssignment.aggregate([
+        { $match: { worker: workerId, isDeleted: false } },
+        {
+            $lookup: {
+                from: "jobs",
+                let: { jobId: "$job" },
+                pipeline: [
+                    { $match: { $expr: { $eq: ["$_id", "$$jobId"] }, isDeleted: false } },
+                    { $project: { location: 1, address: 1, coordinates: 1, date: 1 } },
+                ],
+                as: "job",
+            },
+        },
+        { $unwind: "$job" },
+        { $match: { "job.location": { $nin: [null, ""] } } },
+        { $sort: { "job.date": -1 } },
+        {
+            $group: {
+                _id: { location: "$job.location", address: "$job.address" },
+                location: { $first: "$job.location" },
+                address: { $first: "$job.address" },
+                coordinates: { $first: "$job.coordinates" },
+                lastWorkedAt: { $first: "$job.date" },
+                visitCount: { $sum: 1 },
+            },
+        },
+        { $sort: { lastWorkedAt: -1 } },
+        { $limit: 100 },
+    ]);
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        locations: rows.map(r => ({
+            location: r.location,
+            address: r.address || null,
+            coordinates: r.coordinates?.lat != null && r.coordinates?.lng != null ? r.coordinates : null,
+            lastWorkedAt: r.lastWorkedAt,
+            visitCount: r.visitCount,
+        })),
+    });
+};
+
 // GET /workers/me/earnings?period=week|month&offset=0 — the worker's pay for
 // one calendar week (Mon–Sun) or month in the company's timezone, keyed by
 // shift date. offset steps back (negative) or forward from the current
