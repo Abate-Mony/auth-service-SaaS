@@ -25,6 +25,7 @@ import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloud
 import { formatAddress } from "../utils/formatAddress.js";
 import { notifyEligibleWorkersOfOpenShift } from "../utils/notifyOpenShiftWorkers.js";
 import { notifyUser } from "../utils/notifyUser.js";
+import { sweepAcceptPendingAssignments } from "../utils/autoAcceptSweep.js";
 
 export const jobDurationMinutes = (startTime: string, endTime: string): number => {
     const [sh, sm] = startTime.split(":").map(Number);
@@ -396,6 +397,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
          status,
          openToClaims,
          requiresApproval,
+         autoAccept,
          sourceQuote,
          checklist,
          bookingRequestId,
@@ -532,6 +534,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
          clockInGraceMinutes,
          ...(openToClaims !== undefined ? { openToClaims } : {}),
          ...(requiresApproval !== undefined ? { requiresApproval } : {}),
+         ...(autoAccept !== undefined ? { autoAccept: !!autoAccept } : {}),
     };
 
     // ── Recurring job ──────────────────────────────────────────────────────
@@ -713,7 +716,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         const assignmentNow = new Date();
         await JobAssignment.insertMany(
             workerIds.map((workerId, idx) => {
-                const autoAccept = !!realWorkers[idx].autoAcceptAssignments;
+                const autoAcceptForWorker = !!job.autoAccept || !!realWorkers[idx].autoAcceptAssignments;
                 return {
                     job: job._id,
                     worker: workerId,
@@ -721,7 +724,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                     payRate: baseJobFields.payRate,
                     company: req.user.company_id,
                     fullname: realWorkers[idx].fullname || "testing her",
-                    ...(autoAccept ? { status: "accepted", acceptedAt: assignmentNow } : {}),
+                    ...(autoAcceptForWorker ? { status: "accepted", acceptedAt: assignmentNow } : {}),
                 };
             })
         );
@@ -757,7 +760,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                                 minutes: job.minutes,
                             },
                             company: notifyingCompany ?? { name: "OnClockly" },
-                            autoAccepted: !!w.autoAcceptAssignments,
+                            autoAccepted: !!job.autoAccept || !!w.autoAcceptAssignments,
                         }),
                         // Tagged per job (distinct from the shift-start-reminder
                         // tag namespace) so re-saving/updating doesn't stack duplicates.
@@ -1034,7 +1037,7 @@ export const duplicateJob: MiddlewareFn = async (req, res) => {
                 payRate: ja.payRate,
                 company: companyId,
                 fullname: ja.fullname,
-                ...(autoAcceptWorkerIds.has(ja.worker.toString()) ? { status: "accepted", acceptedAt: assignmentNow } : {}),
+                ...(duplicatedJob.autoAccept || autoAcceptWorkerIds.has(ja.worker.toString()) ? { status: "accepted", acceptedAt: assignmentNow } : {}),
             })),
             { ordered: false }
         );
@@ -1112,7 +1115,7 @@ const UPDATE_JOB_ALLOWED_FIELDS = [
     "title", "description", "location", "address", "coordinates",
     "requiredWorkers", "priority", "supervisor", "payRate", "chargeRate", "chargeType", "chargeAmount",
     "notes", "instructions", "status","geofenceMode","geofenceRadiusMeters",
-    "openToClaims", "requiresApproval", "checklist",
+    "openToClaims", "requiresApproval", "checklist", "autoAccept",
 ] as const;
 
 export const updateJob: MiddlewareFn = async (req, res) => {
@@ -1193,6 +1196,12 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         endTime !== previousEndTime ||
         (req.body.date !== undefined && toUtcDay(req.body.date).getTime() !== job.date.getTime());
 
+
+    // The value this request leaves autoAccept at, whether or not it's the
+    // field being changed right now — read before updatedJob exists so a
+    // request that assigns new workers AND flips autoAccept on in the same
+    // call gives those new assignments the new value, not the stale one.
+    const effectiveAutoAccept = req.body.autoAccept !== undefined ? !!req.body.autoAccept : !!job.autoAccept;
 
     // `workers` being entirely absent means "leave assignments alone" (e.g.
     // the caller is only editing the title) — an explicit [] is what clears
@@ -1279,7 +1288,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                         company: companyId,
                         payRate: req.body.payRate ?? job.payRate,
                         fullname: user.fullname,
-                        ...(user.autoAcceptAssignments ? { status: "accepted", acceptedAt: assignmentNow } : {}),
+                        ...(effectiveAutoAccept || user.autoAcceptAssignments ? { status: "accepted", acceptedAt: assignmentNow } : {}),
                     }))
                 );
             }
@@ -1403,6 +1412,15 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         throw new BadRequestError("Job not found.");
     }
 
+    // autoAccept just turned on for this job (wasn't before) — sweep up
+    // whatever's currently pending on it too, same "cover what's already
+    // sitting there" behaviour as the worker-level and schedule-level
+    // toggles. Scoped to this one job, so nothing else that worker is on
+    // is touched.
+    if (updatedJob.autoAccept && !job.autoAccept) {
+        await sweepAcceptPendingAssignments({ jobIds: [updatedJob._id] });
+    }
+
     if (usersToAssign.length) {
         await logActivity({
             job: updatedJob._id,
@@ -1467,7 +1485,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                             minutes: updatedJob.minutes,
                         },
                         company: notifyingCompany ?? { name: "OnClockly" },
-                        autoAccepted: !!u.autoAcceptAssignments,
+                        autoAccepted: !!updatedJob.autoAccept || !!u.autoAcceptAssignments,
                     }),
                     sendPushToUser(u._id.toString(), {
                         title: "New shift assigned",

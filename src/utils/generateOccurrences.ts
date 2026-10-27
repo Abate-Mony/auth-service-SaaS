@@ -142,6 +142,7 @@ export async function generateOccurrences(
       requiredWorkers: template.requiredWorkers,
       openToClaims: template.openToClaims,
       requiresApproval: template.requiresApproval,
+      autoAccept: template.autoAccept,
       supervisor: template.supervisor,
       payRate: template.payRate,
       chargeType: template.chargeType,
@@ -198,7 +199,7 @@ export async function generateOccurrences(
             company: template.company,
             payRate: template.payRate,
             fullname: worker.fullname,
-            ...(worker.autoAcceptAssignments ? { status: "accepted", acceptedAt: assignmentNow } : {}),
+            ...(job.autoAccept || worker.autoAcceptAssignments ? { status: "accepted", acceptedAt: assignmentNow } : {}),
           }))
         );
 

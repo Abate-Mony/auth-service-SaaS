@@ -148,7 +148,7 @@ export const updateRecurringJob: MiddlewareFn = async (req, res) => {
   const { id } = req.params;
   const {
     frequency, interval, daysOfWeek, endDate, maxOccurrences, defaultWorkers, startTime, endTime,
-    payRate, chargeRate, chargeType, chargeAmount, geofenceMode, geofenceRadiusMeters,
+    payRate, chargeRate, chargeType, chargeAmount, geofenceMode, geofenceRadiusMeters, autoAccept,
   } = req.body;
 
   const schedule = await recurringJobModel.findOne({ _id: id, company: getReqUser(req).company_id });
@@ -183,7 +183,8 @@ export const updateRecurringJob: MiddlewareFn = async (req, res) => {
   // (re)generated after this save picks up the new values.
   const templateFieldsChanged =
     startTime !== undefined || endTime !== undefined || payRate !== undefined || chargeRate !== undefined ||
-    chargeType !== undefined || chargeAmount !== undefined || geofenceMode !== undefined || geofenceRadiusMeters !== undefined;
+    chargeType !== undefined || chargeAmount !== undefined || geofenceMode !== undefined || geofenceRadiusMeters !== undefined ||
+    autoAccept !== undefined;
 
   if (templateFieldsChanged) {
     const templateJob = await Job.findById(schedule.templateJob);
@@ -204,6 +205,12 @@ export const updateRecurringJob: MiddlewareFn = async (req, res) => {
     if (chargeAmount !== undefined) templateJob.chargeAmount = chargeAmount;
     if (geofenceMode !== undefined) templateJob.geofenceMode = geofenceMode;
     if (geofenceRadiusMeters !== undefined) templateJob.geofenceRadiusMeters = geofenceRadiusMeters;
+    // Per-schedule auto-accept — scoped to just this schedule's own
+    // occurrences, distinct from the worker-level User.autoAcceptAssignments
+    // override. Same rule as every other templateJob field here: only
+    // occurrences generated AFTER this save pick up the new value —
+    // whatever's already created is left exactly as it was.
+    if (autoAccept !== undefined) templateJob.autoAccept = !!autoAccept;
     await templateJob.save();
   }
 

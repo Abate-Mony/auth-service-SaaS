@@ -114,6 +114,16 @@ const JobSchema = new Schema(
         // confirmed (assignment status "pending") or is accepted outright.
         requiresApproval: { type: Boolean, default: true },
 
+        // Set at creation (or edited later) by a manager/admin, scoped to
+        // just this job — when true, every assignment created for this job
+        // skips "pending" and is created already "accepted". Distinct from
+        // the worker-level User.autoAcceptAssignments (always-everywhere
+        // override) and RecurringJob.autoAccept (whole-schedule setting,
+        // copied down onto each occurrence it spawns) — see
+        // jobController.ts and generateOccurrences.ts for how all three
+        // combine (any one of them being true is enough).
+        autoAccept: { type: Boolean, default: false },
+
         // ── Money ─────────────────────────────────────────────────────────
         payRate: { type: Number, default: 0, min: 0 }, // per hour, to the worker
         chargeType: {
