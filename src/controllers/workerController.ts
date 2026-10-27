@@ -13,7 +13,7 @@ import Company from "../models/company.js";
 import { scheduledEndOf, scheduledStartOf, toUtcDay, TZ } from "../utils/dates.js";
 import { checkGeofence } from "../utils/geo.js";
 import { sendWorkerJobStatusEmail, sendMail } from "../utils/sendMailsUtils.js";
-import { sendRecurringSeriesResponse, sendOpenShiftClaimNotice, sendClaimReviewResultEmail } from "../utils/mailTemplates.js";
+import { sendRecurringSeriesResponse, sendOpenShiftClaimNotice, sendClaimReviewResultEmail, sendOvertimeReviewed } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
 import { sendExpoPushToUser } from "../utils/expoPush.js";
 import { Expo } from "expo-server-sdk";
@@ -1493,6 +1493,47 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
     });
 };
 
+// Worker-facing: every shift of theirs that ever had overtime flagged,
+// across all three outcomes — still pending, approved, or rejected — so
+// there's somewhere to actually see a review's result instead of just
+// getting (or missing) the one-off notification for it. Optional `status`
+// narrows to one outcome; omitted/"all" returns every one, newest first.
+export const getMyOvertime: MiddlewareFn = async (req, res) => {
+    const workerId = new mongoose.Types.ObjectId(req.user.user_id);
+    const { status } = req.query;
+
+    const match: Record<string, any> = {
+        worker: workerId,
+        isDeleted: false,
+        overtimeStatus: { $ne: "none" },
+    };
+    if (status && status !== "all" && ["pending", "approved", "rejected"].includes(status as string)) {
+        match.overtimeStatus = status;
+    }
+
+    const assignments = await JobAssignment.find(match)
+        .sort({ overtimeReviewedAt: -1, checkedOutAt: -1 })
+        .limit(200)
+        .populate("job", "title date location")
+        .lean();
+
+    const items = assignments
+        .filter(a => a.job)
+        .map(a => ({
+            assignmentId: a._id,
+            job: a.job,
+            actualMinutes: a.actualMinutes ?? 0,
+            approvedMinutes: a.approvedMinutes ?? 0,
+            overtimeMinutes: a.overtimeMinutes ?? 0,
+            overtimeStatus: a.overtimeStatus,
+            overtimeReviewedAt: a.overtimeReviewedAt ?? null,
+            managerNotes: a.managerNotes || null,
+            checkedOutAt: a.checkedOutAt ?? null,
+        }));
+
+    res.status(StatusCodes.OK).json({ success: true, items });
+};
+
 // Manager-facing: approve, reject, or manually adjust a shift's flagged
 // overtime. Only assignments this manager's own company owns can be
 // reviewed, and only ones actually awaiting review.
@@ -1553,6 +1594,45 @@ export const reviewAssignmentOvertime: MiddlewareFn = async (req, res) => {
             overtimeMinutes: assignment.overtimeMinutes,
         },
     });
+
+    // Fire-and-forget, same as every other worker-facing notification in
+    // this file — the whole point of this notification is fixing the gap
+    // where a worker had no way to find out their overtime was reviewed at
+    // all, so it fires unconditionally rather than gated by shouldNotify
+    // (same precedent as the newly-assigned-shift emails in jobController.ts).
+    (async () => {
+        const [worker, job, notifyingCompany] = await Promise.all([
+            userModel.findById(assignment.worker).select("fullname email").lean(),
+            jobModel.findById(assignment.job).select("title date").lean(),
+            Company.findById(req.user.company_id).select("name emailSettings").lean(),
+        ]);
+        if (!worker || !job) return;
+
+        const verb = decision === "reject" ? "declined" : "approved";
+        const title = `Overtime ${verb}`;
+        const body = `${job.title} (${dayjs(job.date).tz(TZ).format("ddd D MMM")}) — your overtime was ${verb}.`;
+
+        await Promise.all([
+            notifyUser({
+                userId: worker._id.toString(),
+                companyId: req.user.company_id,
+                event: "overtime_reviewed",
+                title,
+                body,
+                link: "/worker/profile/overtime",
+            }),
+            sendPushToUser(worker._id.toString(), { title, body, tag: `overtime-reviewed-${assignment._id}`, url: "/worker/profile/overtime" }),
+            sendExpoPushToUser(worker._id.toString(), { title, body, tag: `overtime-reviewed-${assignment._id}`, url: "/worker/profile/overtime" }),
+            sendOvertimeReviewed({
+                worker: { email: worker.email, fullname: worker.fullname },
+                job: { title: job.title, date: job.date },
+                decision,
+                approvedMinutes: assignment.approvedMinutes ?? 0,
+                managerNotes: assignment.managerNotes || undefined,
+                company: notifyingCompany ?? { name: "OnClockly" },
+            }),
+        ]);
+    })().catch(err => console.error(`Failed to send overtime-reviewed notification for assignment ${assignment._id}:`, err));
 
     res.status(StatusCodes.OK).json({
         success: true,

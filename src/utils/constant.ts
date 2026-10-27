@@ -210,6 +210,12 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
       "time_off_requested",
       "time_off_reviewed",
 
+      // A manager approved, rejected, or adjusted a worker's pending
+      // overtime on a completed shift (reviewAssignmentOvertime,
+      // workerController.ts) — worker-facing. Without this, the worker had
+      // no way to find out their overtime was reviewed at all.
+      "overtime_reviewed",
+
       "shift_time_changed",
 
       // A worker's assignment was cancelled along with the job itself —

@@ -1202,6 +1202,63 @@ export async function sendTimeOffReviewed({
   });
 }
 
+/** Sent to a worker when a manager reviews their pending overtime
+ *  (reviewAssignmentOvertime, workerController.ts) — approve/adjust/reject
+ *  all land here as a single "it's been decided" notice, same one-event
+ *  shape as sendTimeOffReviewed above. */
+export async function sendOvertimeReviewed({
+  worker,
+  job,
+  decision,
+  approvedMinutes,
+  managerNotes,
+  company,
+}: {
+  worker: { email: string; fullname: string };
+  job: { title: string; date: Date | string };
+  decision: "approve" | "adjust" | "reject";
+  approvedMinutes: number;
+  managerNotes?: string;
+  company: CompanyEmailInfo;
+}) {
+  const firstName = worker.fullname.split(" ")[0];
+  const when = dayjs(job.date).tz(TZ).format("ddd D MMM");
+  const hours = Math.floor(approvedMinutes / 60);
+  const mins = approvedMinutes % 60;
+  const payableDuration = mins ? `${hours}h ${mins}m` : `${hours}h`;
+  const verb = decision === "reject" ? "declined" : "approved";
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, the overtime on your ${job.title} shift (${when}) has been ${verb}.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Shift", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Paid hours", payableDuration)}
+    </table>
+
+    ${managerNotes
+      ? `<table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;margin-top:12px;">
+          ${detailRow("Note", managerNotes)}
+        </table>`
+      : ""
+    }`;
+
+  await sendCompanyEmail({
+    company,
+    to: worker.email,
+    subject: `Overtime ${verb}: ${job.title} — ${when}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `The overtime on your ${job.title} shift (${when}) has been ${verb}.\n\n` +
+      `Paid hours: ${payableDuration}` +
+      `${managerNotes ? `\n\nNote: ${managerNotes}` : ""}`,
+    html: layout({ heading: `Overtime ${verb}`, body }),
+  });
+}
+
 /** Sent to a worker who already accepted (or is currently working) a shift
  *  whose date/time a manager then changed — their acceptance stays valid,
  *  this is purely so the new time doesn't blindside them. */

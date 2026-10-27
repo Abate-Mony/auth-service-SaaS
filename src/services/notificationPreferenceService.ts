@@ -93,6 +93,12 @@ export const DEFAULT_EVENT_PREFERENCES: Record<
       inApp: true,
     },
 
+    overtime_reviewed: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
+
     shift_time_changed: {
       email: true,
       push: true,

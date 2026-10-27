@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyClaims, getMyContacts, getMyEarnings, getMyJobs, getMyLocations, getMyRoute, getMyTeam, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, setWorkerAutoAccept, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto, withdrawOpenShiftClaim, offerShiftGiveaway, cancelShiftGiveaway, takeShiftGiveaway } from "../controllers/workerController.js"
+import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyClaims, getMyContacts, getMyEarnings, getMyJobs, getMyLocations, getMyOvertime, getMyRoute, getMyTeam, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, setWorkerAutoAccept, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto, withdrawOpenShiftClaim, offerShiftGiveaway, cancelShiftGiveaway, takeShiftGiveaway } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 import { requireNotRestricted } from "../middleware/restrictionMiddleware.js";
@@ -13,6 +13,7 @@ router
 router.route("/:id/auto-accept").patch(authorizePermissions("admin", "manager"), setWorkerAutoAccept);
 router.route("/me/hours").get(authorizePermissions("worker"), getMyTotalHours);
 router.route("/me/earnings").get(authorizePermissions("worker"), getMyEarnings);
+router.route("/me/overtime").get(authorizePermissions("worker"), getMyOvertime);
 router.route("/me/contacts").get(authorizePermissions("worker"), getMyContacts);
 router.route("/me/team").get(authorizePermissions("worker"), getMyTeam);
 router.route("/me/locations").get(authorizePermissions("worker"), getMyLocations);
