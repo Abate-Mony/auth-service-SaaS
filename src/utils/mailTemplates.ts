@@ -67,10 +67,15 @@ export async function sendShiftAssigned({
   worker,
   job,
   company,
+  autoAccepted,
 }: {
   worker: { email: string; fullname: string };
   job: ShiftJob;
   company: CompanyEmailInfo;
+  // True when the worker has autoAcceptAssignments set (see userModel.ts) —
+  // the assignment was created already "accepted", so there's nothing to
+  // respond to. Swaps the "accept or decline" copy/CTA for a plain heads-up.
+  autoAccepted?: boolean;
 }) {
   const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
   const hours = Math.floor(job.minutes / 60);
@@ -81,7 +86,7 @@ export async function sendShiftAssigned({
 
   const body = `
     <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
-      Hi ${firstName}, you've been assigned a new shift. Open the app to accept or decline it.
+      Hi ${firstName}, you've been scheduled for a new shift${autoAccepted ? "" : ". Open the app to accept or decline it"}.
     </p>
 
     <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
@@ -91,10 +96,12 @@ export async function sendShiftAssigned({
       ${detailRow("Location", job.address ? `${job.location}, ${job.address}` : job.location)}
     </table>
 
-    ${button(link, "Accept or decline")}
+    ${button(link, autoAccepted ? "View shift" : "Accept or decline")}
 
     <p style="margin:0;font-size:13px;color:#94A3B8;">
-      Please respond as soon as you can so your manager knows whether the shift is covered.
+      ${autoAccepted
+        ? "This shift is already confirmed on your schedule — no action needed."
+        : "Please respond as soon as you can so your manager knows whether the shift is covered."}
     </p>`;
 
   await sendCompanyEmail({
@@ -103,12 +110,12 @@ export async function sendShiftAssigned({
     subject: `New shift: ${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}`,
     text:
       `Hi ${firstName},\n\n` +
-      `You've been assigned a new shift.\n\n` +
+      `You've been scheduled for a new shift.\n\n` +
       `Job: ${job.title}\n` +
       `Date: ${when}\n` +
       `Time: ${job.startTime} – ${job.endTime} (${duration})\n` +
       `Location: ${job.location}\n\n` +
-      `Accept or decline: ${link}`,
+      (autoAccepted ? `View it: ${link}` : `Accept or decline: ${link}`),
     html: layout({ heading: "You've got a new shift", body }),
   });
 }

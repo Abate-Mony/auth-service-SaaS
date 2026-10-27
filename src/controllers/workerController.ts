@@ -78,6 +78,63 @@ export const createWorker: MiddlewareFn = async (req, res) => {
     });
 };
 
+// Admin/manager/owner-only. Toggles whether every NEW assignment created for
+// this worker from now on (one-off, manual re-assign, or a recurring
+// schedule's defaultWorkers spawn) skips the pending step and is created
+// already "accepted" — see jobController.ts (createJob/updateJob/
+// duplicateJob) and generateOccurrences.ts for the branching this flag
+// drives. Turning it ON also sweeps up whatever's currently pending for this
+// worker on today-or-later jobs and accepts those too (e.g. tomorrow's shift
+// that was already created before the toggle was flipped) — a manager
+// turning this on for a full-time worker means "stop making me/them accept
+// shifts", which should cover what's already sitting there, not just what's
+// created afterwards. Past-dated pending assignments are left alone (no
+// point "accepting" a shift that's already happened), and a claim still
+// awaiting manager review (pendingApproval) is left for that review, same
+// as the worker's own accept endpoint. Turning it OFF never un-accepts
+// anything already accepted.
+export const setWorkerAutoAccept: MiddlewareFn = async (req, res) => {
+    const { id } = req.params;
+    const { autoAcceptAssignments } = req.body;
+
+    if (typeof autoAcceptAssignments !== "boolean") {
+        throw new BadRequestError("autoAcceptAssignments must be true or false.");
+    }
+
+    const worker = await userModel.findOneAndUpdate(
+        { _id: id, company: req.user.company_id, role: "worker" },
+        { autoAcceptAssignments },
+        { new: true }
+    );
+    if (!worker) throw new NotFoundError("Worker not found.");
+
+    let acceptedExisting = 0;
+    if (autoAcceptAssignments) {
+        const today = toUtcDay(new Date());
+        const upcomingJobIds = await jobModel
+            .find({ company: req.user.company_id.toString(), date: { $gte: today }, isDeleted: false })
+            .distinct("_id");
+
+        const result = await JobAssignment.updateMany(
+            {
+                worker: id,
+                job: { $in: upcomingJobIds },
+                status: "pending",
+                pendingApproval: { $ne: true },
+                isDeleted: false,
+            },
+            { status: "accepted", acceptedAt: new Date() }
+        );
+        acceptedExisting = result.modifiedCount;
+    }
+
+    res.status(StatusCodes.OK).json({
+        message: "Updated.",
+        worker: sanitizeUser(worker),
+        acceptedExisting,
+    });
+};
+
 export const getMyJobs: MiddlewareFn = async (req, res) => {
     const workerId = new mongoose.Types.ObjectId(req.user.user_id);
     const { search, status, page = "1", limit = "10", start, end } = req.query;

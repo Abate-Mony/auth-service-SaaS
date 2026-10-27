@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyClaims, getMyContacts, getMyEarnings, getMyJobs, getMyLocations, getMyRoute, getMyTeam, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto, withdrawOpenShiftClaim, offerShiftGiveaway, cancelShiftGiveaway, takeShiftGiveaway } from "../controllers/workerController.js"
+import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyClaims, getMyContacts, getMyEarnings, getMyJobs, getMyLocations, getMyRoute, getMyTeam, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, setWorkerAutoAccept, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto, withdrawOpenShiftClaim, offerShiftGiveaway, cancelShiftGiveaway, takeShiftGiveaway } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 import { requireNotRestricted } from "../middleware/restrictionMiddleware.js";
@@ -10,6 +10,7 @@ router
     .route("/").
     post(authorizePermissions("admin", "manager"), createWorker)
     .get(authorizePermissions("worker"), getMyJobs)
+router.route("/:id/auto-accept").patch(authorizePermissions("admin", "manager"), setWorkerAutoAccept);
 router.route("/me/hours").get(authorizePermissions("worker"), getMyTotalHours);
 router.route("/me/earnings").get(authorizePermissions("worker"), getMyEarnings);
 router.route("/me/contacts").get(authorizePermissions("worker"), getMyContacts);

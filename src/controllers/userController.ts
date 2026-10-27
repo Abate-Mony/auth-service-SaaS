@@ -370,6 +370,7 @@ export const getWorkerStats: MiddlewareFn = async (req, res) => {
       createdAt: worker.createdAt,
       profilePhoto: worker.profilePhoto ?? null,
       deletionRequestedAt: worker.deletionRequestedAt ?? null,
+      autoAcceptAssignments: !!worker.autoAcceptAssignments,
     },
     stats: {
       hoursThisWeek: round1(minutesThisWeek / 60),

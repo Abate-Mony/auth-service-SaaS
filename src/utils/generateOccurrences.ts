@@ -185,10 +185,11 @@ export async function generateOccurrences(
     if (recurring.defaultWorkers?.length) {
       const workers = await userModel
         .find({ _id: { $in: recurring.defaultWorkers } })
-        .select("fullname")
+        .select("fullname autoAcceptAssignments")
         .lean();
 
       if (workers.length) {
+        const assignmentNow = new Date();
         const assignments = created.flatMap(job =>
           workers.map(worker => ({
             job: job._id,
@@ -197,6 +198,7 @@ export async function generateOccurrences(
             company: template.company,
             payRate: template.payRate,
             fullname: worker.fullname,
+            ...(worker.autoAcceptAssignments ? { status: "accepted", acceptedAt: assignmentNow } : {}),
           }))
         );
 

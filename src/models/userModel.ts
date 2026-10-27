@@ -104,6 +104,20 @@ const UserSchema = new Schema(
       default: null,
     },
 
+    // Admin/manager/owner-set, worker-only: when true, every new
+    // JobAssignment created for this worker (one-off manager assignment,
+    // manual re-assign, or a recurring schedule's defaultWorkers spawn)
+    // skips the normal "pending" step and is created already "accepted" —
+    // for full-time staff who always do the job anyway and shouldn't have
+    // to tap Accept on every shift. Mirrors the one existing bypass
+    // precedent in the codebase (claimOpenShift's requiresApproval=false
+    // path), just worker-scoped instead of job-scoped. See jobController.ts
+    // (createJob/updateJob/duplicateJob) and utils/generateOccurrences.ts.
+    autoAcceptAssignments: {
+      type: Boolean,
+      default: false,
+    },
+
     lastLogin: Date,
 
     // One entry per logged-in device/session — replaces the old single-slot

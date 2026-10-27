@@ -710,15 +710,20 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     });
 
     if (workerIds.length) {
+        const assignmentNow = new Date();
         await JobAssignment.insertMany(
-            workerIds.map((workerId, idx) => ({
-                job: job._id,
-                worker: workerId,
-                createdBy: currentUserId,
-                payRate: baseJobFields.payRate,
-                company: req.user.company_id,
-                fullname: realWorkers[idx].fullname || "testing her"
-            }))
+            workerIds.map((workerId, idx) => {
+                const autoAccept = !!realWorkers[idx].autoAcceptAssignments;
+                return {
+                    job: job._id,
+                    worker: workerId,
+                    createdBy: currentUserId,
+                    payRate: baseJobFields.payRate,
+                    company: req.user.company_id,
+                    fullname: realWorkers[idx].fullname || "testing her",
+                    ...(autoAccept ? { status: "accepted", acceptedAt: assignmentNow } : {}),
+                };
+            })
         );
         await logActivity({
             job: job._id,
@@ -752,6 +757,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                                 minutes: job.minutes,
                             },
                             company: notifyingCompany ?? { name: "OnClockly" },
+                            autoAccepted: !!w.autoAcceptAssignments,
                         }),
                         // Tagged per job (distinct from the shift-start-reminder
                         // tag namespace) so re-saving/updating doesn't stack duplicates.
@@ -1013,6 +1019,11 @@ export const duplicateJob: MiddlewareFn = async (req, res) => {
     const jobAssignments = await JobAssignment.find({ job: job._id, isDeleted: false });
 
     if (jobAssignments.length) {
+        const autoAcceptWorkerIds = new Set(
+            (await userModel.find({ _id: { $in: jobAssignments.map(ja => ja.worker) }, autoAcceptAssignments: true }).select("_id"))
+                .map(u => u._id.toString())
+        );
+        const assignmentNow = new Date();
         await JobAssignment.insertMany(
             jobAssignments.map((ja) => ({
                 // New assignment for a fresh draft job — none of the
@@ -1023,6 +1034,7 @@ export const duplicateJob: MiddlewareFn = async (req, res) => {
                 payRate: ja.payRate,
                 company: companyId,
                 fullname: ja.fullname,
+                ...(autoAcceptWorkerIds.has(ja.worker.toString()) ? { status: "accepted", acceptedAt: assignmentNow } : {}),
             })),
             { ordered: false }
         );
@@ -1258,6 +1270,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
             }
 
             if (usersToAssign.length) {
+                const assignmentNow = new Date();
                 await JobAssignment.insertMany(
                     usersToAssign.map(user => ({
                         job: job._id,
@@ -1266,6 +1279,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                         company: companyId,
                         payRate: req.body.payRate ?? job.payRate,
                         fullname: user.fullname,
+                        ...(user.autoAcceptAssignments ? { status: "accepted", acceptedAt: assignmentNow } : {}),
                     }))
                 );
             }
@@ -1419,12 +1433,12 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         await applyJobCancellationSideEffects(updatedJob, { actorId: currentUserId });
     }
 
-    let workersToNotify: { _id: mongoose.Types.ObjectId; email: string; fullname: string }[] = [];
+    let workersToNotify: { _id: mongoose.Types.ObjectId; email: string; fullname: string; autoAcceptAssignments?: boolean }[] = [];
     if (newStatus === "draft") {
         workersToNotify = [];
     } else if (oldStatus === "draft") {
         const liveAssignments = await JobAssignment.find({ job: updatedJob._id, isDeleted: false })
-            .populate("worker", "fullname email");
+            .populate("worker", "fullname email autoAcceptAssignments");
         workersToNotify = liveAssignments
             .map(a => a.worker as any)
             .filter(Boolean);
@@ -1453,6 +1467,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                             minutes: updatedJob.minutes,
                         },
                         company: notifyingCompany ?? { name: "OnClockly" },
+                        autoAccepted: !!u.autoAcceptAssignments,
                     }),
                     sendPushToUser(u._id.toString(), {
                         title: "New shift assigned",
