@@ -1,6 +1,6 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
-import { clientLogin } from "../controllers/clientAuthController.js";
+import { clientLogin, clientMobileLogin } from "../controllers/clientAuthController.js";
 import { refresh, logout } from "../controllers/authControler.js";
 
 const router = express.Router();
@@ -17,6 +17,7 @@ const loginLimiter = rateLimit({
 });
 
 router.post("/login", loginLimiter, clientLogin);
+router.post("/mobile-login", loginLimiter, clientMobileLogin);
 // refresh/logout are role-agnostic and already shared by the staff and
 // mobile flows — reused directly rather than reimplemented.
 router.post("/refresh", refresh);
