@@ -1606,11 +1606,31 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     });
 };
 export const deleteJob: MiddlewareFn = async (req, res): Promise<void> => {
+    const companyIdStr = getReqUser(req).company_id.toString();
+
+    const existingJob = await Job.findOne({ _id: req.params.id, isDeleted: false, company: companyIdStr });
+    if (!existingJob) {
+        throw new BadRequestError(`Could not find job with id ${req.params.id}`);
+    }
+
+    // Deleting a job cascades isDeleted:true to every assignment below —
+    // if a worker has already clocked in (or clocked out), that silently
+    // wipes real time-log/billing data instead of just an unstarted
+    // schedule. Block it outright; cancelling the job is the right move
+    // once work has actually started.
+    const hasStartedWork = await JobAssignment.exists({
+        job: existingJob._id,
+        isDeleted: false,
+        status: { $in: ["in-progress", "completed"] },
+    });
+    if (hasStartedWork) {
+        throw new BadRequestError("This job can't be deleted — a worker has already clocked in. Cancel the job instead.");
+    }
 
     const job = await Job.findOneAndUpdate(
         // don't "delete" an already-deleted job; company-scoped so one
         // tenant can never soft-delete another's job by guessing an id.
-        { _id: req.params.id, isDeleted: false, company: getReqUser(req).company_id.toString() },
+        { _id: req.params.id, isDeleted: false, company: companyIdStr },
         { isDeleted: true },
         { new: true }
     );
