@@ -1133,12 +1133,13 @@ export const updateJob: MiddlewareFn = async (req, res) => {
 
     // A draft was never live — nobody could have worked it — so it stays
     // fully editable no matter what date it's set to. Anything else locks
-    // its date/time/pay/charge once the shift date has passed, or once it's
-    // explicitly completed/cancelled: retroactively changing those on a
-    // shift that already happened (or was called off) silently corrupts
-    // payroll and invoicing records. Everything else (notes, instructions,
-    // workers, etc.) stays editable either way. Mirrored client-side by
-    // isJobLocked() in utils/jobLock.ts, which mutes the edit entry points.
+    // its date/time/pay/charge/staffing once the shift date has passed, or
+    // once it's explicitly completed/cancelled: retroactively changing
+    // those on a shift that already happened (or was called off) silently
+    // corrupts payroll and invoicing records, or rewrites who's on record
+    // for it. Everything else (title, notes, instructions, etc.) stays
+    // editable either way. Mirrored client-side by isJobLocked() in
+    // utils/jobLock.ts, which mutes the edit entry points.
     if (job.status !== "draft") {
         const isPastDate = toUtcDay(job.date) < toUtcDay(new Date());
         const isInvoiced = job.billingStatus === "invoiced";
@@ -1157,6 +1158,45 @@ export const updateJob: MiddlewareFn = async (req, res) => {
             if (numDiffers(req.body.payRate, job.payRate)) attemptedChanges.push("pay rate");
             if (numDiffers(req.body.chargeRate, job.chargeRate)) attemptedChanges.push("charge rate");
             if (numDiffers(req.body.chargeAmount, job.chargeAmount)) attemptedChanges.push("charge amount");
+            if (strDiffers(req.body.chargeType, job.chargeType)) attemptedChanges.push("charge type");
+
+            // Deep-compares text/done only — completedBy/completedAt are set
+            // by worker actions elsewhere, not this admin-facing payload.
+            if (req.body.checklist !== undefined) {
+                const normalizeChecklist = (list: unknown) =>
+                    JSON.stringify(
+                        (Array.isArray(list) ? list : []).map((i: any) => ({ text: i?.text ?? "", done: !!i?.done }))
+                    );
+                if (normalizeChecklist(req.body.checklist) !== normalizeChecklist(job.checklist)) {
+                    attemptedChanges.push("checklist");
+                }
+            }
+
+            // Compared by email set, not array identity — the frontend
+            // resends the full current roster on every edit regardless of
+            // what's actually changing, so only a real add/remove counts.
+            if (req.body.workers !== undefined) {
+                let incomingWorkers: any[] = [];
+                try {
+                    incomingWorkers = typeof req.body.workers === "string" ? JSON.parse(req.body.workers) : req.body.workers;
+                } catch {
+                    incomingWorkers = [];
+                }
+                const incomingEmails = new Set(
+                    (Array.isArray(incomingWorkers) ? incomingWorkers : [])
+                        .map((w: any) => w?.email ?? w?.worker?.email)
+                        .filter(Boolean)
+                );
+                const currentAssignmentsForLock = await JobAssignment.find({ job: job._id, isDeleted: false }).populate("worker", "email");
+                const currentEmails = new Set(
+                    currentAssignmentsForLock.map((a: any) => a.worker?.email).filter(Boolean)
+                );
+                const sameRoster = incomingEmails.size === currentEmails.size
+                    && [...incomingEmails].every(e => currentEmails.has(e));
+                if (!sameRoster) {
+                    attemptedChanges.push("assigned workers");
+                }
+            }
 
             if (attemptedChanges.length) {
                 // "Already invoiced" only when that's actually why it's
