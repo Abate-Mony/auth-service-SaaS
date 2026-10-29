@@ -1198,6 +1198,21 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                 }
             }
 
+            // Same null/""-normalization as the real client/site resolution
+            // further down — reassigning either after the fact rewrites who
+            // was actually billed/worked for already-completed, possibly
+            // already-invoiced time.
+            if (req.body.client !== undefined) {
+                const currentClientId = job.client ? job.client.toString() : null;
+                const requestedClientId = req.body.client === null || req.body.client === "" ? null : req.body.client;
+                if (requestedClientId !== currentClientId) attemptedChanges.push("client");
+            }
+            if (req.body.site !== undefined) {
+                const currentSiteId = job.site ? job.site.toString() : null;
+                const requestedSiteId = req.body.site === null || req.body.site === "" ? null : req.body.site;
+                if (requestedSiteId !== currentSiteId) attemptedChanges.push("site");
+            }
+
             if (attemptedChanges.length) {
                 // "Already invoiced" only when that's actually why it's
                 // locked — a past/completed/cancelled invoiced job keeps the
