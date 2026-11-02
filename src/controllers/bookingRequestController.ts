@@ -5,6 +5,7 @@ import BookingRequest from "../models/BookingRequest.js";
 import User from "../models/userModel.js";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { sendBookingRequestDeclinedEmail } from "../utils/mailTemplates.js";
+import { notifyClientBooking } from "../utils/notifyClientBooking.js";
 
 const STATUSES = ["pending", "approved", "declined", "cancelled"] as const;
 
@@ -62,24 +63,36 @@ export const declineBookingRequest: MiddlewareFn = async (req, res) => {
     await request.save();
 
     // Best-effort — the staff member's decline must succeed even if
-    // notifying the client fails. Email is the only channel that actually
-    // reaches a portal user today (no in-app bell or push registration in
-    // client_portal_onclockly yet) — see notifyStaffOfBookingRequest's own
-    // comment in portalBookingRequestController.ts for the fuller reasoning.
+    // notifying the client fails. Email plus the client app's own in-app/
+    // push notification (notifyClient — client-mobile now has a push
+    // registration and notification inbox, see notifyClient.ts).
     (async () => {
         const requester = await User.findById(request.requestedBy).select("fullname email");
         if (!requester?.email) return;
         const canEmail = await shouldNotify(requester._id.toString(), "booking_request_declined", "email");
-        if (!canEmail) return;
-        await sendBookingRequestDeclinedEmail({
-            email: requester.email,
-            fullname: requester.fullname,
-            service: request.service,
-            preferredDate: request.preferredDate,
-            reviewNotes: request.reviewNotes || undefined,
-            company: company_id,
-        });
+        if (canEmail) {
+            await sendBookingRequestDeclinedEmail({
+                email: requester.email,
+                fullname: requester.fullname,
+                service: request.service,
+                preferredDate: request.preferredDate,
+                reviewNotes: request.reviewNotes || undefined,
+                company: company_id,
+            });
+        }
     })().catch(err => console.error(`Failed to notify client of declined booking request ${request._id}:`, err));
+
+    await notifyClientBooking({
+        requesterId: request.requestedBy,
+        clientId: request.client,
+        companyId: company_id,
+        event: "booking_request_declined",
+        title: "Booking request declined",
+        body: request.reviewNotes
+            ? `Your request for ${request.service} wasn't approved: ${request.reviewNotes}`
+            : `Your request for ${request.service} wasn't approved.`,
+        link: "/bookings",
+    });
 
     res.status(StatusCodes.OK).json({ success: true, request });
 };

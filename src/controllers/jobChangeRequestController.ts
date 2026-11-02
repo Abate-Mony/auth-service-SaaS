@@ -7,6 +7,7 @@ import User from "../models/userModel.js";
 import { applyJobCancellationSideEffects } from "./jobController.js";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { sendJobChangeRequestDeclinedEmail } from "../utils/mailTemplates.js";
+import { notifyClientBooking } from "../utils/notifyClientBooking.js";
 
 const STATUSES = ["pending", "approved", "declined", "cancelled"] as const;
 const TYPES = ["reschedule", "cancel"] as const;
@@ -70,16 +71,29 @@ export const declineJobChangeRequest: MiddlewareFn = async (req, res) => {
         const requester = await User.findById(request.requestedBy).select("fullname email");
         if (!requester?.email) return;
         const canEmail = await shouldNotify(requester._id.toString(), "job_change_request_declined", "email");
-        if (!canEmail) return;
-        await sendJobChangeRequestDeclinedEmail({
-            email: requester.email,
-            fullname: requester.fullname,
-            type: request.type as "reschedule" | "cancel",
-            originalDate: request.originalDate,
-            reviewNotes: request.reviewNotes || undefined,
-            company: company_id,
-        });
+        if (canEmail) {
+            await sendJobChangeRequestDeclinedEmail({
+                email: requester.email,
+                fullname: requester.fullname,
+                type: request.type as "reschedule" | "cancel",
+                originalDate: request.originalDate,
+                reviewNotes: request.reviewNotes || undefined,
+                company: company_id,
+            });
+        }
     })().catch(err => console.error(`Failed to notify client of declined job change request ${request._id}:`, err));
+
+    await notifyClientBooking({
+        requesterId: request.requestedBy,
+        clientId: request.client,
+        companyId: company_id,
+        event: request.type === "reschedule" ? "reschedule_request_declined" : "cancel_request_declined",
+        title: request.type === "reschedule" ? "Reschedule request declined" : "Cancellation request declined",
+        body: request.reviewNotes
+            ? `Your ${request.type} request wasn't approved: ${request.reviewNotes}`
+            : `Your ${request.type} request wasn't approved.`,
+        link: `/bookings/${request.job}`,
+    });
 
     res.status(StatusCodes.OK).json({ success: true, request });
 };

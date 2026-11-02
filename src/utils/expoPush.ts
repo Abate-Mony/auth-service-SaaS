@@ -1,4 +1,4 @@
-import { Expo, ExpoPushMessage, ExpoPushTicket } from "expo-server-sdk";
+import { Expo, ExpoPushMessage } from "expo-server-sdk";
 import User from "../models/userModel.js";
 import type { PushPayload } from "./webPush.js";
 
@@ -9,15 +9,18 @@ const expo = new Expo();
 // don't keep retrying it. Mirrors sendPushToUser (webPush.ts) but for the
 // React Native app instead of browser Web Push subscriptions.
 export async function sendExpoPushToUser(userId: string, payload: PushPayload): Promise<void> {
-    const user = await User.findById(userId).select("expoPushTokens");
-    const tokens = (user?.expoPushTokens ?? []).filter(t => Expo.isExpoPushToken(t));
+    const user = await User.findById(userId).select("expoPushTokens clientPushTokens");
+    const tokens = [...new Set([
+        ...(user?.expoPushTokens ?? []),
+        ...(user?.clientPushTokens ?? []).map(registration => registration.token),
+    ])].filter(t => Expo.isExpoPushToken(t));
     if (!tokens.length) return;
 
     const messages: ExpoPushMessage[] = tokens.map(to => ({
         to,
         title: payload.title,
         body: payload.body,
-        data: { url: payload.url, tag: payload.tag },
+        data: { url: payload.url, tag: payload.tag, userId },
         sound: "default",
         priority: "high",
         // Must match the channel the app creates on the device
@@ -27,21 +30,27 @@ export async function sendExpoPushToUser(userId: string, payload: PushPayload): 
         channelId: "default",
     }));
 
-    const tickets: ExpoPushTicket[] = [];
+    const deadTokens: string[] = [];
     for (const chunk of expo.chunkPushNotifications(messages)) {
         try {
-            tickets.push(...(await expo.sendPushNotificationsAsync(chunk)));
+            const tickets = await expo.sendPushNotificationsAsync(chunk);
+            tickets.forEach((ticket, index) => {
+                const token = chunk[index].to;
+                if (typeof token === "string" && ticket.status === "error" && ticket.details?.error === "DeviceNotRegistered") {
+                    deadTokens.push(token);
+                }
+            });
         } catch (err) {
             console.error(`Failed to send Expo push notification(s) to user ${userId}:`, err);
         }
     }
 
-    const deadTokens = tokens.filter((_, i) => {
-        const ticket = tickets[i];
-        return ticket?.status === "error" && ticket.details?.error === "DeviceNotRegistered";
-    });
-
     if (deadTokens.length) {
-        await User.updateOne({ _id: userId }, { $pull: { expoPushTokens: { $in: deadTokens } } });
+        await User.updateOne({ _id: userId }, {
+            $pull: {
+                expoPushTokens: { $in: deadTokens },
+                clientPushTokens: { token: { $in: deadTokens } },
+            },
+        });
     }
 }

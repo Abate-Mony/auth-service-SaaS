@@ -1,3 +1,5 @@
+import { getEffectiveQuoteStatus } from "./quoteExpiry.js";
+
 // Client-safe views of internal models, for the /portal/* endpoints only.
 // Whitelist-style everywhere (explicit field picking, never spread-then-
 // delete) so a field added to Job/Invoice/Site/Quote in the future is
@@ -50,10 +52,10 @@ export const toPortalBooking = (job: any) => ({
 // routes by token, the portal routes by real id. Deliberately NOT built
 // from serializeQuote (same file), which spreads the entire raw document
 // and would leak createdBy/source/depositPercentage/etc.
-export const toPortalQuote = (quote: any) => ({
+export const toPortalQuote = (quote: any, now = new Date()) => ({
   _id: quote._id,
   quoteNumber: quote.quoteNumber,
-  status: quote.status,
+  status: getEffectiveQuoteStatus(quote, now),
   title: quote.title,
   description: quote.description,
   client: quote.clientSnapshot,

@@ -12,6 +12,10 @@ import {
     getPortalSites, getPortalSite,
 } from "../controllers/portalController.js";
 import {
+    getMyNotifications, markNotificationRead, markAllNotificationsRead,
+} from "../controllers/notificationController.js";
+import { saveClientPushToken, removeClientPushToken } from "../controllers/portalPushController.js";
+import {
     createBookingRequest,
     getMyBookingRequests,
     cancelBookingRequest,
@@ -39,6 +43,17 @@ router.get("/invitations/:token", publicInvitationLimiter, validateClientPortalI
 router.post("/invitations/:token/accept", publicInvitationLimiter, acceptClientPortalInvitation);
 
 router.get("/me", authenticateUser, requireClientAccount, getPortalMe);
+
+// Any logged-in client role may register/unregister its own device — this
+// is about which devices receive pushes for this account, not a data-read
+// permission, so it isn't gated by requireClientPermission.
+router.post("/expo-push-token", authenticateUser, requireClientAccount, saveClientPushToken);
+router.delete("/expo-push-token", authenticateUser, requireClientAccount, removeClientPushToken);
+
+// Personal inbox, scoped to both the authenticated user and company.
+router.get("/notifications", authenticateUser, requireClientAccount, getMyNotifications);
+router.patch("/notifications/:id/read", authenticateUser, requireClientAccount, markNotificationRead);
+router.patch("/notifications/read-all", authenticateUser, requireClientAccount, markAllNotificationsRead);
 
 // Registered before /bookings/:id — otherwise Express would match
 // "/bookings/requests" as :id="requests".

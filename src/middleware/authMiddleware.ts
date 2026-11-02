@@ -9,14 +9,16 @@ import { USER_ROLES } from "../utils/types.js";
 import User from "../models/userModel.js";
 import { canClient, type ClientAction, type ClientRole } from "../utils/clientPermissions.js";
 // Verifies the JWT stored in the "token" cookie (web) or sent as a
-// "Authorization: Bearer <token>" header (mobile, which has no shared
-// cookie jar with the browser) and attaches the decoded { user_id, role }
-// payload to req.user for downstream handlers/middleware. Any missing/
+// "Authorization: Bearer <token>" header (mobile). An explicit Bearer
+// selects that session even if a different cookie was retained. Attaches
+// the decoded { user_id, role } payload to req.user for downstream
+// handlers/middleware. Any missing/
 // invalid/expired token is normalized to a single 401 so callers can't
 // distinguish "no token" from "bad token".
 export const authenticateUser: MiddlewareFn = (req, _res, next) => {
   const bearer = req?.headers?.authorization;
-  const token = req?.cookies?.token ?? (bearer?.startsWith("Bearer ") ? bearer.slice(7) : undefined);
+  const bearerMatch = bearer?.match(/^Bearer(?:\s+(.*))?$/i);
+  const token = bearerMatch ? bearerMatch[1]?.trim() : req?.cookies?.token;
   if (!token) throw new UnauthenticatedError("authentication invalid");
 
   try {

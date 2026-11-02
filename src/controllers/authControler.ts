@@ -24,6 +24,7 @@ import {
 } from "../utils/tokenUtils.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../utils/mailTemplates.js";
 import NotificationPreferenceModel from "../models/NotificationPreferenceModel.js";
+import { isClientPushRegistration } from "./portalPushController.js";
 
 const ACCESS_TOKEN_COOKIE_MS = 15 * 60 * 1000;
 const REFRESH_TOKEN_COOKIE_MS = (Number(process.env.REFRESH_TOKEN_EXPIRES_IN_DAYS) || 30) * 24 * 60 * 60 * 1000;
@@ -37,7 +38,8 @@ const MAX_SESSIONS_PER_USER = 10;
 // Issues an access + refresh token pair for `user`, persists the refresh
 // token's hash as one entry in the user's `sessions` array (so multiple
 // devices can be logged in independently — see userModel.ts), and sets
-// both as httpOnly cookies on `res`.
+// both as httpOnly cookies on `res` for cookie-based callers. Explicit
+// mobile endpoints pass writeCookies:false and use the returned tokens.
 //
 // `replaceSessionHash` is set only when rotating an EXISTING session (from
 // refresh() below) — it removes that one entry before pushing the new one,
@@ -47,7 +49,8 @@ const MAX_SESSIONS_PER_USER = 10;
 export const issueTokens = async (
   user: mongoose.Document & { _id: any; role: string; company?: any; client?: any },
   res: import("express").Response,
-  replaceSessionHash?: string
+  replaceSessionHash?: string,
+  options: { writeCookies?: boolean } = {}
 ) => {
   const accessToken = createAccessToken({
     user_id: user._id.toString(),
@@ -80,8 +83,10 @@ export const issueTokens = async (
     }
   );
 
-  res.cookie("refreshToken", refreshToken, setCookies(REFRESH_TOKEN_COOKIE_MS));
-  res.cookie("token", accessToken, setCookies(ACCESS_TOKEN_COOKIE_MS));
+  if (options.writeCookies !== false) {
+    res.cookie("refreshToken", refreshToken, setCookies(REFRESH_TOKEN_COOKIE_MS));
+    res.cookie("token", accessToken, setCookies(ACCESS_TOKEN_COOKIE_MS));
+  }
   return {
     accessToken,
     refreshToken,
@@ -184,7 +189,7 @@ export const mobileLogin: MiddlewareFn = async (req, res) => {
     throw new UnauthorizedError("This app is for workers only. Please use the web dashboard to sign in.");
   }
 
-  const { accessToken, refreshToken } = await issueTokens(user, res);
+  const { accessToken, refreshToken } = await issueTokens(user, res, undefined, { writeCookies: false });
 
   // The mobile app needs this to correctly gate clock-in against the
   // shift's scheduled time in the COMPANY's timezone — a worker testing
@@ -292,12 +297,13 @@ export const register: MiddlewareFn = async (req, res) => {
 // Exchanges a still-valid refresh token for a new access token (rotating
 // the refresh token too, so a stolen-and-replayed old refresh token stops
 // working the moment the legitimate client refreshes). Web sends it as an
-// httpOnly cookie; mobile has no cookie jar, so it sends the one it stored
-// from login/the previous refresh in the body instead — falls back to that
-// when no cookie is present.
+// httpOnly cookie; mobile sends the token stored from login/the previous
+// refresh in the body. An explicit body token takes precedence over a
+// retained cookie so rotation targets the session the caller selected.
 export const refresh: MiddlewareFn = async (req, res) => {
-  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
-  if (!refreshToken) throw new UnauthenticatedError("authentication invalid");
+  const useCookies = req.body?.refreshToken == null;
+  const refreshToken = req.body?.refreshToken ?? req.cookies?.refreshToken;
+  if (typeof refreshToken !== "string" || !refreshToken) throw new UnauthenticatedError("authentication invalid");
 
   const hash = hashRefreshToken(refreshToken);
 
@@ -322,12 +328,14 @@ export const refresh: MiddlewareFn = async (req, res) => {
   // it from being renewed past its ~15-minute lifetime. This is where
   // "disabled" actually takes effect, for staff and portal users alike.
   if (!user || !matchedExpiresAt || matchedExpiresAt < new Date() || !user.isActive) {
-    res.cookie("token", "logout", setCookies());
-    res.cookie("refreshToken", "logout", setCookies());
+    if (useCookies) {
+      res.cookie("token", "logout", setCookies());
+      res.cookie("refreshToken", "logout", setCookies());
+    }
     throw new UnauthenticatedError("authentication invalid");
   }
 
-  const { accessToken, refreshToken: newRefreshToken } = await issueTokens(user, res, hash);
+  const { accessToken, refreshToken: newRefreshToken } = await issueTokens(user, res, hash, { writeCookies: useCookies });
 
   // The matched session came from the deprecated single-slot field — this
   // is the migration: clear it now that the same session lives in
@@ -451,13 +459,17 @@ export const resetPassword: MiddlewareFn = async (req, res) => {
 };
 
 export const logout: MiddlewareFn = async (req, res) => {
-  // Web sends it as an httpOnly cookie; mobile has no cookie jar, so it
-  // sends the one it stored in the body instead — same fallback refresh()
-  // already uses. (Previously this only checked the cookie, so mobile
-  // logout silently did nothing server-side.)
-  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
-  if (refreshToken) {
+  // As in refresh(), an explicit body token selects the session being
+  // cleaned up, even when a newer login left a different cookie behind.
+  // Cookie-only web requests keep their existing fallback.
+  const useCookies = req.body?.refreshToken == null;
+  const refreshToken = req.body?.refreshToken ?? req.cookies?.refreshToken;
+  if (typeof refreshToken === "string" && refreshToken) {
     const hash = hashRefreshToken(refreshToken);
+    const suppliedRegistration = req.body?.clientPushRegistration;
+    const pushRegistration = suppliedRegistration && isClientPushRegistration(suppliedRegistration)
+      ? { token: suppliedRegistration.token, registrationId: suppliedRegistration.registrationId }
+      : undefined;
     // Only the ONE session being logged out of — not every device, unlike
     // resetPassword above. $pull removes just the matching sessions[]
     // entry; $unset also clears the legacy field in case this session was
@@ -466,13 +478,18 @@ export const logout: MiddlewareFn = async (req, res) => {
     await User.updateOne(
       { $or: [{ refreshToken: hash }, { "sessions.tokenHash": hash }] },
       {
-        $pull: { sessions: { tokenHash: hash } },
+        $pull: {
+          sessions: { tokenHash: hash },
+          ...(pushRegistration ? { clientPushTokens: pushRegistration } : {}),
+        },
         $unset: { refreshToken: "", refreshTokenExpiresAt: "" },
       }
     );
   }
 
-  res.cookie("token", "logout", setCookies());
-  res.cookie("refreshToken", "logout", setCookies());
+  if (useCookies) {
+    res.cookie("token", "logout", setCookies());
+    res.cookie("refreshToken", "logout", setCookies());
+  }
   res.status(StatusCodes.OK).json({ msg: "user logged out!" });
 };

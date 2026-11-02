@@ -190,6 +190,17 @@ const UserSchema = new Schema(
       default: [],
     },
 
+    // Separate from worker registrations, and bound to a client login
+    // generation so delayed logout cannot detach a newer session.
+    clientPushTokens: {
+      type: [{
+        _id: false,
+        token: { type: String, required: true },
+        registrationId: { type: String, required: true },
+      }],
+      default: [],
+    },
+
     // Any role can set their own — a personal account setting, not
     // restricted to workers.
     profilePhoto: { type: FileRefSchema, default: null },

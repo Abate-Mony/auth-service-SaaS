@@ -107,7 +107,8 @@ const ALLOWED_ORIGINS = [
   "http://localhost:3000",
   "https://quotes.onclockly.com",
   "https://portal.onclockly.com",
-  "http://localhost:5174"
+  "http://localhost:5174",
+  "http://localhost:8081"
 ];
 
 app.use(

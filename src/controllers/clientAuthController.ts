@@ -36,9 +36,9 @@ export const clientLogin: MiddlewareFn = async (req, res) => {
 
 // POST /client-auth/mobile-login — the client mobile app's equivalent of
 // workerRouter.ts's /auth/mobile/login. clientLogin above only sets
-// httpOnly cookies (built for the web portal); a mobile app has nowhere
-// to read a token from except the response body, same reasoning as the
-// worker app's mobileLogin. Also returns client/company up front (what
+// httpOnly cookies (built for the web portal); the mobile endpoint returns
+// tokens in the response body and leaves browser cookies alone, as does
+// the worker app's mobileLogin. Also returns client/company up front (what
 // getPortalMe otherwise provides) so the app doesn't need a second round
 // trip immediately after login.
 export const clientMobileLogin: MiddlewareFn = async (req, res) => {
@@ -57,7 +57,7 @@ export const clientMobileLogin: MiddlewareFn = async (req, res) => {
         throw new UnauthorizedError("This account has been disabled.");
     }
 
-    const { accessToken, refreshToken } = await issueTokens(user, res);
+    const { accessToken, refreshToken } = await issueTokens(user, res, undefined, { writeCookies: false });
 
     const [client, company] = await Promise.all([
         Client.findOne({ _id: user.client, company: user.company, lifecycle: "client", status: "active", isDeleted: false }).select("name"),

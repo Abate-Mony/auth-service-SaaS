@@ -25,6 +25,7 @@ import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloud
 import { formatAddress } from "../utils/formatAddress.js";
 import { notifyEligibleWorkersOfOpenShift } from "../utils/notifyOpenShiftWorkers.js";
 import { notifyUser } from "../utils/notifyUser.js";
+import { notifyClientBooking } from "../utils/notifyClientBooking.js";
 import { sweepAcceptPendingAssignments } from "../utils/autoAcceptSweep.js";
 
 export const jobDurationMinutes = (startTime: string, endTime: string): number => {
@@ -203,11 +204,12 @@ async function maybeApproveBookingRequest(
     reviewerId: string | mongoose.Types.ObjectId,
     job: InstanceType<typeof Job>
 ): Promise<void> {
-    if (!bookingRequestId || typeof bookingRequestId !== "string") return;
+    if (!bookingRequestId || typeof bookingRequestId !== "string" || !job.client) return;
     try {
         const request = await BookingRequest.findOne({
             _id: bookingRequestId,
             company: companyId,
+            client: job.client,
             status: "pending",
             isDeleted: false,
         });
@@ -218,6 +220,15 @@ async function maybeApproveBookingRequest(
         request.reviewedAt = new Date();
         request.convertedJob = job._id as any;
         await request.save();
+
+        await notifyClientBooking({
+            requesterId: request.requestedBy,
+            companyId, clientId: job.client,
+            event: "booking_request_approved",
+            title: "Booking request approved",
+            body: `Your request for ${request.service} has been approved.`,
+            link: job.status === "published" && !job.isTemplate ? `/bookings/${job._id}` : "/bookings",
+        });
     } catch (err) {
         console.error(`Failed to link booking request ${bookingRequestId} to job ${job._id}:`, err);
     }
@@ -235,13 +246,15 @@ async function maybeApproveJobChangeRequest(
     jobChangeRequestId: unknown,
     companyId: string | mongoose.Types.ObjectId,
     reviewerId: string | mongoose.Types.ObjectId,
-    job: InstanceType<typeof Job>
+    job: InstanceType<typeof Job>,
+    scheduleChangeNotified = false
 ): Promise<void> {
-    if (!jobChangeRequestId || typeof jobChangeRequestId !== "string") return;
+    if (!jobChangeRequestId || typeof jobChangeRequestId !== "string" || !job.client) return;
     try {
         const request = await JobChangeRequest.findOne({
             _id: jobChangeRequestId,
             company: companyId,
+            client: job.client,
             job: job._id,
             type: "reschedule",
             status: "pending",
@@ -253,6 +266,15 @@ async function maybeApproveJobChangeRequest(
         request.reviewedBy = reviewerId as any;
         request.reviewedAt = new Date();
         await request.save();
+
+        if (!scheduleChangeNotified) await notifyClientBooking({
+            requesterId: request.requestedBy,
+            companyId, clientId: job.client,
+            event: "reschedule_request_approved",
+            title: "Reschedule approved",
+            body: `Your reschedule request for "${job.title}" was approved.`,
+            link: `/bookings/${job._id}`,
+        });
     } catch (err) {
         console.error(`Failed to link job change request ${jobChangeRequestId} to job ${job._id}:`, err);
     }
@@ -267,9 +289,17 @@ async function maybeApproveJobChangeRequest(
 // left exactly as they are.
 export async function applyJobCancellationSideEffects(
     updatedJob: InstanceType<typeof Job>,
-    opts: { actorId: string | mongoose.Types.ObjectId; reason?: string }
+    opts: { actorId: string | mongoose.Types.ObjectId; reason?: string; clientVisible?: boolean }
 ): Promise<void> {
     const cancelledAt = new Date();
+    if (opts.clientVisible !== false && updatedJob.client && !updatedJob.isTemplate) {
+        await notifyClientBooking({
+            companyId: updatedJob.company, clientId: updatedJob.client,
+            event: "booking_cancelled", title: "Booking cancelled",
+            body: `Your booking for ${updatedJob.title} has been cancelled.`,
+            link: `/bookings/${updatedJob._id}`,
+        });
+    }
     const liveAssignments = await JobAssignment.find({
         job: updatedJob._id,
         isDeleted: false,
@@ -1503,7 +1533,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     // record. Shared with the staff "approve cancellation request" endpoint
     // (jobChangeRequestController.ts) — see applyJobCancellationSideEffects.
     if (newStatus === "cancelled" && oldStatus !== "cancelled") {
-        await applyJobCancellationSideEffects(updatedJob, { actorId: currentUserId });
+        await applyJobCancellationSideEffects(updatedJob, { actorId: currentUserId, clientVisible: oldStatus === "published" });
     }
 
     let workersToNotify: { _id: mongoose.Types.ObjectId; email: string; fullname: string; autoAcceptAssignments?: boolean }[] = [];
@@ -1645,7 +1675,16 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     // treatment as client/site above. Best-effort, never fails this
     // already-successful edit; see maybeApproveJobChangeRequest's own
     // comment for why there's no separate approve-reschedule endpoint.
-    await maybeApproveJobChangeRequest(req.body.jobChangeRequestId, req.user.company_id, currentUserId, updatedJob);
+    const clientScheduleChanged = oldStatus === "published" && newStatus === "published" && scheduleChanged;
+    if (clientScheduleChanged && updatedJob.client && !updatedJob.isTemplate) {
+        await notifyClientBooking({
+            companyId: updatedJob.company, clientId: updatedJob.client,
+            event: "booking_time_changed", title: "Booking time updated",
+            body: `${updatedJob.title} is now scheduled for ${dayjs(updatedJob.date).utc().format("D MMM YYYY")}, ${updatedJob.startTime}–${updatedJob.endTime}.`,
+            link: `/bookings/${updatedJob._id}`,
+        });
+    }
+    await maybeApproveJobChangeRequest(req.body.jobChangeRequestId, req.user.company_id, currentUserId, updatedJob, clientScheduleChanged);
 
     /**
      * Return updated job with assignments

@@ -1,4 +1,5 @@
 import { StatusCodes } from "http-status-codes";
+import { Expo } from "expo-server-sdk";
 import mongoose from "mongoose";
 import { z } from "zod";
 import { BadRequestError, NotFoundError, UnauthorizedError } from "../errors/customErrors.js";
@@ -14,6 +15,7 @@ import { sanitizeUser } from "../utils/tokenUtils.js";
 import { toPortalBooking, toPortalQuote, toPortalInvoice, toPortalSite } from "../utils/portalSerializers.js";
 import { assertRespondable, applyQuoteResponse } from "./quoteController.js";
 import { buildInvoicePdfDocument } from "./invoiceController.js";
+import { getEffectiveQuoteStatus, quoteStatusFilter } from "../utils/quoteExpiry.js";
 
 // GET /portal/me — proves the whole login -> authenticated-request loop
 // actually works, and is the one place in this milestone that re-verifies
@@ -116,6 +118,7 @@ export const getPortalQuotes: MiddlewareFn = async (req, res) => {
     const { status } = req.query as Record<string, string | undefined>;
     const { page, limit, skip } = parsePagination(req.query as Record<string, string | undefined>);
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
+    const now = new Date();
 
     const query: Record<string, unknown> = {
         client: req.user.client_id,
@@ -123,7 +126,7 @@ export const getPortalQuotes: MiddlewareFn = async (req, res) => {
         isDeleted: false,
     };
     if (status && ["sent", "viewed", "accepted", "declined", "expired"].includes(status)) {
-        query.status = status;
+        Object.assign(query, quoteStatusFilter(status, now));
     } else {
         // Drafts/cancelled quotes are internal-review state — never shown
         // to the client at all, same reasoning as getPublicQuote's token
@@ -138,7 +141,7 @@ export const getPortalQuotes: MiddlewareFn = async (req, res) => {
 
     res.status(StatusCodes.OK).json({
         success: true,
-        quotes: quotes.map(toPortalQuote),
+        quotes: quotes.map(quote => toPortalQuote(quote, now)),
         total,
         totalPages: Math.ceil(total / limit),
         currentPage: page,
@@ -161,7 +164,7 @@ async function findPortalQuote(req: Parameters<MiddlewareFn>[0]) {
 export const getPortalQuote: MiddlewareFn = async (req, res) => {
     const quote = await findPortalQuote(req);
 
-    if (quote.status === "sent") {
+    if (getEffectiveQuoteStatus(quote) === "sent") {
         quote.status = "viewed";
         quote.viewedAt = quote.viewedAt ?? new Date();
         await quote.save();
@@ -319,4 +322,53 @@ export const getPortalSite: MiddlewareFn = async (req, res) => {
     if (!site) throw new NotFoundError("Site not found.");
 
     res.status(StatusCodes.OK).json({ success: true, site: toPortalSite(site) });
+};
+
+// ── Push notifications ───────────────────────────────────────────────────
+
+// POST /portal/expo-push-token — client-mobile's clientPush.ts sends
+// { token, registrationId }; registrationId is a client-side-only ownership
+// id (lets the app precisely remove its own binding on logout/rotation) and
+// is never persisted here — the stored set is just Expo tokens, same shape
+// as the worker app's own saveExpoPushToken (workerController.ts), so a
+// client and worker account on the same physical device still dedupe
+// correctly against each other.
+export const savePortalExpoPushToken: MiddlewareFn = async (req, res) => {
+    const { token } = req.body;
+    if (!token || !Expo.isExpoPushToken(token)) {
+        throw new BadRequestError("Invalid Expo push token.");
+    }
+
+    // A different account previously logged into this same physical device
+    // (staff or another client) may still have this exact token registered —
+    // pull it there first so logging out never leaves this device quietly
+    // receiving a stranger's notifications. Mirrors saveExpoPushToken.
+    await User.updateMany(
+        { _id: { $ne: req.user.user_id }, expoPushTokens: token },
+        { $pull: { expoPushTokens: token } }
+    );
+
+    await User.updateOne(
+        { _id: req.user.user_id },
+        { $addToSet: { expoPushTokens: token } }
+    );
+
+    res.status(StatusCodes.OK).json({ success: true });
+};
+
+// DELETE /portal/expo-push-token — called on logout/session-rotation so a
+// signed-out device stops being a valid delivery target immediately, rather
+// than waiting for Expo to eventually report it dead.
+export const deletePortalExpoPushToken: MiddlewareFn = async (req, res) => {
+    const { token } = req.body;
+    if (!token || typeof token !== "string") {
+        throw new BadRequestError("A push token is required.");
+    }
+
+    await User.updateOne(
+        { _id: req.user.user_id },
+        { $pull: { expoPushTokens: token } }
+    );
+
+    res.status(StatusCodes.OK).json({ success: true });
 };

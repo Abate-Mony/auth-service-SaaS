@@ -18,6 +18,8 @@ import { convertLeadToClient } from "../services/leadConversionService.js";
 import { createDepositInvoice } from "../services/invoice/createDepositInvoice.js";
 import { sendInvoiceNow } from "./invoiceController.js";
 import { buildClientSnapshot } from "../utils/buildClientSnapshot.js";
+import { notifyClientAccount } from "../utils/notifyClient.js";
+import { getEffectiveQuoteStatus, quoteStatusFilter, type QuoteExpiryContext } from "../utils/quoteExpiry.js";
 
 // Same escaping precedent as invoiceController/clientController's search.
 const escapeRegExp = (input: string): string => input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -169,20 +171,9 @@ export const nextQuoteNumber = async (companyId: mongoose.Types.ObjectId, attemp
     return `QT-${String(latestNum + 1 + attempt).padStart(4, "0")}`;
 };
 
-// "expired" is a real stored status (flipped lazily by the public routes
-// below), but a quote that's merely sitting past validUntil and hasn't been
-// touched by a client yet should still read as expired in the admin list
-// without waiting for someone to click the link.
-const computeDisplayStatus = (q: any): string => {
-    if ((q.status === "sent" || q.status === "viewed") && q.validUntil && new Date(q.validUntil) < new Date()) {
-        return "expired";
-    }
-    return q.status;
-};
-
 // Exported for leadController.ts's sendLeadQuote, which returns a quote it
 // built the same way this controller's own handlers do.
-export const serializeQuote = (q: any) => ({
+export const serializeQuote = (q: any, now = new Date()) => ({
     ...q,
     // `client` is overridden to the display name (matches Invoice's own
     // serializeInvoice convention) — clientId carries the real ObjectId
@@ -192,7 +183,7 @@ export const serializeQuote = (q: any) => ({
     client: q.clientSnapshot?.name ?? "",
     clientId: q.client ? String(q.client) : null,
     site: q.site ? String(q.site) : null,
-    status: computeDisplayStatus(q),
+    status: getEffectiveQuoteStatus(q, now),
 });
 
 // GET /quotes?search=&status=&sort=&page=
@@ -207,10 +198,11 @@ export const getAllQuotes: MiddlewareFn = async (req, res) => {
 
     const companyId = new mongoose.Types.ObjectId(req.user.company_id.toString());
     const match: Record<string, any> = { company: companyId, isDeleted: false };
+    const now = new Date();
 
     if (status && status !== "all") {
         if (["draft", "sent", "viewed", "accepted", "declined", "expired", "cancelled"].includes(status)) {
-            match.status = status;
+            match.$and = [quoteStatusFilter(status, now)];
         }
     }
 
@@ -248,7 +240,7 @@ export const getAllQuotes: MiddlewareFn = async (req, res) => {
 
     res.status(StatusCodes.OK).json({
         success: true,
-        quotes: quotes.map(serializeQuote),
+        quotes: quotes.map(quote => serializeQuote(quote, now)),
         page: pageNum,
         limit: limitNum,
         total,
@@ -537,7 +529,7 @@ export async function sendQuoteNow(
 ): Promise<void> {
     if (quote.status === "accepted") throw new BadRequestError("This quote has already been accepted — it can't be resent.");
     if (quote.status === "declined") throw new BadRequestError("This quote was declined. Create a new quote instead of resending it.");
-    if (quote.status === "expired") throw new BadRequestError("This quote has expired. Create a new quote instead of resending it.");
+    if (getEffectiveQuoteStatus(quote) === "expired") throw new BadRequestError("This quote has expired. Create a new quote instead of resending it.");
     if (quote.status === "cancelled") throw new BadRequestError("This quote was cancelled and can't be sent.");
     if (quote.status !== "draft" && quote.status !== "sent" && quote.status !== "viewed") {
         throw new BadRequestError("This quote can't be sent in its current state.");
@@ -583,6 +575,15 @@ export async function sendQuoteNow(
     quote.sentAt = quote.sentAt ?? new Date();
     quote.lastSentAt = new Date();
     await quote.save();
+
+    void notifyClientAccount({
+        clientId: quote.client,
+        companyId: companyId,
+        permission: "quote:read",
+        type: "quote_sent",
+        title: "New quote to review",
+        body: `${quote.title} — ${quote.currency} ${quote.total.toFixed(2)}`,
+    });
 
     // A quote actually going out is a real stage transition — draft
     // creation isn't. Best-effort: a failed lead-stage bump must never
@@ -631,9 +632,10 @@ export const cancelQuoteHandler: MiddlewareFn = async (req, res) => {
 // invitationController's loadAcceptableInvitation.
 // ─────────────────────────────────────────────────────────────
 
-// Looks a quote up by its public token and applies the lazy expiry flip —
-// used by BOTH the view (GET) and respond (POST) endpoints. Deliberately
-// does NOT reject on status: a client opening the link for an already
+// Looks a quote up by its public token — used by BOTH the view (GET) and
+// respond (POST) endpoints. Expiry is derived when viewing/responding;
+// an expired public link must not expire a still-valid portal quote.
+// Deliberately does NOT reject on status: a client opening the link for an already
 // accepted/declined/cancelled quote must still see that outcome rendered
 // (see getPublicQuote below), not a bare "invalid link" error. Only
 // respondToPublicQuote's assertRespondable actually gates on status.
@@ -648,35 +650,25 @@ async function findQuoteByToken(token: unknown) {
     const quote = await Quote.findOne({ responseTokenHash: hash });
     if (!quote) throw new NotFoundError("This quote link is invalid.", "QUOTE_NOT_FOUND");
 
-    const isExpired =
-        (quote.status === "sent" || quote.status === "viewed") &&
-        ((quote.responseTokenExpiresAt ? quote.responseTokenExpiresAt < new Date() : false) ||
-            quote.validUntil < new Date());
-
-    if (isExpired) {
-        quote.status = "expired";
-        await quote.save();
-    }
-
     return quote;
 }
 
 // Gate for the write path only — accepting/declining a quote that's a
 // draft, already terminal, or expired must be rejected outright, unlike
 // viewing it. Exported for portalController.ts's authenticated
-// accept/decline handlers — no token-specific logic in here, reusable as-is.
-export function assertRespondable(quote: InstanceType<typeof Quote>) {
-    if (quote.status === "draft") throw new BadRequestError("This quote hasn't been sent yet.", "QUOTE_NOT_SENT");
-    if (quote.status === "cancelled") throw new BadRequestError("This quote has been cancelled.", "QUOTE_CANCELLED");
-    if (quote.status === "accepted") throw new BadRequestError("This quote has already been accepted.", "QUOTE_ACCEPTED");
-    if (quote.status === "declined") throw new BadRequestError("This quote has already been declined.", "QUOTE_DECLINED");
-    if (quote.status === "expired") throw new BadRequestError("This quote has expired.", "QUOTE_EXPIRED");
+// accept/decline handlers. Public callers additionally check their token.
+export function assertRespondable(quote: InstanceType<typeof Quote>, context: QuoteExpiryContext = {}) {
+    const status = getEffectiveQuoteStatus(quote, new Date(), context);
+    if (status === "draft") throw new BadRequestError("This quote hasn't been sent yet.", "QUOTE_NOT_SENT");
+    if (status === "cancelled") throw new BadRequestError("This quote has been cancelled.", "QUOTE_CANCELLED");
+    if (status === "accepted") throw new BadRequestError("This quote has already been accepted.", "QUOTE_ACCEPTED");
+    if (status === "declined") throw new BadRequestError("This quote has already been declined.", "QUOTE_DECLINED");
+    if (status === "expired") throw new BadRequestError("This quote has expired.", "QUOTE_EXPIRED");
 }
 
 // GET /quotes/public/:token — the client-facing view. Marks the quote
-// "viewed" on first open, same lazy-transition style as the expiry flip
-// above. Succeeds for terminal statuses too, so the page can render the
-// actual outcome (accepted/declined/expired/cancelled) instead of a dead
+// "viewed" on first valid open. Succeeds for terminal statuses too, so the
+// page can render the actual outcome (accepted/declined/expired/cancelled) instead of a dead
 // end. Only client-safe fields go back — no createdBy, no internal
 // chargeType/chargeRate/chargeAmount (see quoteModel.ts: those are the
 // internal billing basis, never what prints for the client) — and no
@@ -685,7 +677,7 @@ export function assertRespondable(quote: InstanceType<typeof Quote>) {
 export const getPublicQuote: MiddlewareFn = async (req, res) => {
     const quote = await findQuoteByToken(req.params.token);
 
-    if (quote.status === "sent") {
+    if (getEffectiveQuoteStatus(quote, new Date(), { publicToken: true }) === "sent") {
         quote.status = "viewed";
         quote.viewedAt = quote.viewedAt ?? new Date();
         await quote.save();
@@ -697,7 +689,7 @@ export const getPublicQuote: MiddlewareFn = async (req, res) => {
         success: true,
         quote: {
             quoteNumber: quote.quoteNumber,
-            status: quote.status,
+            status: getEffectiveQuoteStatus(quote, new Date(), { publicToken: true }),
             title: quote.title,
             description: quote.description,
             client: quote.clientSnapshot,
@@ -743,8 +735,13 @@ const respondSchema = z
 // email instead of letting them re-type their own identity.
 export async function applyQuoteResponse(
     quote: InstanceType<typeof Quote>,
-    data: { action: "accept" | "decline"; name: string; email: string; declineReason?: string }
+    data: { action: "accept" | "decline"; name: string; email: string; declineReason?: string },
+    context: QuoteExpiryContext = {}
 ) {
+    // Recheck after any caller's awaited identity lookup, before the
+    // status change or any lead conversion, invoice or email side effect.
+    assertRespondable(quote, context);
+
     if (data.action === "accept") {
         quote.status = "accepted";
         quote.acceptedAt = new Date();
@@ -839,7 +836,7 @@ export async function applyQuoteResponse(
 export const respondToPublicQuote: MiddlewareFn = async (req, res) => {
     const data = parseOrThrow(respondSchema, req.body);
     const quote = await findQuoteByToken(req.params.token);
-    assertRespondable(quote);
+    assertRespondable(quote, { publicToken: true });
     // Rebuilt field-by-field rather than passed as `data` directly —
     // parseOrThrow<T>'s generic return apparently widens every field to
     // optional for applyQuoteResponse's stricter parameter type (visible
@@ -853,7 +850,7 @@ export const respondToPublicQuote: MiddlewareFn = async (req, res) => {
         name: data.name,
         email: data.email,
         declineReason: data.declineReason,
-    });
+    }, { publicToken: true });
 
     res.status(StatusCodes.OK).json({ success: true, status: quote.status });
 };

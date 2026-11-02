@@ -18,6 +18,7 @@ import { calculateVat, round2 } from "../services/invoice/calculations.js";
 import { createDraftInvoice, nextInvoiceNumber } from "../services/invoice/createDraftInvoice.js";
 import dayjs from "../utils/dayjsSetup.js";
 import { toUtcDay } from "../utils/dates.js";
+import { notifyClientAccount } from "../utils/notifyClient.js";
 
 // Same escaping precedent as clientController's search — regex
 // metacharacters in user input would otherwise be interpreted as regex
@@ -612,6 +613,15 @@ export async function sendInvoiceNow(
     invoice.lastSentAt = new Date();
     invoice.sentTo = Array.from(new Set([...(invoice.sentTo ?? []), billingEmail]));
     await invoice.save();
+
+    void notifyClientAccount({
+        clientId: invoice.client,
+        companyId: companyId,
+        permission: "invoice:read",
+        type: "invoice_sent",
+        title: "New invoice",
+        body: `Invoice ${invoice.invoiceNumber} — ${invoice.currency} ${invoice.total.toFixed(2)}, due ${dayjs(invoice.dueDate).format("D MMM YYYY")}.`,
+    });
 }
 
 export const sendInvoiceHandler: MiddlewareFn = async (req, res) => {
