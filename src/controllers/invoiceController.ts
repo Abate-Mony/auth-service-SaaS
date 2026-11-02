@@ -11,7 +11,7 @@ import Company from "../models/company.js";
 import { generateInvoicePdf } from "../utils/invoicePdf.js";
 import { resolveInvoiceTemplate } from "../utils/resolveInvoiceTemplate.js";
 import { fetchImageBuffer } from "../utils/fetchImageBuffer.js";
-import { sendInvoiceEmail } from "../utils/mailTemplates.js";
+import { sendInvoiceEmail, sendInvoicePaidEmail } from "../utils/mailTemplates.js";
 import { getEligibleWork } from "../services/invoice/eligibility.js";
 import { computeCurrentBillingPeriod } from "../services/invoice/billingPeriod.js";
 import { calculateVat, round2 } from "../services/invoice/calculations.js";
@@ -869,6 +869,21 @@ export const markInvoicePaid: MiddlewareFn = async (req, res) => {
             title: "Invoice paid",
             body: `Invoice ${invoice.invoiceNumber} — ${invoice.currency} ${invoice.total.toFixed(2)} has been marked as paid.`,
         });
+
+        const billingEmail = invoice.clientSnapshot?.billingEmail;
+        if (billingEmail) {
+            Company.findById(companyId).select("name emailSettings").lean()
+                .then(company => sendInvoicePaidEmail({
+                    to: billingEmail,
+                    company: company ?? { name: "OnClockly" },
+                    clientContactName: invoice.clientSnapshot?.contactName,
+                    invoiceNumber: invoice.invoiceNumber,
+                    total: invoice.total,
+                    currency: invoice.currency,
+                    paidAt: invoice.paidAt ?? new Date(),
+                }))
+                .catch(err => console.error(`Failed to send payment-received email for invoice ${invoice.invoiceNumber}:`, err));
+        }
     }
 
     res.status(StatusCodes.OK).json({ success: true, invoice: serializeInvoice(invoice.toObject()) });

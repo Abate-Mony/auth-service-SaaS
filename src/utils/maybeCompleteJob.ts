@@ -13,12 +13,15 @@
 import Job from "../models/jobModel.js";
 import JobAssignment from "../models/JobAssignment.js";
 import userModel from "../models/userModel.js";
+import Client from "../models/clientModel.js";
+import Company from "../models/company.js";
 import { logActivity } from "./logActivity.js";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { sendPushToUser } from "./webPush.js";
 import { sendExpoPushToUser } from "./expoPush.js";
 import { notifyUser } from "./notifyUser.js";
 import { notifyClientBooking } from "./notifyClientBooking.js";
+import { sendBookingCompletedEmail } from "./mailTemplates.js";
 
 const TERMINAL_ASSIGNMENT_STATUSES = ["completed", "declined", "cancelled"];
 
@@ -52,7 +55,7 @@ async function notifyManagerJobCompleted(job: { _id: unknown; title: string; cre
  * actually ready.
  */
 export async function maybeCompleteJob(jobId: unknown): Promise<void> {
-  const job = await Job.findOne({ _id: jobId as string, isDeleted: false, isTemplate: false }).select("status title createdBy company client");
+  const job = await Job.findOne({ _id: jobId as string, isDeleted: false, isTemplate: false }).select("status title createdBy company client date");
   if (!job || job.status !== "published") return;
 
   const assignments = await JobAssignment.find({ job: jobId as string, isDeleted: false }).select("status");
@@ -91,5 +94,28 @@ export async function maybeCompleteJob(jobId: unknown): Promise<void> {
       body: `${job.title} has been completed.`,
       link: `/bookings/${job._id}`,
     }).catch(err => console.error(`Failed to notify client of job completion for job ${job._id}:`, err));
+
+    void sendClientCompletionEmail(job as { _id: unknown; title: string; company: unknown; client: unknown; date: Date });
+  }
+}
+
+async function sendClientCompletionEmail(job: { _id: unknown; title: string; company: unknown; client: unknown; date: Date }) {
+  try {
+    const [client, company] = await Promise.all([
+      Client.findById(job.client as string).select("billingEmail contacts").lean(),
+      Company.findById(job.company as string).select("name emailSettings").lean(),
+    ]);
+    const billingEmail = client?.billingEmail;
+    if (!billingEmail) return;
+
+    await sendBookingCompletedEmail({
+      to: billingEmail,
+      company: company ?? { name: "OnClockly" },
+      clientContactName: client.contacts?.find((c: any) => c.isPrimary)?.name ?? client.contacts?.[0]?.name,
+      jobTitle: job.title,
+      date: job.date,
+    });
+  } catch (err) {
+    console.error(`Failed to send booking-completed email for job ${job._id}:`, err);
   }
 }

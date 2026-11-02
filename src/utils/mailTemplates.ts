@@ -779,6 +779,62 @@ export async function sendPaymentReminderEmail({
   });
 }
 
+/** Sent when staff marks an invoice as fully paid — a receipt the client
+ *  can keep, same "lighter-weight, no re-attached PDF" shape as the
+ *  overdue reminder above. */
+export async function sendInvoicePaidEmail({
+  to,
+  company,
+  clientContactName,
+  invoiceNumber,
+  total,
+  currency,
+  paidAt,
+}: {
+  to: string;
+  company: CompanyRef;
+  clientContactName?: string;
+  invoiceNumber: string;
+  total: number;
+  currency: string;
+  paidAt: Date | string;
+}) {
+  const companyName = typeof company === "object" && company && "name" in company ? company.name ?? "OnClockly" : "OnClockly";
+  const symbol = currency === "USD" ? "$" : currency === "EUR" ? "€" : "£";
+  const amount = `${symbol}${total.toFixed(2)}`;
+  const paidOn = dayjs(paidAt).tz(TZ).format("D MMMM YYYY");
+  const greeting = clientContactName ? clientContactName.split(" ")[0] : "there";
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${greeting}, this confirms ${companyName} has received your payment for invoice ${invoiceNumber}. Thanks!
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Invoice", invoiceNumber)}
+      ${detailRow("Amount paid", amount)}
+      ${detailRow("Paid on", paidOn)}
+    </table>
+
+    <p style="margin:20px 0 0;font-size:13px;color:#94A3B8;">
+      Keep this email as your receipt. Reach out to ${companyName} directly with any questions.
+    </p>`;
+
+  await sendCompanyEmail({
+    company,
+    to,
+    subject: `Payment received — invoice ${invoiceNumber}`,
+    text:
+      `Hi ${greeting},\n\n` +
+      `This confirms ${companyName} has received your payment for invoice ${invoiceNumber}. Thanks!\n\n` +
+      `Invoice: ${invoiceNumber}\n` +
+      `Amount paid: ${amount}\n` +
+      `Paid on: ${paidOn}\n\n` +
+      `Keep this email as your receipt.`,
+    html: layout({ heading: `Payment received — invoice ${invoiceNumber}`, body }),
+  });
+}
+
 // ─────────────────────────────────────────────
 // Open shifts
 // ─────────────────────────────────────────────
@@ -1621,5 +1677,52 @@ export async function sendJobChangeRequestDeclinedEmail({
       `Your ${verb} request for the booking on ${when} wasn't able to go ahead.` +
       `${reviewNotes ? `\n\nNote: ${reviewNotes}` : ""}`,
     html: layout({ heading: `${verb[0].toUpperCase()}${verb.slice(1)} request declined`, body }),
+  });
+}
+
+/** Sent once a job auto-completes (every assigned worker has clocked out)
+ *  — a non-urgent confirmation for the client's records, see
+ *  maybeCompleteJob.ts. */
+export async function sendBookingCompletedEmail({
+  to,
+  company,
+  clientContactName,
+  jobTitle,
+  date,
+}: {
+  to: string;
+  company: CompanyRef;
+  clientContactName?: string;
+  jobTitle: string;
+  date: Date | string;
+}) {
+  const companyName = typeof company === "object" && company && "name" in company ? company.name ?? "OnClockly" : "OnClockly";
+  const greeting = clientContactName ? clientContactName.split(" ")[0] : "there";
+  const when = dayjs(date).tz(TZ).format("D MMMM YYYY");
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${greeting}, ${companyName} has completed your booking.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Booking", jobTitle)}
+      ${detailRow("Date", when)}
+    </table>
+
+    <p style="margin:20px 0 0;font-size:13px;color:#94A3B8;">
+      Reach out to ${companyName} directly with any questions about this visit.
+    </p>`;
+
+  await sendCompanyEmail({
+    company,
+    to,
+    subject: `"${jobTitle}" has been completed`,
+    text:
+      `Hi ${greeting},\n\n` +
+      `${companyName} has completed your booking.\n\n` +
+      `Booking: ${jobTitle}\n` +
+      `Date: ${when}`,
+    html: layout({ heading: "Booking completed", body }),
   });
 }
