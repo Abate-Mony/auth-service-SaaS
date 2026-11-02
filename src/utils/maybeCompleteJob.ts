@@ -18,6 +18,7 @@ import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { sendPushToUser } from "./webPush.js";
 import { sendExpoPushToUser } from "./expoPush.js";
 import { notifyUser } from "./notifyUser.js";
+import { notifyClientBooking } from "./notifyClientBooking.js";
 
 const TERMINAL_ASSIGNMENT_STATUSES = ["completed", "declined", "cancelled"];
 
@@ -51,7 +52,7 @@ async function notifyManagerJobCompleted(job: { _id: unknown; title: string; cre
  * actually ready.
  */
 export async function maybeCompleteJob(jobId: unknown): Promise<void> {
-  const job = await Job.findOne({ _id: jobId as string, isDeleted: false, isTemplate: false }).select("status title createdBy company");
+  const job = await Job.findOne({ _id: jobId as string, isDeleted: false, isTemplate: false }).select("status title createdBy company client");
   if (!job || job.status !== "published") return;
 
   const assignments = await JobAssignment.find({ job: jobId as string, isDeleted: false }).select("status");
@@ -81,4 +82,14 @@ export async function maybeCompleteJob(jobId: unknown): Promise<void> {
   await notifyManagerJobCompleted({ _id: job._id, title: job.title, createdBy: job.createdBy, company: job.company }).catch(err =>
     console.error(`Failed to notify manager of job completion for job ${job._id}:`, err)
   );
+
+  if (job.client) {
+    await notifyClientBooking({
+      companyId: job.company, clientId: job.client,
+      event: "booking_completed",
+      title: "Booking completed",
+      body: `${job.title} has been completed.`,
+      link: `/bookings/${job._id}`,
+    }).catch(err => console.error(`Failed to notify client of job completion for job ${job._id}:`, err));
+  }
 }

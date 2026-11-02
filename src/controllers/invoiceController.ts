@@ -852,12 +852,24 @@ export const markInvoicePaid: MiddlewareFn = async (req, res) => {
     if (data.paymentMethod !== undefined) invoice.paymentMethod = data.paymentMethod;
     if (data.paymentNotes !== undefined) invoice.paymentNotes = data.paymentNotes;
 
-    if (invoice.amountPaid >= invoice.total) {
+    const justPaid = invoice.status !== "paid" && invoice.amountPaid >= invoice.total;
+    if (justPaid) {
         invoice.status = "paid";
         invoice.paidAt = data.paidAt ? new Date(data.paidAt) : new Date();
     }
 
     await invoice.save();
+
+    if (justPaid) {
+        void notifyClientAccount({
+            clientId: invoice.client,
+            companyId: companyId,
+            permission: "invoice:read",
+            type: "invoice_paid",
+            title: "Invoice paid",
+            body: `Invoice ${invoice.invoiceNumber} — ${invoice.currency} ${invoice.total.toFixed(2)} has been marked as paid.`,
+        });
+    }
 
     res.status(StatusCodes.OK).json({ success: true, invoice: serializeInvoice(invoice.toObject()) });
 };

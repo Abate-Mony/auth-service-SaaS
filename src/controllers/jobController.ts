@@ -649,6 +649,10 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         }
 
         await logActivity({ job: templateJob._id, type: "job_created", actor: currentUserId });
+        // Shared by the worker summary push below and the client
+        // notification further down — neither depends on workers being
+        // assigned, so it's computed once up here regardless of workerIds.
+        const daysLabel = describeRecurrence(frequency, intervalNum, normalizedDaysOfWeek);
         if (workerIds.length && generatedJobs.length) {
             await Promise.all(
                 generatedJobs.map(job =>
@@ -667,7 +671,6 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             const occurrenceDates = generatedJobs.map(j => j.date.getTime()).sort((a, b) => a - b);
             const firstDate = new Date(occurrenceDates[0]);
             const lastDate = new Date(occurrenceDates[occurrenceDates.length - 1]);
-            const daysLabel = describeRecurrence(frequency, intervalNum, normalizedDaysOfWeek);
             const notifyingCompany = await Company.findById(req.user.company_id).select("name emailSettings").lean();
 
             Promise.all(
@@ -717,6 +720,19 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         }
 
         await maybeApproveBookingRequest(bookingRequestId, req.user.company_id, currentUserId, templateJob);
+
+        // Only for jobs staff scheduled directly — a booking-request-derived
+        // series already got "booking_request_approved" above, and a second
+        // notification for the same series would be redundant.
+        if (!bookingRequestId && templateJob.client && generatedJobs.length) {
+            await notifyClientBooking({
+                companyId: req.user.company_id, clientId: templateJob.client,
+                event: "job_scheduled",
+                title: "New booking scheduled",
+                body: `${templateJob.title} — ${daysLabel}, ${generatedJobs.length} shifts scheduled`,
+                link: "/bookings",
+            });
+        }
 
         res.status(StatusCodes.CREATED).json({
             success: true,
@@ -829,6 +845,19 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     }
 
     await maybeApproveBookingRequest(bookingRequestId, req.user.company_id, currentUserId, job);
+
+    // Only for jobs staff scheduled directly — a booking-request-derived
+    // job already got "booking_request_approved" above, and a draft/template
+    // isn't real to the client yet (mirrors the worker-assignment gate above).
+    if (!bookingRequestId && job.client && jobStatus !== "draft" && !job.isTemplate) {
+        await notifyClientBooking({
+            companyId: req.user.company_id, clientId: job.client,
+            event: "job_scheduled",
+            title: "New booking scheduled",
+            body: `${job.title} — ${dayjs(job.date).tz(TZ).format("ddd D MMM")}, ${job.startTime} at ${job.location}`,
+            link: `/bookings/${job._id}`,
+        });
+    }
 
     res.status(StatusCodes.CREATED).json({ success: true, job });
 };

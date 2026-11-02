@@ -4,6 +4,7 @@ import { scheduledStartOf } from "./dates.js";
 import { sendShiftReminder } from "./mailTemplates.js";
 import { sendPushToUser } from "./webPush.js";
 import { sendExpoPushToUser } from "./expoPush.js";
+import { notifyClientBooking } from "./notifyClientBooking.js";
 
 const REMINDER_WINDOW_MINUTES = 30;
 
@@ -86,6 +87,24 @@ export async function sendUpcomingShiftReminders() {
       } catch (err) {
         console.error(`Failed to send shift reminder for assignment ${assignment._id}:`, err);
         // reminderSentAt stays unset so the next tick retries this one
+      }
+    }
+
+    // One notification per booking, not per assignment — a job with three
+    // workers would otherwise fire this three times for the same client.
+    for (const job of dueJobs) {
+      if (!job.client || job.clientReminderSentAt || job.isTemplate) continue;
+      try {
+        await notifyClientBooking({
+          companyId: job.company, clientId: job.client,
+          event: "booking_starting_soon",
+          title: "Booking starting soon",
+          body: `${job.title} starts at ${job.startTime} — ${job.location}`,
+          link: `/bookings/${job._id}`,
+        });
+        await Job.updateOne({ _id: job._id }, { clientReminderSentAt: new Date() });
+      } catch (err) {
+        console.error(`Failed to send client shift reminder for job ${job._id}:`, err);
       }
     }
   } finally {

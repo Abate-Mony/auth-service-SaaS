@@ -100,6 +100,11 @@ const JobSchema = new Schema(
         },
         isDeleted: { type: Boolean, default: false, index: true },
 
+        // Job-level (not per-assignment, unlike JobAssignment.reminderSentAt) —
+        // the client should hear "starting soon" once per booking regardless
+        // of how many workers are assigned. See sendUpcomingShiftReminders.ts.
+        clientReminderSentAt: { type: Date, default: null },
+
         // ── Staffing ──────────────────────────────────────────────────────
         requiredWorkers: { type: Number, default: 1, min: 1 },
         supervisor: {
