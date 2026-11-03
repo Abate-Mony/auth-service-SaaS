@@ -105,6 +105,39 @@ const JobAssignmentSchema = new Schema(
     overtimeReviewedBy: { type: Schema.Types.ObjectId, ref: "User" },
     overtimeReviewedAt: Date,
 
+    // ── Missed shift review ─────────────────────────────────────────────
+    // For the opposite case from the block above: a worker who never
+    // clocked in at all (status stays "accepted" — nothing else moves it).
+    // Set by markMissedShifts.ts once the job's scheduled end has passed
+    // with no checkedInAt, same per-minute cron as autoCloseAbandonedShifts.
+    // The worker then has missedShiftReviewDeadline (48h after scheduled
+    // end, fixed, not company-configurable) to self-report hours via
+    // requestMissedShiftReview; a manager approves (synthesizes
+    // checkedInAt/checkedOutAt the same way manuallyAdjustAssignment does)
+    // or declines (status stays "missed shift", resubmission allowed until
+    // the deadline) via reviewMissedShiftRequest.
+    missedShiftDetectedAt: { type: Date, default: null },
+    missedShiftReviewDeadline: { type: Date, default: null },
+    missedShiftReviewStatus: {
+      type: String,
+      enum: ["none", "pending", "approved", "declined"],
+      default: "none",
+      index: true,
+    },
+    missedShiftRequestedStartTime: { type: String },
+    missedShiftRequestedEndTime: { type: String },
+    missedShiftReason: {
+      type: String,
+      enum: ["phone_died", "no_signal", "forgot_to_clock_in", "other"],
+    },
+    missedShiftNote: { type: String, default: "", trim: true },
+    missedShiftRequestedAt: Date,
+    missedShiftReviewedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    missedShiftReviewedAt: Date,
+    missedShiftReviewNote: { type: String, default: "", trim: true },
+    missedShiftApprovedStartTime: { type: String },
+    missedShiftApprovedEndTime: { type: String },
+
     // ── Manual adjustment ──────────────────────────────────────────────
     // Set when a manager/admin records hours worked directly (worker's
     // phone died, forgot to clock in/out, etc. — see

@@ -1,6 +1,6 @@
 // @ts-ignore
 import express from "express";
-import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyClaims, getMyContacts, getMyEarnings, getMyJobs, getMyLocations, getMyOvertime, getMyRoute, getMyTeam, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, reviewAssignmentOvertime, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, setWorkerAutoAccept, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto, withdrawOpenShiftClaim, offerShiftGiveaway, cancelShiftGiveaway, takeShiftGiveaway } from "../controllers/workerController.js"
+import { acceptRecurringSeries, claimOpenShift, createWorker, declineRecurringSeries, endWorkerBreak, getActiveJob, getJob, getMyClaims, getMyContacts, getMyEarnings, getMyJobs, getMyLocations, getMyOvertime, getMyRoute, getMyTeam, getMyTotalHours, getOpenShifts, getRecurringAssignmentGroups, getWorkerDashboardStats, manuallyAdjustAssignment, markAssignmentNoShow, requestAccountDeletion, requestMissedShiftReview, reviewAssignmentOvertime, reviewMissedShiftRequest, reviewOpenShiftClaim, saveExpoPushToken, savePushSubscription, setWorkerAutoAccept, startWorkerBreak, toggleJobChecklistItem, updateAssignmentNote, updateWorkerJobStatus, uploadAssignmentPhoto, withdrawMissedShiftRequest, withdrawOpenShiftClaim, offerShiftGiveaway, cancelShiftGiveaway, takeShiftGiveaway } from "../controllers/workerController.js"
 import { authorizePermissions }
     from "../middleware/authMiddleware.js";
 import { requireNotRestricted } from "../middleware/restrictionMiddleware.js";
@@ -47,6 +47,11 @@ router.route("/assignments/:assignmentId/overtime")
     .patch(authorizePermissions("admin", "manager"), reviewAssignmentOvertime);
 router.route("/assignments/:assignmentId/manual-adjustment")
     .patch(authorizePermissions("admin", "manager"), manuallyAdjustAssignment);
+router.route("/assignments/:assignmentId/missed-shift-request")
+    .post(authorizePermissions("worker"), requestMissedShiftReview)
+    .delete(authorizePermissions("worker"), withdrawMissedShiftRequest);
+router.route("/assignments/:assignmentId/missed-shift-request/review")
+    .patch(authorizePermissions("admin", "manager"), reviewMissedShiftRequest);
 router.route("/assignments/:assignmentId/no-show")
     .patch(authorizePermissions("admin", "manager"), markAssignmentNoShow);
 router.route("/assignments/:assignmentId/claim-review")

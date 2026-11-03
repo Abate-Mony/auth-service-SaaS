@@ -146,6 +146,30 @@ export const DEFAULT_EVENT_PREFERENCES: Record<
       push: true,
       inApp: true,
     },
+
+    booking_reviewed: {
+      email: false,
+      push: true,
+      inApp: true,
+    },
+
+    missed_shift_detected: {
+      email: false,
+      push: true,
+      inApp: true,
+    },
+
+    missed_shift_review_requested: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
+
+    missed_shift_reviewed: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
   };
 
 function getDefaultPreference(

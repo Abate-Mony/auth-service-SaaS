@@ -100,10 +100,25 @@ const JobSchema = new Schema(
         },
         isDeleted: { type: Boolean, default: false, index: true },
 
+        // ── Client review ─────────────────────────────────────────────────
+        // Set by the client portal once a booking is completed — see
+        // submitBookingReview in portalController.ts. Resubmitting (editing
+        // a rating) overwrites the previous value rather than being locked
+        // after the first submission.
+        clientRating: { type: Number, min: 1, max: 5 },
+        clientReviewComment: { type: String, trim: true, maxlength: 1000 },
+        clientReviewedAt: { type: Date },
+
         // Job-level (not per-assignment, unlike JobAssignment.reminderSentAt) —
         // the client should hear "starting soon" once per booking regardless
         // of how many workers are assigned. See sendUpcomingShiftReminders.ts.
         clientReminderSentAt: { type: Date, default: null },
+
+        // Set once the client's "booking completed" notification/email has
+        // actually gone out — distinct from the job's own status flipping
+        // to "completed", which can happen first while an assignment's
+        // overtime is still pending manager review. See maybeCompleteJob.ts.
+        clientCompletedNotifiedAt: { type: Date, default: null },
 
         // ── Staffing ──────────────────────────────────────────────────────
         requiredWorkers: { type: Number, default: 1, min: 1 },

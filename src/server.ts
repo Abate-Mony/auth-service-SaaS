@@ -44,6 +44,7 @@ import cron from "node-cron";
 import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGeneration.js";
 import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
 import { autoCloseAbandonedShifts } from "./utils/autoCloseAbandonedShifts.js";
+import { markMissedShifts } from "./utils/markMissedShifts.js";
 import { sendOverduePaymentReminders } from "./utils/sendPaymentReminders.js";
 import { sendStaleQuoteRequestReminders } from "./utils/sendStaleQuoteRequestReminders.js";
 import { generateRecurringInvoices } from "./services/invoice/recurringInvoiceGenerator.js";
@@ -272,6 +273,7 @@ const start = async (): Promise<void> => {
     cron.schedule("* * * * *", () => {
       sendUpcomingShiftReminders();
       autoCloseAbandonedShifts();
+      markMissedShifts();
     });
     // 8am UTC — a reminder email landing at 1am does nobody any good.
     cron.schedule("0 8 * * *", () => {

@@ -25,6 +25,10 @@ export const ACTIVITY_TYPES = [
   "assignment_overtime_reviewed",
   "assignment_manually_adjusted",
   "assignment_no_show",
+  "assignment_missed_shift_detected",
+  "assignment_missed_shift_requested",
+  "assignment_missed_shift_withdrawn",
+  "assignment_missed_shift_reviewed",
   "note_added",
 ] as const;
 

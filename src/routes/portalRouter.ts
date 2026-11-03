@@ -6,7 +6,7 @@ import {
 } from "../controllers/clientPortalInvitationController.js";
 import {
     getPortalMe,
-    getPortalBookings, getPortalBooking,
+    getPortalBookings, getPortalBooking, submitBookingReview,
     getPortalQuotes, getPortalQuote, acceptPortalQuote, declinePortalQuote,
     getPortalInvoices, getPortalInvoice, downloadPortalInvoicePdf,
     getPortalSites, getPortalSite,
@@ -66,6 +66,7 @@ router.get("/bookings/:id", authenticateUser, requireClientAccount, requireClien
 
 router.post("/bookings/:id/reschedule-request", authenticateUser, requireClientAccount, requireClientPermission("booking:update"), createRescheduleRequest);
 router.post("/bookings/:id/cancel-request", authenticateUser, requireClientAccount, requireClientPermission("booking:cancel"), createCancelRequest);
+router.patch("/bookings/:id/review", authenticateUser, requireClientAccount, requireClientPermission("booking:update"), submitBookingReview);
 router.get("/bookings/:id/change-requests", authenticateUser, requireClientAccount, requireClientPermission("booking:read"), getBookingChangeRequests);
 
 // Gated inline in the controller (not via requireClientPermission) — which

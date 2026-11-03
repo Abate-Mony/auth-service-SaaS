@@ -418,7 +418,8 @@ export const getJob: MiddlewareFn = async (req, res) => {
 
     const [job, jobAssignment] = await Promise.all([
         jobModel.findOne({ _id: id, isDeleted: false }),
-        JobAssignment.findOne({ job: id, worker: req.user.user_id, isDeleted: false }),
+        JobAssignment.findOne({ job: id, worker: req.user.user_id, isDeleted: false })
+            .populate("missedShiftReviewedBy", "fullname"),
     ]);
     if (!job) {
         throw new BadRequestError("Job not found.");
@@ -1634,6 +1635,16 @@ export const reviewAssignmentOvertime: MiddlewareFn = async (req, res) => {
         ]);
     })().catch(err => console.error(`Failed to send overtime-reviewed notification for assignment ${assignment._id}:`, err));
 
+    // The job may already be Job.status "completed" from when every
+    // assignment first went terminal — this assignment's overtimeStatus
+    // was still "pending" at that point, which holds back the client's
+    // completion notification until here. Safe to call unconditionally on
+    // every decision (approve/reject/adjust alike): maybeCompleteJob no-ops
+    // if another assignment on the same job is still pending review.
+    await maybeCompleteJob(assignment.job).catch(err =>
+        console.error(`Failed to check job completion after overtime review for job ${assignment.job}:`, err)
+    );
+
     res.status(StatusCodes.OK).json({
         success: true,
         message: `Overtime ${decision}d.`,
@@ -1728,6 +1739,251 @@ export const manuallyAdjustAssignment: MiddlewareFn = async (req, res) => {
         message: "Hours recorded.",
         assignment,
     });
+};
+
+const MISSED_SHIFT_REASONS = ["phone_died", "no_signal", "forgot_to_clock_in", "other"];
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+const minutesSinceMidnight = (t: string) => {
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+};
+
+// Worker-facing: self-report hours for a shift markMissedShifts.ts already
+// flagged as missed (never clocked in at all). Distinct from
+// manuallyAdjustAssignment above — that's a MANAGER directly recording
+// hours; this is the worker asking for review, which still needs a
+// manager's approve/decline (reviewMissedShiftRequest below) before any
+// time lands on the assignment. Resubmission after a decline is allowed,
+// same deadline, matching the design's "Send a new request" / "Declined"
+// screen.
+export const requestMissedShiftReview: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const { startTime, endTime, reason, note } = req.body ?? {};
+
+    if (!MISSED_SHIFT_REASONS.includes(reason)) {
+        throw new BadRequestError(`reason must be one of: ${MISSED_SHIFT_REASONS.join(", ")}.`);
+    }
+    if (typeof startTime !== "string" || !TIME_PATTERN.test(startTime)) {
+        throw new BadRequestError("startTime must be in HH:mm format.");
+    }
+    if (typeof endTime !== "string" || !TIME_PATTERN.test(endTime)) {
+        throw new BadRequestError("endTime must be in HH:mm format.");
+    }
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        worker: req.user.user_id,
+        company: req.user.company_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+    if (!assignment.missedShiftDetectedAt) {
+        throw new BadRequestError("This shift hasn't been flagged as missed.");
+    }
+    if (!["none", "declined"].includes(assignment.missedShiftReviewStatus ?? "none")) {
+        throw new BadRequestError(`This request is already ${assignment.missedShiftReviewStatus}.`);
+    }
+    const now = new Date();
+    if (!assignment.missedShiftReviewDeadline || now > assignment.missedShiftReviewDeadline) {
+        throw new BadRequestError("The review window for this shift has closed.");
+    }
+
+    const job = await jobModel.findById(assignment.job).select("title date startTime endTime createdBy company");
+    if (!job) throw new NotFoundError("Job not found.");
+
+    // Within the scheduled window only — matches the design's "must be
+    // within 11:00–12:00" hint. A worker claiming hours outside the
+    // scheduled shift needs manuallyAdjustAssignment from a manager, not
+    // this self-service path.
+    const schedStart = minutesSinceMidnight(job.startTime);
+    const schedEnd = minutesSinceMidnight(job.endTime);
+    const reqStart = minutesSinceMidnight(startTime);
+    const reqEnd = minutesSinceMidnight(endTime);
+    if (reqStart < schedStart || reqEnd > schedEnd || reqEnd <= reqStart) {
+        throw new BadRequestError(`Requested hours must fall within the scheduled ${job.startTime}–${job.endTime} window.`);
+    }
+
+    assignment.missedShiftRequestedStartTime = startTime;
+    assignment.missedShiftRequestedEndTime = endTime;
+    assignment.missedShiftReason = reason;
+    assignment.missedShiftNote = typeof note === "string" ? note.trim().slice(0, 1000) : "";
+    assignment.missedShiftReviewStatus = "pending";
+    assignment.missedShiftRequestedAt = now;
+    // Clear any previous decline so the UI doesn't show stale review info
+    // alongside the new pending request.
+    assignment.missedShiftReviewedBy = undefined;
+    assignment.missedShiftReviewedAt = undefined;
+    assignment.missedShiftReviewNote = "";
+
+    await assignment.save();
+
+    await logActivity({
+        job: assignment.job,
+        jobDate: job.date,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_missed_shift_requested",
+        actor: req.user.user_id,
+        metadata: { startTime, endTime, reason },
+    });
+
+    const manager = await userModel.findById(job.createdBy).select("fullname");
+    if (manager) {
+        const canPush = await shouldNotify(manager._id.toString(), "missed_shift_review_requested", "push");
+        const title = "Missed-shift review requested";
+        const body = `A worker requested review for ${job.title} — they say they worked but couldn't clock in.`;
+        const link = `/jobs/${job._id}`;
+        await Promise.all([
+            canPush
+                ? sendPushToUser(manager._id.toString(), { title, body, tag: `missed-shift-request-${assignment._id}`, url: link })
+                : Promise.resolve(),
+            canPush
+                ? sendExpoPushToUser(manager._id.toString(), { title, body, tag: `missed-shift-request-${assignment._id}`, url: link })
+                : Promise.resolve(),
+            notifyUser({ userId: manager._id.toString(), companyId: assignment.company, event: "missed_shift_review_requested", title, body, link }),
+        ]);
+    }
+
+    res.status(StatusCodes.OK).json({ success: true, message: "Review requested.", assignment });
+};
+
+// Worker-facing: pull back a pending request, e.g. to correct a mistake
+// before a manager looks at it. Goes back to "none" so the worker can
+// resubmit (still bound by the same original deadline).
+export const withdrawMissedShiftRequest: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        worker: req.user.user_id,
+        company: req.user.company_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+    if (assignment.missedShiftReviewStatus !== "pending") {
+        throw new BadRequestError("There's no pending request to withdraw.");
+    }
+
+    assignment.missedShiftReviewStatus = "none";
+    await assignment.save();
+
+    await logActivity({
+        job: assignment.job,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_missed_shift_withdrawn",
+        actor: req.user.user_id,
+    });
+
+    res.status(StatusCodes.OK).json({ success: true, message: "Request withdrawn.", assignment });
+};
+
+// Manager-facing: approve or decline a worker's missed-shift review
+// request. Approving synthesizes checkedInAt/checkedOutAt exactly like
+// manuallyAdjustAssignment above (so every existing timesheet/invoicing/
+// dashboard read path keeps working unchanged) and needs no further
+// overtime review — the manager choosing these exact times IS the review,
+// same precedent as manuallyAdjustAssignment's own overtimeStatus: "none".
+// Declining leaves the assignment otherwise untouched so the worker can
+// resubmit until missedShiftReviewDeadline.
+export const reviewMissedShiftRequest: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const { decision, approvedStartTime, approvedEndTime, reviewNote } = req.body ?? {};
+
+    if (!["approve", "decline"].includes(decision)) {
+        throw new BadRequestError("decision must be 'approve' or 'decline'.");
+    }
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        company: req.user.company_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+    if (assignment.missedShiftReviewStatus !== "pending") {
+        throw new BadRequestError(`This assignment has no missed-shift request awaiting review (status: ${assignment.missedShiftReviewStatus}).`);
+    }
+
+    const job = await jobModel.findById(assignment.job).select("title date startTime endTime minutes");
+    if (!job) throw new NotFoundError("Job not found.");
+
+    const company = await Company.findById(req.user.company_id).select("timezone");
+    const tz = company?.timezone ?? TZ;
+
+    if (decision === "approve") {
+        const startTime = typeof approvedStartTime === "string" && TIME_PATTERN.test(approvedStartTime)
+            ? approvedStartTime
+            : assignment.missedShiftRequestedStartTime;
+        const endTime = typeof approvedEndTime === "string" && TIME_PATTERN.test(approvedEndTime)
+            ? approvedEndTime
+            : assignment.missedShiftRequestedEndTime;
+        if (!startTime || !endTime) throw new BadRequestError("No start/end time to approve.");
+
+        const checkedInAt = scheduledStartOf({ date: job.date, startTime }, tz);
+        const checkedOutAt = scheduledStartOf({ date: job.date, startTime: endTime }, tz);
+        const minutes = Math.round((checkedOutAt.getTime() - checkedInAt.getTime()) / 60_000);
+        if (minutes <= 0) throw new BadRequestError("approvedEndTime must be after approvedStartTime.");
+
+        assignment.checkedInAt = checkedInAt;
+        assignment.checkedOutAt = checkedOutAt;
+        assignment.completedAt = checkedOutAt;
+        assignment.status = "completed";
+        assignment.actualMinutes = minutes;
+        assignment.approvedMinutes = minutes;
+        assignment.overtimeMinutes = Math.max(0, minutes - job.minutes);
+        assignment.overtimeStatus = "none";
+        assignment.manuallyAdjusted = true;
+        assignment.missedShiftApprovedStartTime = startTime;
+        assignment.missedShiftApprovedEndTime = endTime;
+    }
+
+    assignment.missedShiftReviewStatus = decision === "approve" ? "approved" : "declined";
+    assignment.missedShiftReviewedBy = new mongoose.Types.ObjectId(req.user.user_id);
+    assignment.missedShiftReviewedAt = new Date();
+    assignment.missedShiftReviewNote = typeof reviewNote === "string" ? reviewNote.trim().slice(0, 1000) : "";
+
+    await assignment.save();
+
+    await logActivity({
+        job: assignment.job,
+        jobDate: job.date,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_missed_shift_reviewed",
+        actor: req.user.user_id,
+        metadata: {
+            decision,
+            approvedMinutes: assignment.approvedMinutes,
+            reviewNote: assignment.missedShiftReviewNote,
+        },
+    });
+
+    if (decision === "approve") {
+        await maybeCompleteJob(assignment.job).catch(err =>
+            console.error(`Failed to check job completion after missed-shift approval for job ${assignment.job}:`, err)
+        );
+    }
+
+    const worker = await userModel.findById(assignment.worker).select("fullname");
+    if (worker) {
+        const canPush = await shouldNotify(worker._id.toString(), "missed_shift_reviewed", "push");
+        const title = decision === "approve" ? "Hours approved" : "Request declined";
+        const body = decision === "approve"
+            ? `${job.title} — ${assignment.approvedMinutes}m recorded on your timesheet.`
+            : `${job.title} — your missed-shift request was declined.`;
+        const link = `/worker/jobs/${job._id}`;
+        await Promise.all([
+            canPush
+                ? sendPushToUser(worker._id.toString(), { title, body, tag: `missed-shift-reviewed-${assignment._id}`, url: link })
+                : Promise.resolve(),
+            canPush
+                ? sendExpoPushToUser(worker._id.toString(), { title, body, tag: `missed-shift-reviewed-${assignment._id}`, url: link })
+                : Promise.resolve(),
+            notifyUser({ userId: worker._id.toString(), companyId: assignment.company, event: "missed_shift_reviewed", title, body, link }),
+        ]);
+    }
+
+    res.status(StatusCodes.OK).json({ success: true, message: `Request ${decision}d.`, assignment });
 };
 
 // Manager-facing: record that a scheduled worker never showed up at all —

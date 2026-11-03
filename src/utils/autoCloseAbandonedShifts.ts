@@ -1,16 +1,20 @@
 // A worker who forgets to tap "clock out" leaves an assignment stuck
 // "in-progress" forever, and every minute it stays open is unbilled risk for
 // the company. This runs on the same per-minute cron as the shift reminder:
-// once a shift has been running for company.autoClockOutAfterHours past its
-// scheduled end with no clock-out, force-close it — approvedMinutes is set
-// to the real worked time (job.minutes is the schedule, never a cap on what
-// actually happened), and it's flagged "pending" so a manager has to
-// actively review it; only their own decision should ever reduce it.
+// once a shift has been running for its own scheduled duration plus
+// company.autoClockOutAfterHours past the worker's ACTUAL clock-in — not the
+// job's scheduled end — force-close it. Basing this on clock-in rather than
+// scheduled end means a worker who clocks in late still gets their full
+// expected shift length before being auto-closed, instead of getting
+// force-closed almost immediately because the scheduled end had already
+// passed by the time they started. approvedMinutes is set to the real
+// worked time (job.minutes is the schedule, never a cap on what actually
+// happened), and it's flagged "pending" so a manager has to actively
+// review it; only their own decision should ever reduce it.
 import Company from "../models/company.js";
 import Job from "../models/jobModel.js";
 import JobAssignment from "../models/JobAssignment.js";
 import userModel from "../models/userModel.js";
-import { scheduledEndOf, TZ } from "./dates.js";
 import { sendWorkerJobStatusEmail } from "./sendMailsUtils.js";
 import { sendPushToUser } from "./webPush.js";
 import { sendExpoPushToUser } from "./expoPush.js";
@@ -95,7 +99,7 @@ export async function autoCloseAbandonedShifts() {
     const [jobs, companies] = await Promise.all([
       Job.find({ _id: { $in: jobIds } }).lean(),
       Company.find({ _id: { $in: companyIds } })
-        .select("timezone autoClockOutEnabled autoClockOutAfterHours lateClockOutThresholdMinutes")
+        .select("autoClockOutEnabled autoClockOutAfterHours lateClockOutThresholdMinutes")
         .lean(),
     ]);
 
@@ -109,26 +113,42 @@ export async function autoCloseAbandonedShifts() {
       const company = companyById.get(assignment.company.toString());
       if (company?.autoClockOutEnabled === false) continue;
 
-      const tz = company?.timezone ?? TZ;
-      const scheduledEnd = scheduledEndOf(job, tz);
       const closeAfterHours = company?.autoClockOutAfterHours ?? 2;
-      const closeAt = new Date(scheduledEnd.getTime() + closeAfterHours * 60 * 60 * 1000);
+      const closeAt = new Date(
+        new Date(assignment.checkedInAt).getTime() + job.minutes * 60 * 1000 + closeAfterHours * 60 * 60 * 1000
+      );
       if (now < closeAt) continue;
 
       try {
-        const grossMinutes = Math.round((now.getTime() - new Date(assignment.checkedInAt).getTime()) / 60_000);
-        const breakMinutes = [...(assignment.breaks ?? [])].reduce(
-          (sum, b) =>
-            b.endedAt
-              ? sum + Math.round((new Date(b.endedAt).getTime() - new Date(b.startedAt!).getTime()) / 60_000)
-              : sum,
-          0
-        );
+        // Use the calculated deadline, not whenever this cron tick happens
+        // to run — a delayed/restarted cron must never inflate recorded
+        // time. Every elapsed-time figure below is measured against this,
+        // and it's what actually gets stored as checkedOutAt/completedAt.
+        const effectiveClockOutAt = closeAt;
+
+        // An open break (no endedAt) wasn't actually worked time — the
+        // worker was on an unfinished break when the shift got force-closed,
+        // so it's counted as break time up to the close point, not silently
+        // folded into workedMinutes as if they'd been on the clock for it.
+        let hasOpenBreak = false;
+        const breakMinutes = [...(assignment.breaks ?? [])].reduce((sum, b) => {
+          if (b.endedAt) {
+            return sum + Math.round((new Date(b.endedAt).getTime() - new Date(b.startedAt!).getTime()) / 60_000);
+          }
+          hasOpenBreak = true;
+          return sum + Math.round((effectiveClockOutAt.getTime() - new Date(b.startedAt!).getTime()) / 60_000);
+        }, 0);
+        if (hasOpenBreak) {
+          const openBreak = assignment.breaks!.find(b => !b.endedAt)!;
+          openBreak.endedAt = effectiveClockOutAt;
+        }
+
+        const grossMinutes = Math.round((effectiveClockOutAt.getTime() - new Date(assignment.checkedInAt).getTime()) / 60_000);
         const workedMinutes = Math.max(0, grossMinutes - breakMinutes);
         const overtimeMinutes = Math.max(0, workedMinutes - job.minutes);
 
-        assignment.checkedOutAt = now;
-        assignment.completedAt = now;
+        assignment.checkedOutAt = effectiveClockOutAt;
+        assignment.completedAt = effectiveClockOutAt;
         assignment.status = "completed";
         assignment.autoCompleted = true;
         assignment.actualMinutes = workedMinutes;
@@ -152,7 +172,7 @@ export async function autoCloseAbandonedShifts() {
           worker: assignment.worker,
           type: "assignment_auto_completed",
           actor: null,
-          metadata: { workedMinutes, overtimeMinutes, closeAfterHours },
+          metadata: { workedMinutes, overtimeMinutes, closeAfterHours, hasOpenBreak },
         });
 
         await maybeCompleteJob(assignment.job).catch(err =>

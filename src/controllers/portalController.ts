@@ -16,6 +16,21 @@ import { toPortalBooking, toPortalQuote, toPortalInvoice, toPortalSite } from ".
 import { assertRespondable, applyQuoteResponse } from "./quoteController.js";
 import { buildInvoicePdfDocument } from "./invoiceController.js";
 import { getEffectiveQuoteStatus, quoteStatusFilter } from "../utils/quoteExpiry.js";
+import { notifyUser } from "../utils/notifyUser.js";
+
+const parseOrThrow = <T>(schema: z.ZodSchema<T>, body: unknown): T => {
+    try {
+        return schema.parse(body);
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            const message = err.issues
+                .map(issue => `${issue.path.join(".") || "value"}: ${issue.message}`)
+                .join("; ");
+            throw new BadRequestError(message);
+        }
+        throw err;
+    }
+};
 
 // GET /portal/me — proves the whole login -> authenticated-request loop
 // actually works, and is the one place in this milestone that re-verifies
@@ -109,6 +124,50 @@ export const getPortalBooking: MiddlewareFn = async (req, res) => {
     if (!job) throw new NotFoundError("Booking not found.");
 
     res.status(StatusCodes.OK).json({ success: true, booking: toPortalBooking(job) });
+};
+
+const bookingReviewSchema = z
+    .object({
+        rating: z.number().int().min(1).max(5),
+        comment: z.string().trim().max(1000).optional(),
+    })
+    .strict();
+
+// PATCH /portal/bookings/:id/review — only once a booking is completed.
+// Resubmitting overwrites the previous rating rather than being rejected,
+// same "let them just fix it" spirit as the rest of the portal.
+export const submitBookingReview: MiddlewareFn = async (req, res) => {
+    const data = parseOrThrow(bookingReviewSchema, req.body);
+
+    const job = await Job.findOne({
+        _id: req.params.id,
+        client: req.user.client_id,
+        company: req.user.company_id.toString(),
+        isDeleted: false,
+    }).select("status title createdBy company clientRating");
+    if (!job) throw new NotFoundError("Booking not found.");
+    if (job.status !== "completed") throw new BadRequestError("Only a completed booking can be reviewed.");
+
+    const isFirstReview = job.clientRating == null;
+    job.clientRating = data.rating;
+    job.clientReviewComment = data.comment ?? undefined;
+    job.clientReviewedAt = new Date();
+    await job.save();
+
+    // Best-effort — the client's review must succeed even if notifying the
+    // manager fails. Only on the first submission, not every edit.
+    if (isFirstReview && job.createdBy) {
+        notifyUser({
+            userId: job.createdBy.toString(),
+            companyId: job.company,
+            event: "booking_reviewed",
+            title: "New booking review",
+            body: `${job.title} was rated ${data.rating}/5${data.comment ? ` — "${data.comment}"` : ""}`,
+            link: `/jobs/${job._id}`,
+        }).catch(err => console.error(`Failed to notify manager of booking review for job ${job._id}:`, err));
+    }
+
+    res.status(StatusCodes.OK).json({ success: true, booking: toPortalBooking(job.toObject()) });
 };
 
 // ── Quotes ──────────────────────────────────────────────────────────────

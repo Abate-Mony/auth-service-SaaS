@@ -252,6 +252,24 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
       // Staff declined a client's reschedule/cancel request
       // (jobChangeRequestController.ts) — client-facing.
       "job_change_request_declined",
+
+      // A client-portal user rated a completed booking
+      // (submitBookingReview, portalController.ts) — staff-facing, sent to
+      // the job's creator. Only on the first submission, not every edit.
+      "booking_reviewed",
+
+      // Worker-facing: markMissedShifts.ts flagged a shift the worker never
+      // clocked into at all — distinct from job_completed/overtime, since
+      // there's no clock data here to review, just a missed window.
+      "missed_shift_detected",
+
+      // Staff-facing: a worker submitted (or resubmitted) a missed-shift
+      // review request — see requestMissedShiftReview in workerController.ts.
+      "missed_shift_review_requested",
+
+      // Worker-facing: a manager approved or declined their missed-shift
+      // review request — see reviewMissedShiftRequest in workerController.ts.
+      "missed_shift_reviewed",
   ] as const;
   export const NOTIFICATION_CHANNELS = [
       "email",

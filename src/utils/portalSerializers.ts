@@ -44,6 +44,8 @@ export const toPortalBooking = (job: any) => ({
   chargeAmount: job.chargeAmount,
   billingStatus: job.billingStatus,
   invoice: job.invoice ? String(job.invoice) : null,
+  clientRating: job.clientRating ?? null,
+  clientReviewComment: job.clientReviewComment ?? null,
 });
 
 // ── Quote ───────────────────────────────────────────────────────────────

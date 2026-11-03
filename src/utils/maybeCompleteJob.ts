@@ -49,54 +49,78 @@ async function notifyManagerJobCompleted(job: { _id: unknown; title: string; cre
 
 /**
  * Call this right after any assignment on a job reaches a terminal status —
- * from the worker's own clock-out and from the auto-close-abandoned-shifts
- * cron alike, so the two paths can't drift into different completion
- * behaviour. Safe to call unconditionally; it's a no-op unless the job is
- * actually ready.
+ * from the worker's own clock-out, the auto-close-abandoned-shifts cron,
+ * and reviewAssignmentOvertime alike, so none of those paths can drift into
+ * different completion behaviour. Safe to call unconditionally; it's a
+ * no-op unless the job has something new to do.
+ *
+ * Two separate things happen here, on separate conditions:
+ *  1. Job.status flips published -> completed once every assignment is
+ *     terminal. This already happens even while an assignment's overtime
+ *     is still "pending" review — fixed-price invoicing eligibility reads
+ *     Job.status, and a fixed price doesn't change based on actual hours,
+ *     so there's no reason to hold that back. Hourly billing is separately
+ *     and already safe regardless: services/invoice/eligibility.ts excludes
+ *     any assignment with overtimeStatus "pending" from what it bills.
+ *  2. The CLIENT gets told "booking completed" only once nothing on the
+ *     job is still pending review — telling them it's finished while a
+ *     manager might still reject/adjust the hours is the actual premature
+ *     thing here, not the internal status. clientCompletedNotifiedAt makes
+ *     this idempotent across the (potentially many) times this function
+ *     gets called for the same job as each assignment/review resolves.
  */
 export async function maybeCompleteJob(jobId: unknown): Promise<void> {
-  const job = await Job.findOne({ _id: jobId as string, isDeleted: false, isTemplate: false }).select("status title createdBy company client date");
-  if (!job || job.status !== "published") return;
+  const job = await Job.findOne({ _id: jobId as string, isDeleted: false, isTemplate: false })
+    .select("status title createdBy company client date clientCompletedNotifiedAt");
+  if (!job) return;
 
-  const assignments = await JobAssignment.find({ job: jobId as string, isDeleted: false }).select("status");
+  const assignments = await JobAssignment.find({ job: jobId as string, isDeleted: false }).select("status overtimeStatus");
   if (!assignments.length) return;
 
-  const allTerminal = assignments.every(a => TERMINAL_ASSIGNMENT_STATUSES.includes(a.status));
-  const anyCompleted = assignments.some(a => a.status === "completed");
-  if (!allTerminal || !anyCompleted) return;
+  if (job.status === "published") {
+    const allTerminal = assignments.every(a => TERMINAL_ASSIGNMENT_STATUSES.includes(a.status));
+    const anyCompleted = assignments.some(a => a.status === "completed");
+    if (!allTerminal || !anyCompleted) return;
 
-  job.status = "completed";
+    job.status = "completed";
+    await job.save();
+
+    // System-triggered, not a specific person's action — actor: null marks it
+    // isSystem, same convention as the auto-close cron's own activity entries.
+    await logActivity({
+      job: job._id,
+      type: "job_updated",
+      actor: null,
+      changes: [{ field: "status", from: "published", to: "completed" }],
+      metadata: { reason: "all assigned workers finished" },
+    });
+
+    // Every assigned worker has now finished (whether or not any of them got
+    // individually flagged for overtime review) — the manager should hear
+    // about the job itself wrapping up, not just infer it from separate
+    // per-worker notifications. Fires immediately, unlike the client
+    // notification below — a manager needs to know now if review is
+    // pending, not once it's resolved.
+    await notifyManagerJobCompleted({ _id: job._id, title: job.title, createdBy: job.createdBy, company: job.company }).catch(err =>
+      console.error(`Failed to notify manager of job completion for job ${job._id}:`, err)
+    );
+  }
+
+  if (job.status !== "completed" || job.clientCompletedNotifiedAt || !job.client) return;
+  if (assignments.some(a => a.overtimeStatus === "pending")) return;
+
+  job.clientCompletedNotifiedAt = new Date();
   await job.save();
 
-  // System-triggered, not a specific person's action — actor: null marks it
-  // isSystem, same convention as the auto-close cron's own activity entries.
-  await logActivity({
-    job: job._id,
-    type: "job_updated",
-    actor: null,
-    changes: [{ field: "status", from: "published", to: "completed" }],
-    metadata: { reason: "all assigned workers finished" },
-  });
+  await notifyClientBooking({
+    companyId: job.company, clientId: job.client,
+    event: "booking_completed",
+    title: "Booking completed",
+    body: `${job.title} has been completed.`,
+    link: `/bookings/${job._id}`,
+  }).catch(err => console.error(`Failed to notify client of job completion for job ${job._id}:`, err));
 
-  // Every assigned worker has now finished (whether or not any of them got
-  // individually flagged for overtime review) — the manager should hear
-  // about the job itself wrapping up, not just infer it from separate
-  // per-worker notifications.
-  await notifyManagerJobCompleted({ _id: job._id, title: job.title, createdBy: job.createdBy, company: job.company }).catch(err =>
-    console.error(`Failed to notify manager of job completion for job ${job._id}:`, err)
-  );
-
-  if (job.client) {
-    await notifyClientBooking({
-      companyId: job.company, clientId: job.client,
-      event: "booking_completed",
-      title: "Booking completed",
-      body: `${job.title} has been completed.`,
-      link: `/bookings/${job._id}`,
-    }).catch(err => console.error(`Failed to notify client of job completion for job ${job._id}:`, err));
-
-    void sendClientCompletionEmail(job as { _id: unknown; title: string; company: unknown; client: unknown; date: Date });
-  }
+  void sendClientCompletionEmail(job as { _id: unknown; title: string; company: unknown; client: unknown; date: Date });
 }
 
 async function sendClientCompletionEmail(job: { _id: unknown; title: string; company: unknown; client: unknown; date: Date }) {
