@@ -4,7 +4,7 @@ import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
 import { getReqUser, MiddlewareFn } from "../interfaces/expresstype.js";
 import Company from "../models/company.js";
 import { assertFeatureEnabledForCompany } from "../utils/planLimits.js";
-import { PLANS, PLAN_LIMITS, PLAN_CATALOG, PLAN_FEATURE_LABELS, type PlanFeatures } from "../utils/constant.js";
+import { PLANS, PLAN_LIMITS, PLAN_CATALOG, PLAN_FEATURE_LABELS, BUSINESS_TYPES, type PlanFeatures } from "../utils/constant.js";
 import { uploadFileToCloudinary, deleteFileFromCloudinary } from "../utils/cloudinaryUpload.js";
 import { generatePublicSlug } from "../utils/publicSlug.js";
 import { GRANT_STATUSES } from "./billingController.js";
@@ -91,6 +91,79 @@ const companySettingsSchema = z
     })
     .partial() // PATCH — every field optional, unknown keys rejected below
     .strict();
+
+// Company identity/profile fields — distinct from COMPANY_SETTINGS_FIELDS
+// above (operational policy) and from the logo (its own upload/delete pair
+// below). Kept in one list so GET and PATCH always agree on exactly which
+// fields count as "profile".
+const COMPANY_PROFILE_FIELDS = ["name", "businessType", "website", "registrationNumber"] as const;
+
+// Read-only here — "size" reads as tied to the subscription plan/worker
+// count, not a free-text attribute anyone should be able to self-report, so
+// GET /companies/profile still hands it to the frontend for display but
+// companyProfileSchema below can never accept it. Same pattern as
+// getCompanySettings's own COMPANY_READ_ONLY_EXTRA_FIELDS. Changing it goes
+// through Billing (plan/maxWorkers), not this endpoint.
+const COMPANY_PROFILE_READ_ONLY_EXTRA_FIELDS = ["size"] as const;
+
+const companyProfileSchema = z
+    .object({
+        name: z.string().trim().min(1, "Company name is required").max(200),
+        businessType: z.enum(BUSINESS_TYPES),
+        website: z.string().trim().max(300),
+        registrationNumber: z.string().trim().max(100),
+    })
+    .partial() // PATCH — every field optional, unknown keys rejected below
+    .strict();
+
+// Who gets to edit the shared company profile (name/industry/website/
+// registration number) is deliberately looser than the rest of this
+// router — every other mutation here (logo, operational settings, email
+// domain, API keys, plan) is admin/owner-only, but this is low-stakes
+// informational metadata a manager should reasonably be able to keep
+// current without needing an admin.
+export const getCompanyProfile: MiddlewareFn = async (req, res) => {
+    // Not .lean() — see getCompanySettings's own comment just above for why:
+    // a company created before registrationNumber existed has it genuinely
+    // absent from the stored document, and only a hydrated document applies
+    // the schema's default for an absent path.
+    const company = await Company.findById(getReqUser(req).company_id)
+        .select([...COMPANY_PROFILE_FIELDS, ...COMPANY_PROFILE_READ_ONLY_EXTRA_FIELDS].join(" "));
+    if (!company) throw new NotFoundError("Company not found.");
+
+    res.status(StatusCodes.OK).json({ success: true, profile: company.toObject() });
+};
+
+export const updateCompanyProfile: MiddlewareFn = async (req, res) => {
+    let profile: z.infer<typeof companyProfileSchema>;
+    try {
+        profile = companyProfileSchema.parse(req.body);
+    } catch (err) {
+        if (err instanceof z.ZodError) {
+            const message = err.issues
+                .map(issue => `${issue.path.join(".") || "value"}: ${issue.message}`)
+                .join("; ");
+            throw new BadRequestError(message);
+        }
+        throw err;
+    }
+
+    if (Object.keys(profile).length === 0) {
+        throw new BadRequestError("No valid profile fields provided.");
+    }
+
+    // profile is Zod-validated and only contains allowlisted keys — never
+    // spread req.body directly into the model.
+    const company = await Company.findByIdAndUpdate(
+        getReqUser(req).company_id,
+        { $set: profile },
+        { new: true, runValidators: true }
+    ).select([...COMPANY_PROFILE_FIELDS, ...COMPANY_PROFILE_READ_ONLY_EXTRA_FIELDS].join(" "));
+
+    if (!company) throw new NotFoundError("Company not found.");
+
+    res.status(StatusCodes.OK).json({ success: true, profile: company });
+};
 
 // Company branding, not an operational setting — kept separate from
 // COMPANY_SETTINGS_FIELDS (geofence/pay/scheduling policy) on purpose.

@@ -5,6 +5,7 @@ export interface ICompany {
   businessType: string;
   size: string;
   website?: string;
+  registrationNumber?: string;
   phone?: string;
   country?: string;
   owner: mongoose.Types.ObjectId;

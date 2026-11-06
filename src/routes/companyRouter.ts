@@ -2,11 +2,13 @@ import { Router } from "express";
 import {
     deleteCompanyLogo,
     getCompanyPlan,
+    getCompanyProfile,
     getCompanySettings,
     getPlanCatalog,
     getPublicQuoteLink,
     rotatePublicQuoteLink,
     updateCompanyPlan,
+    updateCompanyProfile,
     updateCompanySettings,
     uploadCompanyLogo,
 } from "../controllers/companyController.js";
@@ -30,6 +32,15 @@ const router = Router();
 router.route("/settings")
     .get(getCompanySettings)
     .patch(authorizePermissions("admin"), updateCompanySettings);
+
+// Company identity (name/industry/size/website/registration number) —
+// deliberately admin+manager, unlike every other mutation in this router
+// (logo, operational settings, email domain, API keys, plan all stay
+// admin/owner-only): this is low-stakes informational metadata, not a
+// credential or billing-affecting setting.
+router.route("/profile")
+    .get(authorizePermissions("admin", "manager"), getCompanyProfile)
+    .patch(authorizePermissions("admin", "manager"), updateCompanyProfile);
 
 router.patch("/invoice-template", authorizePermissions("admin"), setDefaultInvoiceTemplate);
 

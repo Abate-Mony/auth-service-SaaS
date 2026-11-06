@@ -26,6 +26,15 @@ const CompanySchema = new Schema(
       type: String,
       trim: true,
     },
+    // Companies House / local equivalent — purely informational display on
+    // the company profile, never validated against a real register. Added
+    // alongside the rest of the editable profile fields (name/businessType/
+    // size/website); absent on any company created before this existed.
+    registrationNumber: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     phone: {
       type: String,
       trim: true,
