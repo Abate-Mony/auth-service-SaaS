@@ -170,6 +170,12 @@ export const DEFAULT_EVENT_PREFERENCES: Record<
       push: true,
       inApp: true,
     },
+
+    shift_auto_closed: {
+      email: false,
+      push: true,
+      inApp: true,
+    },
   };
 
 function getDefaultPreference(

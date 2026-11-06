@@ -311,6 +311,25 @@ export const createInvoice: MiddlewareFn = async (req, res) => {
         }
     }
 
+    // The eligible-work flow already excludes any assignment whose
+    // overtimeStatus is still "pending" (services/invoice/eligibility.ts)
+    // — this manual path bypassed that entirely. One rule for both charge
+    // types: a job with unresolved timesheet review (auto-closed or
+    // genuine overtime, either way) cannot be manually invoiced at all —
+    // rejecting the whole request is safer than silently dropping line
+    // items the manager never noticed were missing.
+    const pendingReviewAssignments = await JobAssignment.find({
+        job: job._id,
+        isDeleted: false,
+        overtimeStatus: "pending",
+    }).select("_id fullname");
+    if (pendingReviewAssignments.length > 0) {
+        throw new BadRequestError(
+            `This job has ${pendingReviewAssignments.length} assignment(s) still awaiting timesheet review ` +
+            `(${pendingReviewAssignments.map(a => a.fullname).join(", ")}) — resolve them before invoicing.`
+        );
+    }
+
     const lineItems = buildLineItems(data.lineItems);
     const subtotal = Number(lineItems.reduce((sum, li) => sum + li.amount, 0).toFixed(2));
 

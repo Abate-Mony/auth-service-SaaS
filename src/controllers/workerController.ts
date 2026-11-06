@@ -30,6 +30,8 @@ import { uploadFileToCloudinary } from "../utils/cloudinaryUpload.js";
 import { splitAssignmentPay } from "../utils/pay.js";
 import { optimizeRoute, RouteStop } from "../utils/routeOptimizer.js";
 import { sweepAcceptPendingAssignments } from "../utils/autoAcceptSweep.js";
+import { closeAssignmentAutomatically } from "../utils/closeAssignmentAutomatically.js";
+import { computeWorkedMinutes } from "../utils/computeWorkedMinutes.js";
 
 // Which restriction the worker-status route enforces depends on the status
 // being requested, not the route itself — "declined" has no restrictable
@@ -1073,6 +1075,11 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
         ]);
     }
 
+    // Set inside the "in-progress" case below when a stale previous
+    // assignment got auto-resolved to let this clock-in through — declared
+    // out here so the final response (after the switch) can read it.
+    let previousAssignmentClosed = false;
+
     switch (status) {
         case "accepted": {
             if (assignment.status !== "pending") {
@@ -1232,14 +1239,45 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
                 throw new BadRequestError("You have already checked in.");
             }
 
-            const hasActiveJob = await JobAssignment.exists({
-                worker: workerId,
-                status: "in-progress",
-            });
-            if (hasActiveJob) {
-                throw new BadRequestError(
-                    "You already have an active job — complete it before starting another."
+            // A forgotten clock-out must not prevent the worker from starting
+            // their next legitimate assignment. The worker attempting to
+            // clock into this shift is itself the signal shift A is over —
+            // but only once shift A's own SCHEDULED END has passed, not
+            // whenever its auto-close buffer happens to expire (which could
+            // still be hours away) — a shift still inside its own scheduled
+            // window is a real overlap/double-booking, not a forgotten
+            // clock-out, and stays blocked.
+            const activeAssignment = await JobAssignment.findOne({ worker: workerId, status: "in-progress", checkedOutAt: null });
+            if (activeAssignment && activeAssignment._id.toString() !== assignment._id.toString()) {
+                const activeJob = await jobModel.findOne({ _id: activeAssignment.job }).lean();
+                if (!activeJob) {
+                    // Can't verify anything about the other shift — fail safe, don't guess.
+                    throw new BadRequestError("You already have an active job — complete it before starting another.");
+                }
+                const activeCompany = await Company.findById(activeAssignment.company).select("timezone").lean();
+                const activeScheduledEnd = scheduledEndOf(activeJob, activeCompany?.timezone ?? TZ);
+                if (now < activeScheduledEnd) {
+                    throw new BadRequestError("You already have an active job — complete it before starting another.");
+                }
+
+                // A worker who clocked into the other shift AFTER its own
+                // scheduled end (e.g. a manual override) would otherwise
+                // make this negative — floor it at checkedInAt so the
+                // provisional close is always valid and never guesses a
+                // clock-out before the clock-in it's measured from.
+                const provisionalClockOutAt = new Date(Math.max(
+                    activeScheduledEnd.getTime(),
+                    new Date(activeAssignment.checkedInAt!).getTime()
+                ));
+
+                const closeResult = await closeAssignmentAutomatically(
+                    activeAssignment._id, provisionalClockOutAt, { trigger: "back_to_back_clock_in", detectedAt: now }
                 );
+                if (!closeResult.closed) {
+                    // Lease held by the cron right now, or a transient failure — don't guess, don't proceed on stale state.
+                    throw new BadRequestError("Still finishing up your previous shift — try again in a few seconds.");
+                }
+                previousAssignmentClosed = true;
             }
 
             // ── time window ────────────────────────────────────────────────
@@ -1491,6 +1529,7 @@ export const updateWorkerJobStatus: MiddlewareFn = async (req, res) => {
         success: true,
         message: `Job ${status} successfully.`,
         assignment,
+        ...(status === "in-progress" && previousAssignmentClosed ? { previousAssignmentClosed: true } : {}),
     });
 };
 
@@ -1530,6 +1569,7 @@ export const getMyOvertime: MiddlewareFn = async (req, res) => {
             overtimeReviewedAt: a.overtimeReviewedAt ?? null,
             managerNotes: a.managerNotes || null,
             checkedOutAt: a.checkedOutAt ?? null,
+            clockOutReason: a.clockOutReason ?? null,
         }));
 
     res.status(StatusCodes.OK).json({ success: true, items });
@@ -1540,11 +1580,11 @@ export const getMyOvertime: MiddlewareFn = async (req, res) => {
 // reviewed, and only ones actually awaiting review.
 export const reviewAssignmentOvertime: MiddlewareFn = async (req, res) => {
     const { assignmentId } = req.params;
-    const { decision, approvedMinutes: overrideMinutes, managerNotes } = req.body;
+    const { decision, approvedMinutes: overrideMinutes, managerNotes, checkedOutAt: rawCorrectedCheckedOutAt } = req.body;
 
-    const allowedDecisions = ["approve", "reject", "adjust"];
+    const allowedDecisions = ["approve", "reject", "adjust", "correct_finish_time"];
     if (!allowedDecisions.includes(decision)) {
-        throw new BadRequestError("decision must be 'approve', 'reject', or 'adjust'.");
+        throw new BadRequestError("decision must be 'approve', 'reject', 'adjust', or 'correct_finish_time'.");
     }
 
     const assignment = await JobAssignment.findOne({
@@ -1558,6 +1598,62 @@ export const reviewAssignmentOvertime: MiddlewareFn = async (req, res) => {
         throw new BadRequestError(
             `This assignment has no overtime awaiting review (status: ${assignment.overtimeStatus}).`
         );
+    }
+
+    // A manager correcting the recorded finish time is a separate action
+    // from approving/rejecting/adjusting pay (see resolveAssignmentBreak
+    // below for the break side of this) — neither a forced close's buffer
+    // deadline nor a back-to-back discovery's provisional scheduled-end
+    // (closeAssignmentAutomatically.ts) is ever verified fact, and today's
+    // adjust/approve/reject only ever touched approvedMinutes, never
+    // checkedOutAt itself, leaving the audit record wrong indefinitely even
+    // after the pay figure was "fixed." Works for any pending assignment,
+    // not just auto-closed ones — any recorded time could warrant correcting.
+    if (decision === "correct_finish_time") {
+        const correctedCheckedOutAt = new Date(rawCorrectedCheckedOutAt);
+        if (Number.isNaN(correctedCheckedOutAt.getTime())) {
+            throw new BadRequestError("checkedOutAt must be a valid date.");
+        }
+        if (!assignment.checkedInAt || correctedCheckedOutAt < assignment.checkedInAt) {
+            throw new BadRequestError("checkedOutAt cannot be before the recorded check-in time.");
+        }
+        if (typeof managerNotes !== "string" || managerNotes.trim().length === 0) {
+            throw new BadRequestError("A reason is required to correct the finish time.");
+        }
+
+        const job = await jobModel.findById(assignment.job).select("minutes").lean();
+        if (!job) throw new NotFoundError("Job not found.");
+
+        const previousCheckedOutAt = assignment.checkedOutAt;
+        const { actualMinutes, overtimeMinutes } = computeWorkedMinutes(
+            assignment.checkedInAt, correctedCheckedOutAt, assignment.breaks, job.minutes
+        );
+
+        assignment.checkedOutAt = correctedCheckedOutAt;
+        assignment.completedAt = correctedCheckedOutAt;
+        assignment.actualMinutes = actualMinutes;
+        assignment.overtimeMinutes = overtimeMinutes;
+        assignment.managerNotes = managerNotes.trim();
+        await assignment.save();
+
+        await logActivity({
+            job: assignment.job,
+            assignment: assignment._id,
+            worker: assignment.worker,
+            type: "assignment_clock_out_corrected",
+            actor: req.user.user_id,
+            metadata: { previousCheckedOutAt, correctedCheckedOutAt, reason: managerNotes.trim() },
+        });
+
+        res.status(StatusCodes.OK).json({ success: true, message: "Finish time corrected.", assignment });
+        return;
+    }
+
+    // Approving, rejecting, or adjusting pay is blocked while an open break
+    // is still unresolved — detecting it (closeAssignmentAutomatically.ts)
+    // isn't enough on its own; see resolveAssignmentBreak below.
+    if (assignment.breaks?.some(b => b.startedAt && !b.endedAt)) {
+        throw new BadRequestError("Resolve the unfinished break before approving this timesheet.");
     }
 
     if (decision === "adjust") {
@@ -1650,6 +1746,94 @@ export const reviewAssignmentOvertime: MiddlewareFn = async (req, res) => {
         message: `Overtime ${decision}d.`,
         assignment,
     });
+};
+
+// Manager-facing: resolve the one open break on an assignment still
+// awaiting review — either supply the real end time, or mark it as never
+// having happened. A worker can only ever have one open break at a time
+// (startWorkerBreak above already blocks starting a second while one is
+// open), so there is never more than one to resolve. Detecting an open
+// break at auto-close (closeAssignmentAutomatically.ts) isn't sufficient on
+// its own — this is what lets a manager actually fix it, and
+// reviewAssignmentOvertime's approve/reject/adjust above refuses to run
+// until they do.
+export const resolveAssignmentBreak: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const { endedAt: rawEndedAt, cancelled, managerNotes } = req.body ?? {};
+
+    const hasEndedAt = rawEndedAt !== undefined && rawEndedAt !== null;
+    const hasCancelled = cancelled === true;
+    if (hasEndedAt === hasCancelled) {
+        throw new BadRequestError("Provide exactly one of endedAt or cancelled.");
+    }
+    if (typeof managerNotes !== "string" || managerNotes.trim().length === 0) {
+        throw new BadRequestError("A reason is required.");
+    }
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        company: req.user.company_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+
+    if (assignment.overtimeStatus !== "pending") {
+        throw new BadRequestError(
+            `This assignment has no review awaiting resolution (status: ${assignment.overtimeStatus}).`
+        );
+    }
+    if (!assignment.checkedOutAt) {
+        throw new BadRequestError("This assignment has no recorded finish time yet.");
+    }
+
+    const openBreak = assignment.breaks?.find(b => b.startedAt && !b.endedAt);
+    if (!openBreak) {
+        throw new BadRequestError("This assignment has no unfinished break.");
+    }
+
+    const previousBreak = { startedAt: openBreak.startedAt, endedAt: openBreak.endedAt ?? null };
+    let correctedEndedAt: Date;
+    if (hasCancelled) {
+        // Never happened — zero-duration, not deleted, so the audit trail
+        // still shows a break was started here and then voided.
+        correctedEndedAt = new Date(openBreak.startedAt!);
+    } else {
+        correctedEndedAt = new Date(rawEndedAt);
+        if (Number.isNaN(correctedEndedAt.getTime())) {
+            throw new BadRequestError("endedAt must be a valid date.");
+        }
+        if (correctedEndedAt < openBreak.startedAt! || correctedEndedAt > assignment.checkedOutAt) {
+            throw new BadRequestError("endedAt must fall between the break's start and the assignment's recorded finish.");
+        }
+    }
+    openBreak.endedAt = correctedEndedAt;
+
+    const job = await jobModel.findById(assignment.job).select("minutes").lean();
+    if (!job) throw new NotFoundError("Job not found.");
+
+    const { actualMinutes, overtimeMinutes } = computeWorkedMinutes(
+        assignment.checkedInAt!, assignment.checkedOutAt, assignment.breaks, job.minutes
+    );
+    assignment.actualMinutes = actualMinutes;
+    assignment.overtimeMinutes = overtimeMinutes;
+    assignment.managerNotes = managerNotes.trim();
+    await assignment.save();
+
+    await logActivity({
+        job: assignment.job,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_break_corrected",
+        actor: req.user.user_id,
+        metadata: {
+            previousBreak,
+            correctedBreak: { startedAt: previousBreak.startedAt, endedAt: correctedEndedAt },
+            cancelled: hasCancelled,
+            reason: managerNotes.trim(),
+        },
+    });
+
+    res.status(StatusCodes.OK).json({ success: true, message: "Break resolved.", assignment });
 };
 
 // Manager-facing: record hours worked for a shift the worker never clocked

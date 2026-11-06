@@ -165,6 +165,18 @@ export async function sendWorkerJobStatusEmail({
       action: "Review overtime",
     },
 
+    "missed-clock-out-review": {
+      subject: `Missed clock-out: ${fullname}`,
+
+      heading: "A shift was automatically closed and needs your review",
+
+      message:
+        `${fullname} never clocked out of "${job.title}" — the system closed it automatically. ` +
+        `Confirm the recorded time, correct the finish time, or resolve an unfinished break before this is paid.`,
+
+      action: "Review timesheet",
+    },
+
     // These don't send email because of EMAIL_WORTHY_EVENTS,
     // but keeping them here makes the type complete.
     "accept-job": null,
@@ -226,7 +238,7 @@ export async function sendWorkerJobStatusEmail({
       : "";
 
   const overtimeRow =
-    type === "overtime-review" && overtimeMinutes != null
+    (type === "overtime-review" || type === "missed-clock-out-review") && overtimeMinutes != null
       ? `
         <tr>
           <td style="${labelStyle}">

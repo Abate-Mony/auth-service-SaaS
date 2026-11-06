@@ -58,6 +58,18 @@ const JobAssignmentSchema = new Schema(
     // of the worker tapping "clock out" themselves.
     autoCompleted: { type: Boolean, default: false },
 
+    // ── Auto-close lease ───────────────────────────────────────────────
+    // A recoverable, self-expiring claim on this assignment while
+    // closeAssignmentAutomatically is processing it — not a bare boolean,
+    // which would leave the assignment permanently stuck if the process
+    // died mid-close. autoCloseLeaseId is the actual ownership token: the
+    // final close is a findOneAndUpdate conditioned on this exact value,
+    // so a process that loses the lease mid-flight (another process
+    // reclaimed after the lease timestamp went stale) can never commit a
+    // stale close. See utils/closeAssignmentAutomatically.ts.
+    autoCloseLeaseAt: { type: Date, default: null },
+    autoCloseLeaseId: { type: String, default: null },
+
     // Set on a self-claimed open shift whose job has requiresApproval: true.
     // status stays "pending" (same enum value used for "worker hasn't
     // responded yet"), but here the pending party is the manager, not the

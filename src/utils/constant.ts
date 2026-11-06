@@ -189,6 +189,7 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
   "late-start",
   "geofence-warning",
   "overtime-review",
+  "missed-clock-out-review",
 ]);
   export const NOTIFICATION_EVENTS = [
       "job_assigned",
@@ -270,6 +271,14 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
       // Worker-facing: a manager approved or declined their missed-shift
       // review request — see reviewMissedShiftRequest in workerController.ts.
       "missed_shift_reviewed",
+
+      // Both manager- and worker-facing: an assignment was force-closed
+      // because the worker never clocked out (the auto-close cron, or a
+      // back-to-back clock-in discovering it still open) — see
+      // closeAssignmentAutomatically.ts. Distinct from worker_checked_out
+      // and overtime_reviewed since the real issue is a missing clock-out,
+      // not ordinary overtime; each call passes its own recipient id.
+      "shift_auto_closed",
   ] as const;
   export const NOTIFICATION_CHANNELS = [
       "email",
