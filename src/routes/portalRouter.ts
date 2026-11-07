@@ -18,6 +18,7 @@ import { saveClientPushToken, removeClientPushToken } from "../controllers/porta
 import {
     createBookingRequest,
     getMyBookingRequests,
+    getMyBookingRequest,
     cancelBookingRequest,
 } from "../controllers/portalBookingRequestController.js";
 import {
@@ -59,6 +60,7 @@ router.patch("/notifications/read-all", authenticateUser, requireClientAccount, 
 // "/bookings/requests" as :id="requests".
 router.get("/bookings/requests", authenticateUser, requireClientAccount, requireClientPermission("booking:create"), getMyBookingRequests);
 router.post("/bookings/requests", authenticateUser, requireClientAccount, requireClientPermission("booking:create"), createBookingRequest);
+router.get("/bookings/requests/:id", authenticateUser, requireClientAccount, requireClientPermission("booking:create"), getMyBookingRequest);
 router.patch("/bookings/requests/:id/cancel", authenticateUser, requireClientAccount, requireClientPermission("booking:create"), cancelBookingRequest);
 
 router.get("/bookings", authenticateUser, requireClientAccount, requireClientPermission("booking:read"), getPortalBookings);

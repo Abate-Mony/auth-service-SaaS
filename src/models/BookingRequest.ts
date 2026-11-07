@@ -17,6 +17,10 @@ const BookingRequestSchema = new Schema(
         preferredDate: { type: Date, required: true },
         preferredTime: { type: String, trim: true }, // "HH:mm", optional
         notes: { type: String, default: "", trim: true, maxlength: 1000 },
+        // Shared by every request a client submitted together for several
+        // dates of the same service. Each date is still its own request,
+        // reviewed and approved individually; null for single-date requests.
+        batch: { type: Schema.Types.ObjectId, default: null, index: true },
 
         status: {
             type: String,

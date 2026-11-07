@@ -159,6 +159,7 @@ export const toPortalBookingRequest = (request: any) => ({
   status: request.status,
   reviewNotes: request.reviewNotes,
   convertedJob: request.convertedJob ? String(request.convertedJob) : null,
+  batch: request.batch ? String(request.batch) : null,
   createdAt: request.createdAt,
 });
 
