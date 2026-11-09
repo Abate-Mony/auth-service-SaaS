@@ -1177,6 +1177,42 @@ const UPDATE_JOB_ALLOWED_FIELDS = [
     "openToClaims", "requiresApproval", "checklist", "autoAccept",
 ] as const;
 
+// Same list plus client/site/date/startTime/endTime, which updateJob applies
+// through their own special-cased branches below rather than the allowlist
+// loop above. Used only to diff `job` (pre-update) against `updatedJob`
+// (post) for the activity log — see the job_updated/job_published logging
+// right after the status is resolved.
+const JOB_ACTIVITY_DIFF_FIELDS = [
+    ...UPDATE_JOB_ALLOWED_FIELDS, "date", "startTime", "endTime", "client", "site",
+] as const;
+
+// JobAssignment enforces a unique (job, worker) pair (see the index in
+// JobAssignment.ts) — a worker can only ever have ONE assignment doc per
+// job, including a terminal (cancelled/declined) or soft-deleted one.
+// Re-selecting a previously-removed worker in updateJob must therefore
+// REVIVE that same doc, never insert a second one (which would throw
+// E11000). A revived assignment starts exactly like a brand new one — every
+// bit of state left over from its previous run on this job is cleared here,
+// matching each field's own schema default (or null where none is declared).
+const ASSIGNMENT_REVIVE_RESET = {
+    cancelledAt: null, cancelledBy: null, cancellationType: null, cancellationReason: "",
+    acceptedAt: null, declinedAt: null, checkedInAt: null, checkedOutAt: null, completedAt: null,
+    checkInLocation: null, checkOutLocation: null, breaks: [], autoCompleted: false,
+    autoCloseLeaseAt: null, autoCloseLeaseId: null, pendingApproval: false,
+    giveawayOfferedAt: null, giveawayNote: "", giveawayTakenBy: null, giveawayFrom: null,
+    actualMinutes: null, approvedMinutes: null, overtimeMinutes: 0, overtimeStatus: "none",
+    clockOutReason: null, clockOutNote: "", overtimeReviewedBy: null, overtimeReviewedAt: null,
+    missedShiftDetectedAt: null, missedShiftReviewDeadline: null, missedShiftReviewStatus: "none",
+    missedShiftRequestedStartTime: null, missedShiftRequestedEndTime: null, missedShiftReason: null,
+    missedShiftNote: "", missedShiftRequestedAt: null, missedShiftReviewedBy: null, missedShiftReviewedAt: null,
+    missedShiftReviewNote: "", missedShiftApprovedStartTime: null, missedShiftApprovedEndTime: null,
+    manuallyAdjusted: false, adjustedBy: null, adjustedAt: null, adjustmentReason: "",
+    workerNotes: "", managerNotes: "", completionPhotos: [],
+    billingStatus: "not_billable", invoice: null, isDeleted: false,
+    reminderSentAt: null, checkInDistanceMeters: null, checkInFlagged: false,
+    checkInSyncedOffline: false, checkOutSyncedOffline: false,
+} as const;
+
 export const updateJob: MiddlewareFn = async (req, res) => {
     const currentUserId = getReqUser(req).user_id;
     const companyId = getReqUser(req).company_id;
@@ -1358,16 +1394,33 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                 throw new BadRequestError(`No active account found for: ${missingEmails.join(", ")}`);
             }
 
+            // Fetch EVERY doc for this job, live or terminal — needed below
+            // to tell "never assigned here before" (insert) apart from
+            // "previously removed/declined/no-showed on this exact job"
+            // (revive the existing doc instead; see ASSIGNMENT_REVIVE_RESET).
             const currentAssignments = await JobAssignment.find({ job: job._id });
             const selectedWorkerIds = selectedUsers.map(u => u._id.toString());
-            const currentWorkerIds = currentAssignments.map(a => a.worker.toString());
+            const assignmentByWorkerId = new Map(currentAssignments.map(a => [a.worker.toString(), a]));
 
-            const assignmentsToRemove = currentAssignments.filter(
+            const isLive = (a: InstanceType<typeof JobAssignment>) =>
+                !a.isDeleted && a.status !== "cancelled" && a.status !== "declined";
+            const liveAssignments = currentAssignments.filter(isLive);
+            const liveWorkerIds = liveAssignments.map(a => a.worker.toString());
+
+            const assignmentsToRemove = liveAssignments.filter(
                 a => !selectedWorkerIds.includes(a.worker.toString())
             );
+            // Selected workers not currently live on this job — some have no
+            // doc at all yet (brand new), others have a terminal doc for
+            // this exact (job, worker) pair that needs reviving.
             usersToAssign = selectedUsers.filter(
-                u => !currentWorkerIds.includes(u._id.toString())
+                u => !liveWorkerIds.includes(u._id.toString())
             );
+            const usersToCreate = usersToAssign.filter(u => !assignmentByWorkerId.has(u._id.toString()));
+            const assignmentsToRevive = usersToAssign
+                .map(u => assignmentByWorkerId.get(u._id.toString()))
+                .filter((a): a is InstanceType<typeof JobAssignment> => !!a);
+
             if (assignmentsToRemove.length) {
                 const removedAt = new Date();
                 await JobAssignment.updateMany(
@@ -1392,10 +1445,10 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                 );
             }
 
-            if (usersToAssign.length) {
+            if (usersToCreate.length) {
                 const assignmentNow = new Date();
                 await JobAssignment.insertMany(
-                    usersToAssign.map(user => ({
+                    usersToCreate.map(user => ({
                         job: job._id,
                         worker: user._id,
                         createdBy: currentUserId,
@@ -1405,6 +1458,27 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                         ...(effectiveAutoAccept || user.autoAcceptAssignments ? { status: "accepted", acceptedAt: assignmentNow } : {}),
                     }))
                 );
+            }
+
+            if (assignmentsToRevive.length) {
+                const assignmentNow = new Date();
+                await Promise.all(assignmentsToRevive.map(assignment => {
+                    const user = selectedUsers.find(u => u._id.toString() === assignment.worker.toString())!;
+                    const accepted = effectiveAutoAccept || user.autoAcceptAssignments;
+                    return JobAssignment.updateOne(
+                        { _id: assignment._id },
+                        {
+                            $set: {
+                                ...ASSIGNMENT_REVIVE_RESET,
+                                fullname: user.fullname,
+                                createdBy: currentUserId,
+                                payRate: req.body.payRate ?? job.payRate,
+                                status: accepted ? "accepted" : "pending",
+                                ...(accepted ? { acceptedAt: assignmentNow } : {}),
+                            },
+                        }
+                    );
+                }));
             }
         }
 
@@ -1503,6 +1577,21 @@ export const updateJob: MiddlewareFn = async (req, res) => {
         }
     }
 
+    // "Completed" means the work actually happened — the reminder cron,
+    // missed-shift detection, and fixed-price invoicing eligibility all key
+    // off Job.status === "completed" to mean exactly that. Allowing it on a
+    // still-future date would silently break the first two (both filter to
+    // status: "published" and would just skip this job on the real shift
+    // day) and make the third lie about work that hasn't happened yet.
+    // Cancelling is the right tool for "this job won't run as scheduled."
+    const targetStatus = updateFields.status ?? job.status;
+    const targetDate = updateFields.date ?? job.date;
+    if (targetStatus === "completed" && job.status !== "completed" && toUtcDay(targetDate) > toUtcDay(new Date())) {
+        throw new BadRequestError(
+            "This job's shift hasn't happened yet, so it can't be marked completed. Fix the date if it's wrong, or cancel the job instead."
+        );
+    }
+
     let updatedJob;
     try {
         updatedJob = await Job.findByIdAndUpdate(job._id, updateFields, {
@@ -1563,6 +1652,27 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     // (jobChangeRequestController.ts) — see applyJobCancellationSideEffects.
     if (newStatus === "cancelled" && oldStatus !== "cancelled") {
         await applyJobCancellationSideEffects(updatedJob, { actorId: currentUserId, clientVisible: oldStatus === "published" });
+    } else {
+        // Every other edit through this endpoint — including the "Approve"/
+        // publish status change on the Job Detail page — never wrote
+        // anything to the activity log. job_updated/job_published are
+        // already in ActivityLog's enum and JobDetailPage already renders
+        // them (recordFormatUI), but nothing ever actually logged them.
+        // Diffed against the pre-update `job`, via JSON.stringify so object
+        // fields (coordinates, checklist) compare by content, not reference.
+        const changes = JOB_ACTIVITY_DIFF_FIELDS
+            .map(field => ({ field, from: (job as any)[field], to: (updatedJob as any)[field] }))
+            .filter(c => JSON.stringify(c.from ?? null) !== JSON.stringify(c.to ?? null));
+
+        if (changes.length) {
+            await logActivity({
+                job: updatedJob._id,
+                jobDate: updatedJob.date,
+                type: oldStatus === "draft" && newStatus === "published" ? "job_published" : "job_updated",
+                actor: currentUserId,
+                changes,
+            });
+        }
     }
 
     let workersToNotify: { _id: mongoose.Types.ObjectId; email: string; fullname: string; autoAcceptAssignments?: boolean }[] = [];
