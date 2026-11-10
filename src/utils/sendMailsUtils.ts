@@ -2,6 +2,7 @@ import dayjs from "dayjs";
 import { Resend } from "resend";
 import { WorkerJobEmailParams } from "./interfaces.js";
 import { EMAIL_WORTHY_EVENTS } from "./constant.js";
+import { logPlatformError } from "./logPlatformError.js";
 
 let _resend: Resend | null = null;
 
@@ -50,6 +51,11 @@ export async function sendMail(opts: {
 
     if (error) {
         console.error("sendMail failed:", opts.subject, error);
+        await logPlatformError({
+            source: "email",
+            message: error.message,
+            metadata: { subject: opts.subject, to: opts.to },
+        });
         throw new Error(error.message);
     }
 

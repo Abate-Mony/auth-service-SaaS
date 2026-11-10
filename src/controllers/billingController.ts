@@ -5,6 +5,7 @@ import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
 import { getReqUser, MiddlewareFn } from "../interfaces/expresstype.js";
 import Company from "../models/company.js";
 import type { Plan } from "../utils/constant.js";
+import { logPlatformError } from "../utils/logPlatformError.js";
 
 // Lazily constructed, not at module top level — ES module imports are
 // hoisted and resolve before server.ts's own dotenv.config() call ever
@@ -226,34 +227,53 @@ export const stripeWebhookHandler: MiddlewareFn = async (req, res) => {
         event = getStripe().webhooks.constructEvent(req.body as Buffer, signature as string, process.env.STRIPE_WEBHOOK_SECRET as string);
     } catch (err) {
         console.error("Stripe webhook signature verification failed:", err);
+        await logPlatformError({
+            source: "stripe_webhook",
+            message: "Signature verification failed",
+            stack: err instanceof Error ? err.stack : null,
+        });
         res.status(StatusCodes.BAD_REQUEST).json({ success: false, msg: "Invalid signature." });
         return;
     }
 
-    switch (event.type) {
-        case "customer.subscription.created":
-        case "customer.subscription.updated":
-            await syncSubscription(event.data.object.id);
-            break;
-        case "customer.subscription.deleted":
-            await handleSubscriptionDeleted(event.data.object);
-            break;
-        case "invoice.paid":
-        case "invoice.payment_failed": {
-            const subscriptionId = extractSubscriptionId(event.data.object);
-            if (subscriptionId) await syncSubscription(subscriptionId);
-            break;
+    try {
+        switch (event.type) {
+            case "customer.subscription.created":
+            case "customer.subscription.updated":
+                await syncSubscription(event.data.object.id);
+                break;
+            case "customer.subscription.deleted":
+                await handleSubscriptionDeleted(event.data.object);
+                break;
+            case "invoice.paid":
+            case "invoice.payment_failed": {
+                const subscriptionId = extractSubscriptionId(event.data.object);
+                if (subscriptionId) await syncSubscription(subscriptionId);
+                break;
+            }
+            case "checkout.session.completed":
+                // Logged only, never mutates Company — customer.subscription.created
+                // already covers the real state change (Stripe creates the
+                // Subscription as part of completing a subscription-mode
+                // Checkout Session regardless, so this would just be a second,
+                // redundant write path for the same state).
+                console.log(`Checkout session completed: ${event.data.object.id}`);
+                break;
+            default:
+                break;
         }
-        case "checkout.session.completed":
-            // Logged only, never mutates Company — customer.subscription.created
-            // already covers the real state change (Stripe creates the
-            // Subscription as part of completing a subscription-mode
-            // Checkout Session regardless, so this would just be a second,
-            // redundant write path for the same state).
-            console.log(`Checkout session completed: ${event.data.object.id}`);
-            break;
-        default:
-            break;
+    } catch (err) {
+        // Logged for platform visibility, then re-thrown unchanged — the
+        // comment below (now past this catch) still applies: Stripe must
+        // still see this fail so its own retry schedule retries delivery
+        // rather than this silently acking a failed write with a 200.
+        await logPlatformError({
+            source: "stripe_webhook",
+            message: err instanceof Error ? err.message : "Webhook processing failed",
+            stack: err instanceof Error ? err.stack : null,
+            metadata: { eventType: event.type, eventId: event.id },
+        });
+        throw err;
     }
 
     // Any processing error above propagates past this point to a 500 (not

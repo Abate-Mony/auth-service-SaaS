@@ -18,6 +18,16 @@ import {
   getPlatformAuditList,
   getPlatformAuditDetail,
   getPlatformSystem,
+  getPlatformCronJobs,
+  runPlatformCronJob,
+  getPlatformErrors,
+  resolvePlatformError,
+  getPlatformAdmins,
+  grantPlatformAdmin,
+  revokePlatformAdmin,
+  getPlatformAnnouncements,
+  createPlatformAnnouncement,
+  updatePlatformAnnouncement,
 } from "../controllers/platformController.js";
 
 const router = Router();
@@ -57,5 +67,19 @@ router.get("/audit", getPlatformAuditList);
 router.get("/audit/:eventId", getPlatformAuditDetail);
 
 router.get("/system", getPlatformSystem);
+
+router.get("/cron", getPlatformCronJobs);
+router.post("/cron/:name/run", mutationLimiter, runPlatformCronJob);
+
+router.get("/errors", getPlatformErrors);
+router.patch("/errors/:errorId/resolve", mutationLimiter, resolvePlatformError);
+
+router.get("/admins", getPlatformAdmins);
+router.post("/admins/grant", mutationLimiter, grantPlatformAdmin);
+router.post("/admins/:userId/revoke", mutationLimiter, revokePlatformAdmin);
+
+router.get("/announcements", getPlatformAnnouncements);
+router.post("/announcements", mutationLimiter, createPlatformAnnouncement);
+router.patch("/announcements/:announcementId", mutationLimiter, updatePlatformAnnouncement);
 
 export default router;

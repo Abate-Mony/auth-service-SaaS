@@ -37,19 +37,12 @@ import jobChangeRequestRouter from "./routes/jobChangeRequestRouter.js"
 import availabilityRouter from "./routes/availabilityRouter.js"
 import activityLogRouter from "./routes/activity_logs_router.js"
 import companyRouter from "./routes/companyRouter.js"
+import announcementRouter from "./routes/announcementRouter.js"
 import externalRouter from "./routes/externalRouter.js"
 import { getPlanCatalog } from "./controllers/companyController.js"
 import { stripeWebhookHandler } from "./controllers/billingController.js"
 import cron from "node-cron";
-import { runDailyOccurrenceGeneration } from "./utils/runDailyOccurrenceGeneration.js";
-import { sendUpcomingShiftReminders } from "./utils/sendUpcomingShiftReminders.js";
-import { autoCloseAbandonedShifts } from "./utils/autoCloseAbandonedShifts.js";
-import { markMissedShifts } from "./utils/markMissedShifts.js";
-import { sendOverduePaymentReminders } from "./utils/sendPaymentReminders.js";
-import { sendStaleQuoteRequestReminders } from "./utils/sendStaleQuoteRequestReminders.js";
-import { generateRecurringInvoices } from "./services/invoice/recurringInvoiceGenerator.js";
-import { checkPendingEmailDomains } from "./utils/checkPendingEmailDomains.js";
-import { expireTrials } from "./utils/expireTrials.js";
+import { runCronJob } from "./utils/cronRegistry.js";
 import notificationPreferenceRouter
   from "./routes/notificationPreferenceRouter.js";
 import timesheetRouter from "./routes/timesheetRouter.js";
@@ -196,6 +189,7 @@ app.use(
 app.use("/api/v1/availability", authenticateUser, loadRestriction, enforceCompanyStatus, availabilityRouter)
 app.use("/api/v1/activity-logs", authenticateUser, loadRestriction, enforceCompanyStatus, activityLogRouter);
 app.use("/api/v1/companies", authenticateUser, loadRestriction, enforceCompanyStatus, companyRouter);
+app.use("/api/v1/announcements", authenticateUser, loadRestriction, enforceCompanyStatus, announcementRouter);
 app.use(
   "/api/v1/timesheets",
   authenticateUser,
@@ -268,37 +262,37 @@ const start = async (): Promise<void> => {
     });
     await db.connect();
     cron.schedule("0 1 * * *", () => {
-      runDailyOccurrenceGeneration();
+      runCronJob("runDailyOccurrenceGeneration", "schedule");
     });
     cron.schedule("* * * * *", () => {
-      sendUpcomingShiftReminders();
-      autoCloseAbandonedShifts();
-      markMissedShifts();
+      runCronJob("sendUpcomingShiftReminders", "schedule");
+      runCronJob("autoCloseAbandonedShifts", "schedule");
+      runCronJob("markMissedShifts", "schedule");
     });
     // 8am UTC — a reminder email landing at 1am does nobody any good.
     cron.schedule("0 8 * * *", () => {
-      sendOverduePaymentReminders();
+      runCronJob("sendOverduePaymentReminders", "schedule");
     });
     // Every hour — catches an unsent wizard-submitted quote reasonably
     // soon after it crosses the 24h-unaddressed threshold, without being
     // as noisy/expensive as the every-minute jobs above.
     cron.schedule("0 * * * *", () => {
-      sendStaleQuoteRequestReminders();
+      runCronJob("sendStaleQuoteRequestReminders", "schedule");
     });
     // 6am UTC, ahead of the payment-reminder run — drafts are ready for a
     // manager to review before the working day starts.
     cron.schedule("0 6 * * *", () => {
-      generateRecurringInvoices();
+      runCronJob("generateRecurringInvoices", "schedule");
     });
     // 2am UTC — reverts any company whose free trial ended back to "free".
     cron.schedule("0 2 * * *", () => {
-      expireTrials();
+      runCronJob("expireTrials", "schedule");
     });
     // Every 10 minutes — catches a sending domain finishing DNS
     // propagation without the owner needing to reopen Settings or click
     // "Check DNS" themselves. See checkPendingEmailDomains.ts.
     cron.schedule("*/10 * * * *", () => {
-      checkPendingEmailDomains();
+      runCronJob("checkPendingEmailDomains", "schedule");
     });
   } catch (err) {
     console.error(err);

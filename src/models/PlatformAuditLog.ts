@@ -13,6 +13,10 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "email_domain.reset",
   "platform_access.granted",
   "platform_access.revoked",
+  "cron.manual_run",
+  "error_log.resolved",
+  "announcement.created",
+  "announcement.updated",
 ] as const;
 export type PlatformAuditAction = (typeof PLATFORM_AUDIT_ACTIONS)[number];
 

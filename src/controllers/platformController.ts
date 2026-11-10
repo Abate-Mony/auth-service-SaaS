@@ -1,7 +1,7 @@
 import { StatusCodes } from "http-status-codes";
 import { z } from "zod";
 import mongoose from "mongoose";
-import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../errors/customErrors.js";
 import { MiddlewareFn } from "../interfaces/expresstype.js";
 import Company from "../models/company.js";
 import User from "../models/userModel.js";
@@ -11,9 +11,14 @@ import Site from "../models/siteModel.js";
 import Quote from "../models/quoteModel.js";
 import Invoice from "../models/invoiceModel.js";
 import PlatformAuditLog, { PLATFORM_AUDIT_ACTIONS } from "../models/PlatformAuditLog.js";
+import PlatformErrorLog, { PLATFORM_ERROR_SOURCES } from "../models/PlatformErrorLog.js";
+import CronJobStatus from "../models/CronJobStatus.js";
+import PlatformAnnouncement, { ANNOUNCEMENT_AUDIENCES, ANNOUNCEMENT_SEVERITIES } from "../models/PlatformAnnouncement.js";
 import { recordPlatformAudit } from "../services/platformAudit.service.js";
 import { getEffectiveMaxWorkers } from "../utils/planLimits.js";
 import { PLANS } from "../utils/constant.js";
+import { PLATFORM_ROLES, PlatformRole } from "../utils/platformRoles.js";
+import { CRON_JOBS, getCronJobDefinition, runCronJob } from "../utils/cronRegistry.js";
 import {
   triggerResendDomainVerification,
   fetchResendDomain,
@@ -732,4 +737,386 @@ export const getPlatformSystem: MiddlewareFn = async (_req, res) => {
       database: { status: dbState === 1 ? "operational" : "degraded" },
     },
   });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Scheduled jobs (cron health)
+// ─────────────────────────────────────────────────────────────────────────
+
+// GET /platform/cron — merges the registry (so a job that has never run
+// still appears, as "never run", rather than being invisible) with whatever
+// CronJobStatus documents exist.
+export const getPlatformCronJobs: MiddlewareFn = async (_req, res) => {
+  const statuses = await CronJobStatus.find({}).lean();
+  const statusByName = new Map(statuses.map(s => [s.name, s]));
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    data: CRON_JOBS.map(job => {
+      const status = statusByName.get(job.name);
+      return {
+        name: job.name,
+        label: job.label,
+        schedule: job.schedule,
+        lastRunAt: status?.lastRunAt ?? null,
+        lastFinishedAt: status?.lastFinishedAt ?? null,
+        lastStatus: status?.lastStatus ?? "never_run",
+        lastDurationMs: status?.lastDurationMs ?? null,
+        lastError: status?.lastError ?? null,
+        lastTriggeredBy: status?.lastTriggeredBy ?? null,
+        runCount: status?.runCount ?? 0,
+        failCount: status?.failCount ?? 0,
+      };
+    }),
+  });
+};
+
+// POST /platform/cron/:name/run — `name` is validated against the registry
+// below (never arbitrary), so this can only ever invoke one of the 9 known
+// jobs wired up in server.ts, through the exact same runCronJob() path a
+// scheduled tick uses.
+export const runPlatformCronJob: MiddlewareFn = async (req, res) => {
+  const { name } = req.params;
+  if (Array.isArray(name) || !getCronJobDefinition(name)) {
+    throw new BadRequestError("Unknown cron job.");
+  }
+
+  let result: "success" | "failed" = "success";
+  let errorMessage: string | null = null;
+  try {
+    await runCronJob(name, "manual");
+  } catch (err) {
+    result = "failed";
+    errorMessage = err instanceof Error ? err.message : "Unknown error";
+  }
+
+  await recordPlatformAudit({
+    req,
+    actor: req.platformActor!,
+    action: "cron.manual_run",
+    targetType: "CronJob",
+    targetId: name,
+    result: result === "success" ? "success" : "failed",
+    metadata: { error: errorMessage },
+  });
+
+  if (result === "failed") {
+    res.status(StatusCodes.OK).json({ success: false, msg: `Job failed: ${errorMessage}` });
+    return;
+  }
+  res.status(StatusCodes.OK).json({ success: true, msg: "Job ran successfully." });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Error log (webhook / email / cron failures)
+// ─────────────────────────────────────────────────────────────────────────
+
+// GET /platform/errors
+export const getPlatformErrors: MiddlewareFn = async (req, res) => {
+  const { page, limit, skip } = parsePagination(req.query as Record<string, string | undefined>);
+  const { source, resolved } = req.query as Record<string, string | undefined>;
+
+  const query: Record<string, unknown> = {};
+  if (source) {
+    if (!(PLATFORM_ERROR_SOURCES as readonly string[]).includes(source)) throw new BadRequestError("Invalid source filter.");
+    query.source = source;
+  }
+  if (resolved === "true" || resolved === "false") query.resolved = resolved === "true";
+
+  const [records, total] = await Promise.all([
+    PlatformErrorLog.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+    PlatformErrorLog.countDocuments(query),
+  ]);
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    data: records.map(r => ({
+      id: r._id.toString(),
+      source: r.source,
+      message: r.message,
+      metadata: r.metadata ?? null,
+      resolved: r.resolved,
+      resolvedAt: r.resolvedAt ?? null,
+      createdAt: r.createdAt,
+    })),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
+};
+
+// PATCH /platform/errors/:errorId/resolve
+export const resolvePlatformError: MiddlewareFn = async (req, res) => {
+  const { errorId } = req.params;
+  requireObjectId(errorId, "error id");
+
+  const record = await PlatformErrorLog.findById(errorId);
+  if (!record) throw new NotFoundError("Error log entry not found.");
+
+  record.resolved = true;
+  record.resolvedAt = new Date();
+  record.resolvedBy = new mongoose.Types.ObjectId(req.platformActor!.id);
+  await record.save();
+
+  await recordPlatformAudit({
+    req,
+    actor: req.platformActor!,
+    action: "error_log.resolved",
+    targetType: "PlatformErrorLog",
+    targetId: errorId,
+    result: "success",
+  });
+
+  res.status(StatusCodes.OK).json({ success: true, msg: "Marked resolved." });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Platform admins — granting/revoking platformRole on EXISTING users only.
+// Deliberately no "create a brand-new platform-only account" route here —
+// that stays script-only (createPlatformAdmin.ts), since it involves
+// generating and delivering a password out of band. See grantPlatformRole.ts
+// / revokePlatformRole.ts, whose invariants (never create a user; never
+// strand the last super_admin) this mirrors exactly.
+// ─────────────────────────────────────────────────────────────────────────
+
+// GET /platform/admins
+export const getPlatformAdmins: MiddlewareFn = async (req, res) => {
+  const { page, limit, skip } = parsePagination(req.query as Record<string, string | undefined>);
+  const { search } = req.query as Record<string, string | undefined>;
+
+  const query: Record<string, unknown> = { platformRole: { $ne: null } };
+  if (search) {
+    const escaped = search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    query.$or = [{ fullname: { $regex: escaped, $options: "i" } }, { email: { $regex: escaped, $options: "i" } }];
+  }
+
+  const [admins, total] = await Promise.all([
+    User.find(query).select("fullname email platformRole createdAt").sort("-createdAt").skip(skip).limit(limit).lean(),
+    User.countDocuments(query),
+  ]);
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    data: admins.map(a => ({
+      id: a._id.toString(),
+      name: a.fullname,
+      email: a.email,
+      platformRole: a.platformRole,
+      createdAt: a.createdAt,
+    })),
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+  });
+};
+
+const grantAdminSchema = reasonSchema.extend({
+  email: z.string().trim().toLowerCase().email("Invalid email."),
+  role: z.enum(PLATFORM_ROLES),
+});
+
+// POST /platform/admins/grant — grants platformRole to an EXISTING user
+// found by email. Never creates a user (mirrors grantPlatformRole.ts).
+export const grantPlatformAdmin: MiddlewareFn = async (req, res) => {
+  const data = parseOrThrow(grantAdminSchema, req.body);
+
+  const user = await User.findOne({ email: data.email }).select("fullname email platformRole");
+  if (!user) {
+    throw new NotFoundError(
+      `No user found with email "${data.email}". Platform access can only be granted to an existing account.`
+    );
+  }
+
+  const before = { platformRole: user.platformRole ?? null };
+  user.platformRole = data.role as PlatformRole;
+  await user.save();
+  const after = { platformRole: user.platformRole };
+
+  await recordPlatformAudit({
+    req,
+    actor: req.platformActor!,
+    action: "platform_access.granted",
+    targetType: "User",
+    targetId: user._id.toString(),
+    reason: data.reason,
+    before,
+    after,
+    result: "success",
+  });
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    msg: "Platform access granted.",
+    admin: { id: user._id.toString(), name: user.fullname, email: user.email, platformRole: user.platformRole },
+  });
+};
+
+// POST /platform/admins/:userId/revoke
+export const revokePlatformAdmin: MiddlewareFn = async (req, res) => {
+  const { userId } = req.params;
+  requireObjectId(userId, "user id");
+  const data = parseOrThrow(reasonSchema, req.body);
+
+  // Self-lockout prevention — an admin revoking their own access has no way
+  // to undo it without another admin's help, so this is refused outright
+  // rather than merely discouraged. Checked before the last-super_admin
+  // count below since it's a stricter, unconditional rule.
+  if (userId === req.platformActor!.id) {
+    throw new ConflictError("You can't revoke your own platform access. Ask another platform admin to do it.");
+  }
+
+  const user = await User.findById(userId).select("fullname email platformRole");
+  if (!user) throw new NotFoundError("User not found.");
+
+  if (!user.platformRole) {
+    throw new BadRequestError("This user has no platform role to revoke.");
+  }
+
+  if (user.platformRole === "super_admin") {
+    const remainingSuperAdmins = await User.countDocuments({ platformRole: "super_admin", _id: { $ne: user._id } });
+    if (remainingSuperAdmins === 0) {
+      throw new ConflictError("Refusing to revoke: this is the last super_admin. Grant another user super_admin first.");
+    }
+  }
+
+  const before = { platformRole: user.platformRole };
+  user.platformRole = null;
+  await user.save();
+
+  await recordPlatformAudit({
+    req,
+    actor: req.platformActor!,
+    action: "platform_access.revoked",
+    targetType: "User",
+    targetId: user._id.toString(),
+    reason: data.reason,
+    before,
+    after: { platformRole: null },
+    result: "success",
+  });
+
+  res.status(StatusCodes.OK).json({ success: true, msg: "Platform access revoked." });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Announcements — platform-admin side. Tenant-facing read lives in
+// announcementController.ts (GET /announcements/active), outside this
+// super_admin-gated router entirely.
+// ─────────────────────────────────────────────────────────────────────────
+
+// GET /platform/announcements
+export const getPlatformAnnouncements: MiddlewareFn = async (_req, res) => {
+  const announcements = await PlatformAnnouncement.find({}).sort({ createdAt: -1 }).lean();
+  res.status(StatusCodes.OK).json({
+    success: true,
+    data: announcements.map(a => ({
+      id: a._id.toString(),
+      message: a.message,
+      severity: a.severity,
+      audience: a.audience,
+      targetPlans: a.targetPlans,
+      targetCompanies: a.targetCompanies,
+      startsAt: a.startsAt,
+      endsAt: a.endsAt,
+      isActive: a.isActive,
+      createdAt: a.createdAt,
+    })),
+  });
+};
+
+const announcementSchema = z.object({
+  message: z.string().trim().min(1, "A message is required.").max(2000),
+  severity: z.enum(ANNOUNCEMENT_SEVERITIES).default("info"),
+  audience: z.enum(ANNOUNCEMENT_AUDIENCES).default("all"),
+  targetPlans: z.array(z.enum(PLANS)).default([]),
+  targetCompanies: z.array(z.string()).default([]),
+  startsAt: z.coerce.date().optional(),
+  endsAt: z.coerce.date().nullable().optional(),
+});
+
+// POST /platform/announcements
+export const createPlatformAnnouncement: MiddlewareFn = async (req, res) => {
+  const data = parseOrThrow(announcementSchema, req.body);
+  if (data.audience === "plan" && data.targetPlans.length === 0) {
+    throw new BadRequestError("Select at least one plan for a plan-scoped announcement.");
+  }
+  if (data.audience === "company" && data.targetCompanies.length === 0) {
+    throw new BadRequestError("Select at least one company for a company-scoped announcement.");
+  }
+  data.targetCompanies.forEach(id => requireObjectId(id, "company id"));
+
+  const announcement = await PlatformAnnouncement.create({
+    message: data.message,
+    severity: data.severity,
+    audience: data.audience,
+    targetPlans: data.audience === "plan" ? data.targetPlans : [],
+    targetCompanies: data.audience === "company" ? data.targetCompanies : [],
+    startsAt: data.startsAt ?? new Date(),
+    endsAt: data.endsAt ?? null,
+    createdBy: req.platformActor!.id,
+  });
+
+  await recordPlatformAudit({
+    req,
+    actor: req.platformActor!,
+    action: "announcement.created",
+    targetType: "PlatformAnnouncement",
+    targetId: announcement._id.toString(),
+    after: { message: announcement.message, severity: announcement.severity, audience: announcement.audience },
+    result: "success",
+  });
+
+  res.status(StatusCodes.CREATED).json({ success: true, msg: "Announcement created.", id: announcement._id.toString() });
+};
+
+const announcementUpdateSchema = announcementSchema.partial().extend({
+  isActive: z.boolean().optional(),
+});
+
+// PATCH /platform/announcements/:announcementId — update fields, or just
+// { isActive: false } to deactivate. No DELETE route exists for this model.
+export const updatePlatformAnnouncement: MiddlewareFn = async (req, res) => {
+  const { announcementId } = req.params;
+  requireObjectId(announcementId, "announcement id");
+  const data = parseOrThrow(announcementUpdateSchema, req.body);
+
+  const announcement = await PlatformAnnouncement.findById(announcementId);
+  if (!announcement) throw new NotFoundError("Announcement not found.");
+
+  const before = {
+    message: announcement.message,
+    severity: announcement.severity,
+    audience: announcement.audience,
+    isActive: announcement.isActive,
+    endsAt: announcement.endsAt,
+  };
+
+  if (data.message !== undefined) announcement.message = data.message;
+  if (data.severity !== undefined) announcement.severity = data.severity;
+  if (data.audience !== undefined) announcement.audience = data.audience;
+  if (data.targetPlans !== undefined) announcement.targetPlans = data.targetPlans;
+  if (data.targetCompanies !== undefined) {
+    data.targetCompanies.forEach(id => requireObjectId(id, "company id"));
+    announcement.targetCompanies = data.targetCompanies as any;
+  }
+  if (data.startsAt !== undefined) announcement.startsAt = data.startsAt;
+  if (data.endsAt !== undefined) announcement.endsAt = data.endsAt;
+  if (data.isActive !== undefined) announcement.isActive = data.isActive;
+
+  await announcement.save();
+
+  await recordPlatformAudit({
+    req,
+    actor: req.platformActor!,
+    action: "announcement.updated",
+    targetType: "PlatformAnnouncement",
+    targetId: announcementId,
+    before,
+    after: {
+      message: announcement.message,
+      severity: announcement.severity,
+      audience: announcement.audience,
+      isActive: announcement.isActive,
+      endsAt: announcement.endsAt,
+    },
+    result: "success",
+  });
+
+  res.status(StatusCodes.OK).json({ success: true, msg: "Announcement updated." });
 };
