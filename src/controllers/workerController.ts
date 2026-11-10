@@ -211,7 +211,12 @@ export const getMyJobs: MiddlewareFn = async (req, res) => {
         unwindJob,
         ...(search ? [{ $match: { "job.title": { $regex: search as string, $options: "i" } } }] : []),
         ...(jobDateMatch ? [{ $match: { "job.date": jobDateMatch } }] : []),
-        { $sort: { "job.date": 1 as const } },
+        // Date, then start time ("HH:mm", zero-padded, so it sorts correctly
+        // as text) so same-day shifts come back in order; then the
+        // assignment _id as a unique tiebreaker — without one, MongoDB's
+        // order between equal keys isn't stable across requests, so
+        // $skip/$limit pages could repeat or skip assignments.
+        { $sort: { "job.date": 1, "job.startTime": 1, _id: 1 } },
         {
             $facet: {
                 data: [

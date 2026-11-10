@@ -15,13 +15,16 @@ import { isManagementRole } from "../utils/roles.js";
 export const currentUser: MiddlewareFn = async (req, res) => {
   // const { user_id } = getReqUser(req);
   const { user_id } = req.user
-  const user = await userModel.findOne({ _id: user_id }).populate("company", "name plan maxWorkers logo")
+  const user = await userModel.findOne({ _id: user_id }).populate("company", "name plan maxWorkers logo timezone")
 
   if (!user) throw new UnauthenticatedError(`login again `);
-  // adding c
+  // companyTimezone: same field the mobile login response carries (see
+  // mobileLogin) — included here so the app can pick up a changed company
+  // timezone without the worker logging out and back in.
   let Iuser = sanitizeUser(user);
   Iuser = {
     ...Iuser,
+    companyTimezone: (user.company as any)?.timezone ?? "Europe/London",
   };
   res.status(StatusCodes.OK).json({ user: Iuser });
 };
