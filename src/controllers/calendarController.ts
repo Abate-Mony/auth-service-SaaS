@@ -28,7 +28,10 @@ export const getCalendarJobs: MiddlewareFn = async (req, res) => {
       $gte: rangeStart.toDate(),
       $lt: rangeEnd.toDate(), // exclusive upper bound = whole final day included
     },
-    status: { $ne: "draft" },
+    // Real draft jobs should render on the calendar (slate badge, same as
+    // the Jobs list) — only the hidden recurring-schedule template row
+    // (status: "draft", isTemplate: true) must stay invisible everywhere.
+    isTemplate: { $ne: true },
     isDeleted: false,
   })
     .populate("client", "name")
