@@ -25,6 +25,18 @@ const RecurringJobSchema = new Schema(
     generatedUntil: Date,
 
     defaultWorkers: [{ type: Schema.Types.ObjectId, ref: "User" }],
+    // Default workers who are paid something other than the template's
+    // payRate. Every generated occurrence's assignment uses this rate.
+    workerPayRates: {
+      type: [
+        {
+          _id: false,
+          worker: { type: Schema.Types.ObjectId, ref: "User", required: true },
+          payRate: { type: Number, required: true, min: 0 },
+        },
+      ],
+      default: [],
+    },
 
     active: { type: Boolean, default: true, index: true },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
