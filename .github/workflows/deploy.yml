@@ -30,6 +30,13 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      # Gate the deploy: if any test fails the job stops here, before
+      # anything is copied to the droplet or PM2 is restarted, so the
+      # running API is left untouched. Runs before the prune step because
+      # the tests need the full node_modules.
+      - name: Run tests
+        run: npm test
+
       # Strips devDependencies (typescript, @types/*, etc.) out of
       # node_modules in place, leaving exactly what dist/ needs at runtime.
       # Done here (full CPU/RAM on the runner) instead of on the droplet —
