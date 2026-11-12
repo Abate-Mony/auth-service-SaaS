@@ -242,7 +242,11 @@ function renderPaymentAndNotes(doc: PDFKit.PDFDocument, ctx: Ctx, pageWidth: num
 
 function renderFooter(doc: PDFKit.PDFDocument, ctx: Ctx) {
   const fontReg = resolveFont(ctx.template.font, false);
-  doc.font(fontReg).fontSize(8).fillColor(COLOR_MUTED).text(`Generated ${dayjs().format("D MMM YYYY HH:mm")} by ${ctx.companyName}`, LEFT, doc.page.height - 40, { align: "left" });
+  // page.height - margins.bottom is the exact boundary pdfkit auto-paginates
+  // past (even for a single positioned .text() call) — sit a few points
+  // inside it, not on it, or a page that fills close to the bottom spills
+  // the footer alone onto an extra page.
+  doc.font(fontReg).fontSize(8).fillColor(COLOR_MUTED).text(`Generated ${dayjs().format("D MMM YYYY HH:mm")} by ${ctx.companyName}`, LEFT, doc.page.height - doc.page.margins.bottom - 16, { align: "left" });
 }
 
 // ─────────────────────────────────────────────────────────────

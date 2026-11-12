@@ -9,6 +9,7 @@ import Company from "../models/company.js";
 import { generateTimesheetPdf, TimesheetPdfRow } from "../utils/timesheetPdf.js";
 import { isManagementRole } from "../utils/roles.js";
 import { splitAssignmentPay } from "../utils/pay.js";
+import { fetchImageBuffer } from "../utils/fetchImageBuffer.js";
 
 type Period = "weekly" | "biweekly" | "monthly";
 
@@ -381,6 +382,8 @@ const streamTimesheetPdf = async (
           };
         });
 
+    const logoBuffer = await fetchImageBuffer(company.logo?.url);
+
     const pdf =
       generateTimesheetPdf({
         employeeName:
@@ -411,6 +414,8 @@ const streamTimesheetPdf = async (
           overtimePay,
           currency: company.currency ?? "GBP",
         },
+
+        logoBuffer,
       });
 
     const filename =

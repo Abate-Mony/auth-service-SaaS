@@ -33,6 +33,12 @@ interface GenerateTimesheetPdfOptions {
     overtimePay: number;
     currency: string;
   };
+
+  // Pre-fetched by the caller via fetchImageBuffer — this file never does
+  // I/O itself. null/undefined when the company has no logo, or fetching
+  // it failed; either way the timesheet still renders, just without one
+  // (falls back to the generic OnClockly label, same spot it always sat).
+  logoBuffer?: Buffer | null;
 }
 
 const formatMinutes = (minutes: number) => {
@@ -63,6 +69,7 @@ export const generateTimesheetPdf = ({
   regularMinutes,
   overtimeMinutes,
   pay,
+  logoBuffer,
 }: GenerateTimesheetPdfOptions) => {
   /*
    * Landscape A4 gives us enough room for:
@@ -83,23 +90,52 @@ export const generateTimesheetPdf = ({
   // Header
   // ─────────────────────────────────────
 
+  // Title and logo label share one row — each needs an explicit y, or the
+  // second .text() call just advances past the first and lands underneath
+  // it instead of beside it.
+  const titleY = doc.y;
+
   doc
     .font("Helvetica-Bold")
     .fontSize(26)
     .fillColor("#0F172A")
-    .text("TIMESHEET", {
+    .text("TIMESHEET", 40, titleY, {
+      width: pageWidth,
       align: "left",
     });
 
-  doc
-    .font("Helvetica")
-    .fontSize(10)
-    .fillColor("#64748B")
-    .text("OnClockly", {
-      align: "right",
-    });
+  // Company's own letterhead logo, top-right — falls back to the generic
+  // OnClockly label (still credited in the footer either way) when there
+  // isn't one, or rendering it fails. Wrapped in try/catch — pdfkit throws
+  // synchronously on an unsupported format, and that must never take the
+  // whole PDF down with it.
+  const LOGO_BOX_WIDTH = 140;
+  const LOGO_BOX_HEIGHT = 34;
+  let logoRendered = false;
+  if (logoBuffer) {
+    try {
+      doc.image(logoBuffer, 40 + pageWidth - LOGO_BOX_WIDTH, titleY, {
+        fit: [LOGO_BOX_WIDTH, LOGO_BOX_HEIGHT],
+        align: "right",
+      });
+      logoRendered = true;
+    } catch (err) {
+      console.error("generateTimesheetPdf: failed to render company logo:", err);
+    }
+  }
 
-  doc.moveDown(1);
+  if (!logoRendered) {
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .fillColor("#64748B")
+      .text("OnClockly", 40, titleY + 8, {
+        width: pageWidth,
+        align: "right",
+      });
+  }
+
+  doc.y = titleY + 34;
 
   const headerY = doc.y;
 
@@ -310,6 +346,31 @@ export const generateTimesheetPdf = ({
   const totalMinutes =
     regularMinutes + overtimeMinutes;
 
+  // pdfkit auto-inserts a page break the moment a positioned .text() call's
+  // y would land past the bottom margin — and since it does that per call,
+  // a summary block that straddles the boundary doesn't move to a tidy new
+  // page, it shreds across several near-blank ones (each row's label and
+  // value triggering it separately). Reserve the block's full height up
+  // front and break once, as a unit, instead of letting pdfkit improvise.
+  const SUMMARY_ROW_HEIGHT = 22;
+  const SUMMARY_BOLD_ROW_HEIGHT = 26;
+  const summaryBlockHeight =
+    28 + // gap above the block
+    SUMMARY_ROW_HEIGHT * 2 + // Regular hours, Overtime
+    12 + // divider + gap
+    SUMMARY_BOLD_ROW_HEIGHT + // Total hours
+    (pay
+      ? 16 + SUMMARY_ROW_HEIGHT * 2 + 12 + SUMMARY_BOLD_ROW_HEIGHT
+      : 0);
+
+  const FOOTER_RESERVED_HEIGHT = 30;
+  const printableBottom = () => doc.page.height - doc.page.margins.bottom;
+
+  if (y + summaryBlockHeight + FOOTER_RESERVED_HEIGHT > printableBottom()) {
+    doc.addPage({ size: "A4", layout: "landscape", margin: 40 });
+    y = 40;
+  }
+
   y += 28;
 
   const summaryX = tableX + tableWidth - 250;
@@ -403,7 +464,9 @@ export const generateTimesheetPdf = ({
     );
   }
 
-  // Footer
+  // Footer — `doc.page.height - margins.bottom` is the exact boundary
+  // pdfkit auto-paginates past (see the summary block above), so this sits
+  // a few points inside it rather than right on it.
   doc
     .font("Helvetica")
     .fontSize(8)
@@ -413,7 +476,7 @@ export const generateTimesheetPdf = ({
         "DD MMM YYYY HH:mm"
       )} by OnClockly`,
       40,
-      doc.page.height - 40,
+      printableBottom() - 16,
       {
         align: "left",
       }
