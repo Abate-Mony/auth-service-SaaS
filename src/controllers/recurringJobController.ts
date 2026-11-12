@@ -147,7 +147,7 @@ export const getRecurringJob: MiddlewareFn = async (req, res) => {
 export const updateRecurringJob: MiddlewareFn = async (req, res) => {
   const { id } = req.params;
   const {
-    frequency, interval, daysOfWeek, endDate, maxOccurrences, defaultWorkers, startTime, endTime,
+    frequency, interval, daysOfWeek, endDate, maxOccurrences, defaultWorkers, workerPayRates, startTime, endTime,
     payRate, chargeRate, chargeType, chargeAmount, geofenceMode, geofenceRadiusMeters, autoAccept,
   } = req.body;
 
@@ -171,6 +171,14 @@ export const updateRecurringJob: MiddlewareFn = async (req, res) => {
   }
   if (geofenceRadiusMeters !== undefined && (typeof geofenceRadiusMeters !== "number" || geofenceRadiusMeters < 0)) {
     throw new BadRequestError("geofenceRadiusMeters must be a non-negative number");
+  }
+  if (workerPayRates !== undefined) {
+    if (!Array.isArray(workerPayRates)) throw new BadRequestError("workerPayRates must be an array");
+    for (const entry of workerPayRates) {
+      if (!entry?.worker || typeof entry.payRate !== "number" || !Number.isFinite(entry.payRate) || entry.payRate < 0) {
+        throw new BadRequestError("Each workerPayRates entry needs a worker id and a non-negative payRate");
+      }
+    }
   }
 
   // The shift's actual start/end time, pay/charge rate, and geofence settings
@@ -251,6 +259,23 @@ export const updateRecurringJob: MiddlewareFn = async (req, res) => {
 
   if (maxOccurrences !== undefined) schedule.maxOccurrences = maxOccurrences;
   if (defaultWorkers !== undefined) schedule.defaultWorkers = defaultWorkers;
+
+  // Per-worker overrides, same model as a one-off job's roster edit: a sent
+  // workerPayRates is the full source of truth for who's on a custom rate
+  // (anyone left out goes back to the template's default); otherwise keep
+  // the existing overrides, just pruned of anyone no longer a default
+  // worker on this schedule (a stale entry for a removed worker would
+  // otherwise sit in storage forever, unused but misleading to read).
+  // Only ever affects occurrences generated from here on — generateOccurrences
+  // reads this fresh for the regeneration below, and already-generated
+  // assignments (especially accepted ones) are never rewritten.
+  if (defaultWorkers !== undefined || workerPayRates !== undefined) {
+    const currentWorkerIds = new Set(schedule.defaultWorkers.map((w: any) => w.toString()));
+    const source = workerPayRates !== undefined
+      ? workerPayRates.map((r: any) => ({ worker: r.worker, payRate: Math.round(r.payRate * 100) / 100 }))
+      : schedule.workerPayRates;
+    schedule.workerPayRates = source.filter((r: any) => currentWorkerIds.has(r.worker.toString()));
+  }
 
   // The pattern changed, so anything generated ahead of today is now built on
   // the old rule. Drop those and regenerate from the new one.

@@ -1,6 +1,7 @@
 import { StatusCodes } from "http-status-codes";
 import mongoose from "mongoose";
 import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
+import { assignmentPay, parseCustomPayRates } from "../utils/workerPayRates.js";
 import { MiddlewareFn, getReqUser } from "../interfaces/expresstype.js";
 import JobAssignment from "../models/JobAssignment.js";
 import Job from "../models/jobModel.js";
@@ -471,6 +472,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         }
     }
     const workerEmails = workers.map(w => w.email).filter(Boolean);
+    const customPayRates = parseCustomPayRates(workers);
 
     // Never trust client-supplied `done`/`completedBy`/`completedAt` at
     // creation time — only the text survives, capped at a sane count/length
@@ -617,6 +619,9 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                 endDate: normalizedEndDate,
                 maxOccurrences,
                 defaultWorkers: workerIds,
+                workerPayRates: realWorkers
+                    .filter(w => customPayRates.has(w.email))
+                    .map(w => ({ worker: w._id, payRate: customPayRates.get(w.email)! })),
                 createdBy: currentUserId,
                 company: req.user.company_id,
             });
@@ -767,7 +772,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
                     job: job._id,
                     worker: workerId,
                     createdBy: currentUserId,
-                    payRate: baseJobFields.payRate,
+                    ...assignmentPay(Number(baseJobFields.payRate), customPayRates.get(realWorkers[idx].email)),
                     company: req.user.company_id,
                     fullname: realWorkers[idx].fullname || "testing her",
                     ...(autoAcceptForWorker ? { status: "accepted", acceptedAt: assignmentNow } : {}),
@@ -1094,6 +1099,7 @@ export const duplicateJob: MiddlewareFn = async (req, res) => {
                 worker: ja.worker,
                 createdBy: req.user.user_id,
                 payRate: ja.payRate,
+                payRateIsCustom: !!ja.payRateIsCustom,
                 company: companyId,
                 fullname: ja.fullname,
                 ...(duplicatedJob.autoAccept || autoAcceptWorkerIds.has(ja.worker.toString()) ? { status: "accepted", acceptedAt: assignmentNow } : {}),
@@ -1359,6 +1365,9 @@ export const updateJob: MiddlewareFn = async (req, res) => {
     let usersToAssign: any[] = [];
   
 
+        // Set only when the payload includes `workers`: worker id → custom rate.
+        let customRateByWorkerId: Map<string, number> | null = null;
+
         if (req.body.workers !== undefined) {
             let workers: any[];
             try {
@@ -1393,6 +1402,14 @@ export const updateJob: MiddlewareFn = async (req, res) => {
             if (missingEmails.length) {
                 throw new BadRequestError(`No active account found for: ${missingEmails.join(", ")}`);
             }
+
+            const customPayRates = parseCustomPayRates(workers);
+            customRateByWorkerId = new Map(
+                selectedUsers
+                    .filter(u => customPayRates.has(u.email))
+                    .map(u => [u._id.toString(), customPayRates.get(u.email)!])
+            );
+            const newDefaultPay = Number(req.body.payRate ?? job.payRate ?? 0);
 
             // Fetch EVERY doc for this job, live or terminal — needed below
             // to tell "never assigned here before" (insert) apart from
@@ -1453,7 +1470,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                         worker: user._id,
                         createdBy: currentUserId,
                         company: companyId,
-                        payRate: req.body.payRate ?? job.payRate,
+                        ...assignmentPay(newDefaultPay, customRateByWorkerId!.get(user._id.toString())),
                         fullname: user.fullname,
                         ...(effectiveAutoAccept || user.autoAcceptAssignments ? { status: "accepted", acceptedAt: assignmentNow } : {}),
                     }))
@@ -1472,7 +1489,7 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                                 ...ASSIGNMENT_REVIVE_RESET,
                                 fullname: user.fullname,
                                 createdBy: currentUserId,
-                                payRate: req.body.payRate ?? job.payRate,
+                                ...assignmentPay(newDefaultPay, customRateByWorkerId!.get(user._id.toString())),
                                 status: accepted ? "accepted" : "pending",
                                 ...(accepted ? { acceptedAt: assignmentNow } : {}),
                             },
@@ -1481,6 +1498,38 @@ export const updateJob: MiddlewareFn = async (req, res) => {
                 }));
             }
         }
+
+    // ── Pay rates on workers already on the job ──────────────────────────────
+    // New and revived assignments got their rate above. Workers who stay on
+    // the job follow the edit too — but only while their shift hasn't
+    // started (pending/accepted), and never on a locked job: pay on a shift
+    // in progress or done is payroll history, not something an edit to the
+    // job should rewrite.
+    {
+        const payEditable = job.status === "draft" || !(
+            toUtcDay(job.date) < toUtcDay(new Date()) ||
+            job.status === "completed" || job.status === "cancelled" || job.billingStatus === "invoiced"
+        );
+        const newDefaultPay = Number(req.body.payRate ?? job.payRate ?? 0);
+        const notStarted = { job: job._id, isDeleted: false, status: { $in: ["pending", "accepted"] as ("pending" | "accepted")[] } };
+
+        if (payEditable && customRateByWorkerId) {
+            // Full roster sent: the payload is the source of truth for who
+            // has a custom rate — anyone without one goes back to the default.
+            const stayed = await JobAssignment.find(notStarted).select("worker payRate payRateIsCustom").lean();
+            const ops = stayed
+                .map(a => ({ a, next: assignmentPay(newDefaultPay, customRateByWorkerId!.get(a.worker.toString())) }))
+                .filter(({ a, next }) => a.payRate !== next.payRate || !!a.payRateIsCustom !== next.payRateIsCustom)
+                .map(({ a, next }) => ({ updateOne: { filter: { _id: a._id }, update: { $set: next } } }));
+            if (ops.length) await JobAssignment.bulkWrite(ops);
+        } else if (payEditable && req.body.payRate !== undefined && Number(req.body.payRate) !== job.payRate) {
+            // Only the default changed: move everyone who's on the default.
+            await JobAssignment.updateMany(
+                { ...notStarted, payRateIsCustom: { $ne: true } },
+                { $set: { payRate: newDefaultPay } }
+            );
+        }
+    }
 
     // Allowlisted — never spread req.body, or clients can set company/
     // createdBy/isDeleted/isTemplate/recurringJob directly.

@@ -6,6 +6,7 @@ import recurringJobModel from "../models/recurringJobModel.js";
 import type { RecurringJob as RecurringJobType } from "../models/recurringJobModel.js";
 import type { HydratedDocument } from "mongoose";
 import { toUtcDay, toUtcDayKey } from "./dates.js";
+import { assignmentPay } from "./workerPayRates.js";
 
 function getOccurrenceDates(
   recurring: HydratedDocument<RecurringJobType>,
@@ -190,6 +191,9 @@ export async function generateOccurrences(
         .lean();
 
       if (workers.length) {
+        const customRates = new Map<string, number>(
+          ((recurring as any).workerPayRates ?? []).map((r: any) => [r.worker.toString(), r.payRate])
+        );
         const assignmentNow = new Date();
         const assignments = created.flatMap(job =>
           workers.map(worker => ({
@@ -197,7 +201,7 @@ export async function generateOccurrences(
             worker: worker._id,
             createdBy: recurring.createdBy,
             company: template.company,
-            payRate: template.payRate,
+            ...assignmentPay(template.payRate ?? 0, customRates.get(worker._id.toString())),
             fullname: worker.fullname,
             ...(job.autoAccept || worker.autoAcceptAssignments ? { status: "accepted", acceptedAt: assignmentNow } : {}),
           }))

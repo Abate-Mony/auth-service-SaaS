@@ -26,6 +26,7 @@ export const ACTIVITY_TYPES = [
   "assignment_clock_out_corrected",
   "assignment_break_corrected",
   "assignment_manually_adjusted",
+  "assignment_pay_rate_changed",
   "assignment_no_show",
   "assignment_missed_shift_detected",
   "assignment_missed_shift_requested",

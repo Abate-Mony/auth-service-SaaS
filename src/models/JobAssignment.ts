@@ -176,6 +176,10 @@ const JobAssignmentSchema = new Schema(
     completionPhotos: { type: [FileRefSchema], default: [] },
 
     payRate: { type: Number, default: 0, min: 0 },
+    // true when this worker was given their own rate instead of the job's
+    // default (see utils/workerPayRates.ts). Changing the job's default pay
+    // rate only moves assignments where this is false.
+    payRateIsCustom: { type: Boolean, default: false },
 
     // ── Billing state ─────────────────────────────────────────────────
     // Governs invoicing for HOURLY-priced jobs — each worker's completed,
