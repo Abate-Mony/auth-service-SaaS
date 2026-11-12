@@ -28,6 +28,7 @@ import { MANAGEMENT_ROLES, ADMIN_LEVEL_ROLES } from "../utils/roles.js";
 import { notifyEligibleWorkersOfOpenShift } from "../utils/notifyOpenShiftWorkers.js";
 import { uploadFileToCloudinary } from "../utils/cloudinaryUpload.js";
 import { splitAssignmentPay } from "../utils/pay.js";
+import { assignmentPay } from "../utils/workerPayRates.js";
 import { optimizeRoute, RouteStop } from "../utils/routeOptimizer.js";
 import { sweepAcceptPendingAssignments } from "../utils/autoAcceptSweep.js";
 import { closeAssignmentAutomatically } from "../utils/closeAssignmentAutomatically.js";
@@ -1921,6 +1922,71 @@ export const manuallyAdjustAssignment: MiddlewareFn = async (req, res) => {
     res.status(StatusCodes.OK).json({
         success: true,
         message: "Hours recorded.",
+        assignment,
+    });
+};
+
+// Sets or clears one worker's custom pay rate on an existing job, without
+// resending the whole roster through updateJob — the Time Logs card's own
+// per-row action. `payRate: null` reverts the worker to the job's default
+// (mirrors "Use default" in the create-job wizard's WorkerPayRates).
+//
+// Gated the same way updateJob gates roster pay edits: only while the
+// assignment hasn't started (pending/accepted) and the job itself isn't
+// locked — pay on a shift in progress, done, cancelled, or already
+// invoiced is payroll history, not something an edit should rewrite.
+export const updateAssignmentPayRate: MiddlewareFn = async (req, res) => {
+    const { assignmentId } = req.params;
+    const { payRate, reason } = req.body ?? {};
+
+    if (payRate !== null && (typeof payRate !== "number" || !Number.isFinite(payRate) || payRate < 0)) {
+        throw new BadRequestError("payRate must be a number of 0 or more, or null to use the job's default.");
+    }
+
+    const assignment = await JobAssignment.findOne({
+        _id: assignmentId,
+        company: req.user.company_id,
+        isDeleted: false,
+    });
+    if (!assignment) throw new NotFoundError("Assignment not found.");
+    if (!["pending", "accepted"].includes(assignment.status)) {
+        throw new BadRequestError(`Cannot change the pay rate for a ${assignment.status} assignment — pay on a shift in progress or done is payroll history.`);
+    }
+
+    const job = await jobModel.findById(assignment.job).select("date status billingStatus payRate");
+    if (!job) throw new NotFoundError("Job not found.");
+
+    const payEditable = job.status === "draft" || !(
+        toUtcDay(job.date) < toUtcDay(new Date()) ||
+        job.status === "completed" || job.status === "cancelled" || job.billingStatus === "invoiced"
+    );
+    if (!payEditable) {
+        throw new BadRequestError("This job's pay rates can no longer be edited.");
+    }
+
+    const before = { payRate: assignment.payRate, payRateIsCustom: assignment.payRateIsCustom };
+    const next = assignmentPay(job.payRate, payRate === null ? undefined : payRate);
+    assignment.payRate = next.payRate;
+    assignment.payRateIsCustom = next.payRateIsCustom;
+    await assignment.save();
+
+    await logActivity({
+        job: assignment.job,
+        jobDate: job.date,
+        assignment: assignment._id,
+        worker: assignment.worker,
+        type: "assignment_pay_rate_changed",
+        actor: req.user.user_id,
+        changes: [
+            { field: "payRate", from: before.payRate, to: assignment.payRate },
+            { field: "payRateIsCustom", from: !!before.payRateIsCustom, to: assignment.payRateIsCustom },
+        ],
+        metadata: typeof reason === "string" && reason.trim() ? { reason: reason.trim() } : undefined,
+    });
+
+    res.status(StatusCodes.OK).json({
+        success: true,
+        message: "Pay rate updated.",
         assignment,
     });
 };
