@@ -5,6 +5,7 @@ import { sendUpcomingShiftReminders } from "./sendUpcomingShiftReminders.js";
 import { sendDayBeforeShiftReminders } from "./sendDayBeforeShiftReminders.js";
 import { sendUnfilledShiftDayBeforeAlerts } from "./sendUnfilledShiftDayBeforeAlerts.js";
 import { sendUnfilledShiftUrgentAlerts } from "./sendUnfilledShiftUrgentAlerts.js";
+import { sendJobStartingSoonCreatorAlerts } from "./sendJobStartingSoonCreatorAlerts.js";
 import { autoCloseAbandonedShifts } from "./autoCloseAbandonedShifts.js";
 import { markMissedShifts } from "./markMissedShifts.js";
 import { sendOverduePaymentReminders } from "./sendPaymentReminders.js";
@@ -36,6 +37,7 @@ CRON_JOBS: CronJobDefinition[] = [
   { name: "sendDayBeforeShiftReminders", label: "Send day-before shift reminders", schedule: "Every minute", fn: sendDayBeforeShiftReminders },
   { name: "sendUnfilledShiftDayBeforeAlerts", label: "Alert managers of unfilled shifts (day before)", schedule: "Every minute", fn: sendUnfilledShiftDayBeforeAlerts },
   { name: "sendUnfilledShiftUrgentAlerts", label: "Alert managers of unfilled shifts (urgent)", schedule: "Every minute", fn: sendUnfilledShiftUrgentAlerts },
+  { name: "sendJobStartingSoonCreatorAlerts", label: "Alert job creators of jobs starting soon", schedule: "Every minute", fn: sendJobStartingSoonCreatorAlerts },
   { name: "autoCloseAbandonedShifts", label: "Auto-close abandoned shifts", schedule: "Every minute", fn: autoCloseAbandonedShifts },
   { name: "markMissedShifts", label: "Mark missed shifts", schedule: "Every minute", fn: markMissedShifts },
   { name: "sendOverduePaymentReminders", label: "Send overdue payment reminders", schedule: "Daily at 08:00 UTC", fn: sendOverduePaymentReminders },

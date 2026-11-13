@@ -414,6 +414,108 @@ export async function sendUnfilledShiftUrgentAlert({
   });
 }
 
+// Manager-facing mirror of the worker's own "shift missed" push — see
+// markMissedShifts.ts. Shares the "missed_shift_detected" event name with
+// the worker-facing notification (same reasoning as shift_auto_closed:
+// each recipient has their own preference row, so one event name covering
+// both audiences is fine) rather than a new one, since it's the same
+// underlying fact, just told to a different audience.
+export async function sendMissedShiftManagerAlert({
+  manager,
+  worker,
+  job,
+  company,
+}: {
+  manager: { email: string; fullname: string };
+  worker: { fullname: string };
+  job: ShiftJob;
+  company: CompanyRef;
+}) {
+  const firstName = manager.fullname.split(" ")[0];
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const link = `${process.env.CLIENT_URL}/jobs/${job._id}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, ${worker.fullname} never clocked in for this shift.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime}`)}
+      ${detailRow("Location", job.address ? `${job.location}, ${job.address}` : job.location)}
+    </table>
+
+    ${button(link, "View job")}
+
+    <p style="margin:0;font-size:13px;color:#94A3B8;">
+      They have until the review window closes to request a review if they say they actually worked it.
+    </p>`;
+
+  await sendCompanyEmail({
+    company,
+    to: manager.email,
+    subject: `Shift missed: ${job.title} — ${worker.fullname}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `${worker.fullname} never clocked in for this shift.\n\n` +
+      `Job: ${job.title}\n` +
+      `Date: ${when}\n` +
+      `Time: ${job.startTime} – ${job.endTime}\n` +
+      `Location: ${job.location}\n\n` +
+      `View job: ${link}`,
+    html: layout({ heading: "Shift missed", body }),
+  });
+}
+
+// Plain "this job starts in about an hour" FYI to the job's own creator —
+// see sendJobStartingSoonCreatorAlerts.ts. Unlike sendUnfilledShiftUrgentAlert,
+// this fires for every job regardless of staffing and goes only to
+// createdBy, not a broadcast to every manager.
+export async function sendJobStartingSoonAlert({
+  manager,
+  job,
+  company,
+}: {
+  manager: { email: string; fullname: string };
+  job: ShiftJob;
+  company: CompanyRef;
+}) {
+  const firstName = manager.fullname.split(" ")[0];
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const link = `${process.env.CLIENT_URL}/jobs/${job._id}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, a job you created starts in about an hour.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime}`)}
+      ${detailRow("Location", job.address ? `${job.location}, ${job.address}` : job.location)}
+    </table>
+
+    ${button(link, "View job")}`;
+
+  await sendCompanyEmail({
+    company,
+    to: manager.email,
+    subject: `Starting in an hour: ${job.title} at ${job.startTime}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `A job you created starts in about an hour.\n\n` +
+      `Job: ${job.title}\n` +
+      `Date: ${when}\n` +
+      `Time: ${job.startTime} – ${job.endTime}\n` +
+      `Location: ${job.location}\n\n` +
+      `View job: ${link}`,
+    html: layout({ heading: "Job starting soon", body }),
+  });
+}
+
 export async function sendInvitationEmail({
   email,
   fullname,

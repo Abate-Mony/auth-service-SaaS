@@ -269,6 +269,7 @@ const start = async (): Promise<void> => {
       runCronJob("sendDayBeforeShiftReminders", "schedule");
       runCronJob("sendUnfilledShiftDayBeforeAlerts", "schedule");
       runCronJob("sendUnfilledShiftUrgentAlerts", "schedule");
+      runCronJob("sendJobStartingSoonCreatorAlerts", "schedule");
       runCronJob("autoCloseAbandonedShifts", "schedule");
       runCronJob("markMissedShifts", "schedule");
     });

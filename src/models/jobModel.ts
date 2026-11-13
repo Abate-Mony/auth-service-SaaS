@@ -123,6 +123,12 @@ const JobSchema = new Schema(
         unfilledDayBeforeAlertSentAt: { type: Date, default: null },
         unfilledUrgentAlertSentAt: { type: Date, default: null },
 
+        // One-shot "FYI, your job starts in about an hour" to the job's own
+        // creator — unlike the unfilled-shift alerts above, fires regardless
+        // of staffing, and goes only to createdBy, not every manager. See
+        // sendJobStartingSoonCreatorAlerts.ts.
+        creatorStartingSoonAlertSentAt: { type: Date, default: null },
+
         // Set once the client's "booking completed" notification/email has
         // actually gone out — distinct from the job's own status flipping
         // to "completed", which can happen first while an assignment's

@@ -259,9 +259,11 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
       // the job's creator. Only on the first submission, not every edit.
       "booking_reviewed",
 
-      // Worker-facing: markMissedShifts.ts flagged a shift the worker never
-      // clocked into at all — distinct from job_completed/overtime, since
-      // there's no clock data here to review, just a missed window.
+      // Both worker- and manager-facing: markMissedShifts.ts flagged a shift
+      // nobody clocked into at all — distinct from job_completed/overtime,
+      // since there's no clock data here to review, just a missed window.
+      // Same event name for both audiences (see shift_auto_closed above);
+      // each call passes its own recipient id.
       "missed_shift_detected",
 
       // Staff-facing: a worker submitted (or resubmitted) a missed-shift
@@ -287,6 +289,12 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
       // without also muting the one that actually matters.
       "shift_unfilled",
       "shift_unfilled_urgent",
+
+      // Staff-facing: a plain "this job starts in about an hour" FYI to the
+      // job's own creator — unlike shift_unfilled_urgent above, fires
+      // regardless of staffing and goes only to createdBy, not every
+      // manager. See sendJobStartingSoonCreatorAlerts.ts.
+      "job_starting_soon",
   ] as const;
   export const NOTIFICATION_CHANNELS = [
       "email",

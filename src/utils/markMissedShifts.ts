@@ -14,12 +14,22 @@
 // clock out" buffer concept here, since there's no clock-in to anchor a
 // per-job buffer to) to self-report what actually happened via
 // requestMissedShiftReview in workerController.ts.
+//
+// Also broadcasts to every active manager/admin/owner at the company —
+// previously this only told the worker, so a no-show was invisible to
+// management unless the worker happened to open the app and request a
+// review (see requestMissedShiftReview's own, separate manager notice,
+// which only fires on THAT self-report path). Same broadcast reasoning
+// as the unfilled-shift alerts: whoever's free should see it, not just
+// whoever created the job.
 import Job from "../models/jobModel.js";
 import JobAssignment from "../models/JobAssignment.js";
 import userModel from "../models/userModel.js";
 import { scheduledEndOf, TZ } from "./dates.js";
+import { MANAGEMENT_ROLES } from "./roles.js";
 import { sendPushToUser } from "./webPush.js";
 import { sendExpoPushToUser } from "./expoPush.js";
+import { sendMissedShiftManagerAlert } from "./mailTemplates.js";
 import { shouldNotify } from "../services/notificationPreferenceService.js";
 import { logActivity } from "./logActivity.js";
 import { notifyUser } from "./notifyUser.js";
@@ -98,6 +108,60 @@ export async function markMissedShifts() {
             link,
           }),
         ]);
+
+        const managers = await userModel
+          .find({ company: assignment.company, role: { $in: MANAGEMENT_ROLES }, isActive: true })
+          .select("fullname email");
+
+        if (managers.length) {
+          const managerTitle = "Shift missed";
+          const managerBody = `${worker.fullname} never clocked in for ${job.title}.`;
+          const managerLink = `/jobs/${job._id}`;
+
+          await Promise.all(
+            managers.map(async manager => {
+              const managerId = manager._id.toString();
+              const [canEmail, canManagerPush] = await Promise.all([
+                shouldNotify(managerId, "missed_shift_detected", "email"),
+                shouldNotify(managerId, "missed_shift_detected", "push"),
+              ]);
+
+              await Promise.all([
+                canEmail
+                  ? sendMissedShiftManagerAlert({
+                      manager: { email: manager.email, fullname: manager.fullname },
+                      worker: { fullname: worker.fullname },
+                      job: {
+                        _id: job._id.toString(),
+                        title: job.title,
+                        location: job.location,
+                        address: job.address,
+                        date: job.date,
+                        startTime: job.startTime,
+                        endTime: job.endTime,
+                        minutes: job.minutes,
+                      },
+                      company: job.company,
+                    })
+                  : Promise.resolve(),
+                canManagerPush
+                  ? sendPushToUser(managerId, { title: managerTitle, body: managerBody, tag: `missed-shift-manager-${assignment._id}`, url: managerLink })
+                  : Promise.resolve(),
+                canManagerPush
+                  ? sendExpoPushToUser(managerId, { title: managerTitle, body: managerBody, tag: `missed-shift-manager-${assignment._id}`, url: managerLink })
+                  : Promise.resolve(),
+                notifyUser({
+                  userId: managerId,
+                  companyId: assignment.company,
+                  event: "missed_shift_detected",
+                  title: managerTitle,
+                  body: managerBody,
+                  link: managerLink,
+                }),
+              ]);
+            })
+          );
+        }
       } catch (err) {
         console.error(`Failed to flag missed shift for assignment ${assignment._id}:`, err);
       }

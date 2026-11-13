@@ -188,6 +188,12 @@ export const DEFAULT_EVENT_PREFERENCES: Record<
       push: true,
       inApp: true,
     },
+
+    job_starting_soon: {
+      email: true,
+      push: false,
+      inApp: true,
+    },
   };
 
 function getDefaultPreference(
