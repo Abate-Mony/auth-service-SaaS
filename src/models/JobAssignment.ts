@@ -200,9 +200,14 @@ const JobAssignmentSchema = new Schema(
 
     isDeleted: { type: Boolean, default: false },
 
-    // Set once the "shift starts in 30 minutes" email goes out, so the
+    // Set once the "shift starts in about an hour" email goes out, so the
     // reminder cron never emails the same worker twice for the same shift.
     reminderSentAt: { type: Date, default: null },
+    // Set once the day-before reminder goes out (fires once local time at
+    // the company passes 6pm the day before the shift) — same one-shot
+    // dedup purpose as reminderSentAt above, just a separate flag since the
+    // two fire at genuinely different times for the same assignment.
+    dayBeforeReminderSentAt: { type: Date, default: null },
     checkInDistanceMeters: Number,
     checkInFlagged: { type: Boolean, default: false, index: true },
 

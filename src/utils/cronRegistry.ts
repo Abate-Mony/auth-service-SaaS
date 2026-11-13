@@ -2,6 +2,9 @@ import CronJobStatus from "../models/CronJobStatus.js";
 import { logPlatformError } from "./logPlatformError.js";
 import { runDailyOccurrenceGeneration } from "./runDailyOccurrenceGeneration.js";
 import { sendUpcomingShiftReminders } from "./sendUpcomingShiftReminders.js";
+import { sendDayBeforeShiftReminders } from "./sendDayBeforeShiftReminders.js";
+import { sendUnfilledShiftDayBeforeAlerts } from "./sendUnfilledShiftDayBeforeAlerts.js";
+import { sendUnfilledShiftUrgentAlerts } from "./sendUnfilledShiftUrgentAlerts.js";
 import { autoCloseAbandonedShifts } from "./autoCloseAbandonedShifts.js";
 import { markMissedShifts } from "./markMissedShifts.js";
 import { sendOverduePaymentReminders } from "./sendPaymentReminders.js";
@@ -26,9 +29,13 @@ export interface CronJobDefinition {
 // registry can never drift apart), and the platform console's "run now"
 // endpoint only ever invokes a job by looking it up here — never by
 // constructing/eval'ing a function from an arbitrary request body.
-export const CRON_JOBS: CronJobDefinition[] = [
+export const 
+CRON_JOBS: CronJobDefinition[] = [
   { name: "runDailyOccurrenceGeneration", label: "Generate recurring job occurrences", schedule: "Daily at 01:00 UTC", fn: runDailyOccurrenceGeneration },
   { name: "sendUpcomingShiftReminders", label: "Send upcoming shift reminders", schedule: "Every minute", fn: sendUpcomingShiftReminders },
+  { name: "sendDayBeforeShiftReminders", label: "Send day-before shift reminders", schedule: "Every minute", fn: sendDayBeforeShiftReminders },
+  { name: "sendUnfilledShiftDayBeforeAlerts", label: "Alert managers of unfilled shifts (day before)", schedule: "Every minute", fn: sendUnfilledShiftDayBeforeAlerts },
+  { name: "sendUnfilledShiftUrgentAlerts", label: "Alert managers of unfilled shifts (urgent)", schedule: "Every minute", fn: sendUnfilledShiftUrgentAlerts },
   { name: "autoCloseAbandonedShifts", label: "Auto-close abandoned shifts", schedule: "Every minute", fn: autoCloseAbandonedShifts },
   { name: "markMissedShifts", label: "Mark missed shifts", schedule: "Every minute", fn: markMissedShifts },
   { name: "sendOverduePaymentReminders", label: "Send overdue payment reminders", schedule: "Daily at 08:00 UTC", fn: sendOverduePaymentReminders },

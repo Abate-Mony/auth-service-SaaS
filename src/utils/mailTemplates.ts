@@ -245,7 +245,7 @@ export async function sendShiftReminder({
 
   const body = `
     <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
-      Hi ${firstName}, your shift starts in about 30 minutes.
+      Hi ${firstName}, your shift starts in about an hour.
     </p>
 
     <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
@@ -263,13 +263,154 @@ export async function sendShiftReminder({
     subject: `Starting soon: ${job.title} at ${job.startTime}`,
     text:
       `Hi ${firstName},\n\n` +
-      `Your shift starts in about 30 minutes.\n\n` +
+      `Your shift starts in about an hour.\n\n` +
       `Job: ${job.title}\n` +
       `Date: ${when}\n` +
       `Time: ${job.startTime} – ${job.endTime}\n` +
       `Location: ${job.location}\n\n` +
       `View shift: ${link}`,
     html: layout({ heading: "Your shift starts soon", body }),
+  });
+}
+
+// Fires the evening before a shift (see sendDayBeforeShiftReminders.ts for
+// the "evening, in the company's own timezone" trigger) — distinct from
+// sendShiftReminder above, which fires the hour of the shift itself.
+export async function sendDayBeforeShiftReminder({
+  worker,
+  job,
+  company,
+}: {
+  worker: { email: string; fullname: string };
+  job: ShiftJob;
+  company: CompanyRef;
+}) {
+  const firstName = worker.fullname.split(" ")[0];
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const link = `${process.env.CLIENT_URL}/worker/jobs/${job._id}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, you're on the schedule tomorrow.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime}`)}
+      ${detailRow("Location", job.address ? `${job.location}, ${job.address}` : job.location)}
+    </table>
+
+    ${button(link, "View shift")}`;
+
+  await sendCompanyEmail({
+    company,
+    to: worker.email,
+    subject: `Tomorrow: ${job.title} at ${job.startTime}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `You're on the schedule tomorrow.\n\n` +
+      `Job: ${job.title}\n` +
+      `Date: ${when}\n` +
+      `Time: ${job.startTime} – ${job.endTime}\n` +
+      `Location: ${job.location}\n\n` +
+      `View shift: ${link}`,
+    html: layout({ heading: "You're on the schedule tomorrow", body }),
+  });
+}
+
+// Manager-facing — a job that still has zero accepted workers, checked at
+// two lead times (see sendUnfilledShiftDayBeforeAlerts.ts and
+// sendUnfilledShiftUrgentAlerts.ts). No `worker` param, unlike every other
+// shift email in this file: there's no worker to attribute this to, that's
+// the whole problem.
+export async function sendUnfilledShiftDayBeforeAlert({
+  manager,
+  job,
+  company,
+}: {
+  manager: { email: string; fullname: string };
+  job: ShiftJob;
+  company: CompanyRef;
+}) {
+  const firstName = manager.fullname.split(" ")[0];
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const link = `${process.env.CLIENT_URL}/jobs/${job._id}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, this shift tomorrow has nobody confirmed yet.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime}`)}
+      ${detailRow("Location", job.address ? `${job.location}, ${job.address}` : job.location)}
+    </table>
+
+    ${button(link, "View job & assign a worker")}`;
+
+  await sendCompanyEmail({
+    company,
+    to: manager.email,
+    subject: `No one confirmed yet: ${job.title}, tomorrow`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `This shift tomorrow has nobody confirmed yet.\n\n` +
+      `Job: ${job.title}\n` +
+      `Date: ${when}\n` +
+      `Time: ${job.startTime} – ${job.endTime}\n` +
+      `Location: ${job.location}\n\n` +
+      `View job & assign a worker: ${link}`,
+    html: layout({ heading: "Shift unfilled", body }),
+  });
+}
+
+// The more urgent sibling of sendUnfilledShiftDayBeforeAlert — same
+// condition (zero accepted workers), checked again an hour before start.
+// Fires independently of whether the day-before alert fired; if the shift
+// got filled since then, the caller never calls this at all.
+export async function sendUnfilledShiftUrgentAlert({
+  manager,
+  job,
+  company,
+}: {
+  manager: { email: string; fullname: string };
+  job: ShiftJob;
+  company: CompanyRef;
+}) {
+  const firstName = manager.fullname.split(" ")[0];
+  const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
+  const link = `${process.env.CLIENT_URL}/jobs/${job._id}`;
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#DC2626;font-weight:600;">
+      Hi ${firstName}, this shift starts in about an hour and still has nobody confirmed.
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Date", when)}
+      ${detailRow("Time", `${job.startTime} – ${job.endTime}`)}
+      ${detailRow("Location", job.address ? `${job.location}, ${job.address}` : job.location)}
+    </table>
+
+    ${button(link, "Fill this shift now")}`;
+
+  await sendCompanyEmail({
+    company,
+    to: manager.email,
+    subject: `Urgent — unfilled shift starting soon: ${job.title}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `This shift starts in about an hour and still has nobody confirmed.\n\n` +
+      `Job: ${job.title}\n` +
+      `Date: ${when}\n` +
+      `Time: ${job.startTime} – ${job.endTime}\n` +
+      `Location: ${job.location}\n\n` +
+      `Fill this shift now: ${link}`,
+    html: layout({ heading: "Urgent: shift unfilled", body }),
   });
 }
 

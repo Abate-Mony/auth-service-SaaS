@@ -114,6 +114,15 @@ const JobSchema = new Schema(
         // of how many workers are assigned. See sendUpcomingShiftReminders.ts.
         clientReminderSentAt: { type: Date, default: null },
 
+        // Dedup flags for the two "nobody's confirmed for this shift yet"
+        // manager alerts — day-before and the more urgent one an hour out.
+        // Job-level, not per-assignment: the condition being alerted on is
+        // "this job has zero accepted workers", not anything about a
+        // specific assignment. See sendUnfilledShiftDayBeforeAlerts.ts and
+        // sendUnfilledShiftUrgentAlerts.ts.
+        unfilledDayBeforeAlertSentAt: { type: Date, default: null },
+        unfilledUrgentAlertSentAt: { type: Date, default: null },
+
         // Set once the client's "booking completed" notification/email has
         // actually gone out — distinct from the job's own status flipping
         // to "completed", which can happen first while an assignment's

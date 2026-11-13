@@ -176,6 +176,18 @@ export const DEFAULT_EVENT_PREFERENCES: Record<
       push: true,
       inApp: true,
     },
+
+    shift_unfilled: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
+
+    shift_unfilled_urgent: {
+      email: true,
+      push: true,
+      inApp: true,
+    },
   };
 
 function getDefaultPreference(

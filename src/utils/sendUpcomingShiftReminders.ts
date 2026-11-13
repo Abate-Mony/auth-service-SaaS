@@ -6,7 +6,7 @@ import { sendPushToUser } from "./webPush.js";
 import { sendExpoPushToUser } from "./expoPush.js";
 import { notifyClientBooking } from "./notifyClientBooking.js";
 
-const REMINDER_WINDOW_MINUTES = 30;
+const REMINDER_WINDOW_MINUTES = 60;
 
 // Guards against overlapping runs if a previous tick is still sending mail
 // when the next one fires (cron runs this every minute).

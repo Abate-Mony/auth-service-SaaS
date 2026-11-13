@@ -279,6 +279,14 @@ export const EMAIL_WORTHY_EVENTS = new Set<JobStatusNotificationType>([
       // and overtime_reviewed since the real issue is a missing clock-out,
       // not ordinary overtime; each call passes its own recipient id.
       "shift_auto_closed",
+
+      // Staff-facing: a published shift still has zero accepted workers —
+      // see sendUnfilledShiftDayBeforeAlerts.ts (evening before) and
+      // sendUnfilledShiftUrgentAlerts.ts (an hour before start). Two
+      // separate events, not one, so staff can mute the early heads-up
+      // without also muting the one that actually matters.
+      "shift_unfilled",
+      "shift_unfilled_urgent",
   ] as const;
   export const NOTIFICATION_CHANNELS = [
       "email",
