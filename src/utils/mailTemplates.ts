@@ -175,6 +175,58 @@ export async function sendRecurringShiftAssigned({
     html: layout({ heading: "You've been added to a recurring shift", body }),
   });
 }
+/** "Several days" booking — one summary email for all the hand-picked
+ *  dates, rather than one per day. */
+export async function sendMultiDayShiftsAssigned({
+  worker,
+  job,
+  days,
+  daysLabel,
+  company,
+  autoAccepted,
+}: {
+  worker: { email: string; fullname: string };
+  job: { title: string; location?: string };
+  days: { date: Date; startTime: string; endTime: string }[];
+  daysLabel: string;
+  company: CompanyEmailInfo;
+  autoAccepted?: boolean;
+}) {
+  const link = `${process.env.CLIENT_URL}/worker/jobs`;
+  const firstName = worker.fullname.split(" ")[0];
+  const sameTimes = days.every(d => d.startTime === days[0].startTime && d.endTime === days[0].endTime);
+  const lines = days.map(d => `${dayjs(d.date).utc().format("ddd D MMM")} · ${d.startTime} – ${d.endTime}`);
+  const ask = autoAccepted ? "They're already in your schedule." : "Open the app to accept or decline them.";
+
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, you've been booked for <strong>${days.length} shifts</strong>. ${ask}
+    </p>
+
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Job", job.title)}
+      ${detailRow("Days", daysLabel)}
+      ${sameTimes ? detailRow("Time", `${days[0].startTime} – ${days[0].endTime}`) : detailRow("Times", lines.join("<br>"))}
+      ${detailRow("Location", job.location ?? "")}
+    </table>
+
+    ${button(link, "View my shifts")}`;
+
+  await sendCompanyEmail({
+    company,
+    to: worker.email,
+    subject: `You've been booked for ${job.title} (${days.length} shifts)`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `You've been booked for ${days.length} shifts. ${ask}\n\n` +
+      `Job: ${job.title}\n` +
+      lines.map(l => `- ${l}`).join("\n") + "\n" +
+      `Location: ${job.location ?? ""}\n\n` +
+      `View your shifts: ${link}`,
+    html: layout({ heading: `You've been booked for ${days.length} shifts`, body }),
+  });
+}
+
 /** Manager-facing counterpart to sendRecurringShiftAssigned — a worker
  *  responding to a whole series at once (bulk accept/decline) gets the
  *  manager one summary too, not one email per shift. */

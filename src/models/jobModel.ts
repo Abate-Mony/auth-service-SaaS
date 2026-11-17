@@ -187,6 +187,12 @@ const JobSchema = new Schema(
             default: null,
         },
 
+        // ── "Several days" booking ────────────────────────────────────────
+        // Jobs created together from one booking of hand-picked dates share
+        // this id (see utils/multiDaySchedule.ts). Each is still a normal,
+        // independent one-off job; this only lets them be found together.
+        bookingGroup: { type: String, default: null, index: true },
+
         // ── Recurrence ────────────────────────────────────────────────────
         recurringJob: {
             type: mongoose.Schema.Types.ObjectId,
