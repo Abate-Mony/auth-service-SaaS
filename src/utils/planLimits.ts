@@ -44,7 +44,9 @@ export const assertCanAddWorker = async (companyId: unknown): Promise<void> => {
 // Call before creating a job (including a recurring series' template — the
 // occurrences it generates aren't individually re-checked, so this is a
 // soft gate against runaway recurring schedules, not a precise per-job count).
-export const assertCanCreateJob = async (companyId: unknown): Promise<void> => {
+// `adding` = how many jobs this request will create (a "several days"
+// booking creates one per day).
+export const assertCanCreateJob = async (companyId: unknown, adding = 1): Promise<void> => {
   const company = await loadCompanyOrThrow(companyId);
   const limit = PLAN_LIMITS[company.plan].maxJobsPerMonth;
   if (limit === -1) return;
@@ -62,9 +64,12 @@ export const assertCanCreateJob = async (companyId: unknown): Promise<void> => {
     status: { $ne: "draft" },
     createdAt: { $gte: startOfMonth },
   });
-  if (count >= limit) {
+  if (count + adding > limit) {
+    const left = Math.max(limit - count, 0);
     throw new BadRequestError(
-      `Your ${company.plan} plan allows up to ${limit} jobs per month. Upgrade your plan to create more.`
+      adding > 1
+        ? `Your ${company.plan} plan allows up to ${limit} jobs per month and you have ${left} left — this booking needs ${adding}. Pick fewer days or upgrade your plan.`
+        : `Your ${company.plan} plan allows up to ${limit} jobs per month. Upgrade your plan to create more.`
     );
   }
 };

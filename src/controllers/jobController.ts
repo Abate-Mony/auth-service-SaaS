@@ -2,6 +2,8 @@ import { StatusCodes } from "http-status-codes";
 import mongoose from "mongoose";
 import { BadRequestError, NotFoundError } from "../errors/customErrors.js";
 import { assignmentPay, parseCustomPayRates } from "../utils/workerPayRates.js";
+import { describeDays, parseSchedule } from "../utils/multiDaySchedule.js";
+import { randomUUID } from "node:crypto";
 import { MiddlewareFn, getReqUser } from "../interfaces/expresstype.js";
 import JobAssignment from "../models/JobAssignment.js";
 import Job from "../models/jobModel.js";
@@ -17,7 +19,7 @@ import { toUtcDay } from "../utils/dates.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity, logActivityMany } from "../utils/logActivity.js";
 import { assertCanCreateJob, assertFeatureEnabledForCompany } from "../utils/planLimits.js";
-import { sendShiftAssigned, sendRecurringShiftAssigned, sendShiftTimeChanged, sendShiftCancelled } from "../utils/mailTemplates.js";
+import { sendShiftAssigned, sendRecurringShiftAssigned, sendMultiDayShiftsAssigned, sendShiftTimeChanged, sendShiftCancelled } from "../utils/mailTemplates.js";
 import { sendPushToUser } from "../utils/webPush.js";
 import { sendExpoPushToUser } from "../utils/expoPush.js";
 import dayjs from "../utils/dayjsSetup.js";
@@ -439,10 +441,23 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     // defaults to the normal "published" behaviour every existing caller
     // already relies on.
     const jobStatus: "draft" | "published" = status === "draft" ? "draft" : "published";
-    if (!startTime || !endTime) throw new BadRequestError("start or end time required");
-    if (!date) throw new BadRequestError("A job date is required");
 
-    const jobDate = toUtcDay(date);
+    // "Several days": hand-picked dates, one job per day (utils/multiDaySchedule.ts).
+    // When sent, it replaces date/startTime/endTime.
+    const scheduleDays = parseSchedule(req.body.schedule);
+    if (scheduleDays && isRecurring) {
+        throw new BadRequestError("Choose either several days or a repeat schedule, not both");
+    }
+    if (scheduleDays && bookingRequestId) {
+        throw new BadRequestError("A booking request is for a single day — create it as a one-day job");
+    }
+    const firstDay = scheduleDays?.[0];
+    const effStartTime: string = firstDay?.startTime ?? startTime;
+    const effEndTime: string = firstDay?.endTime ?? endTime;
+    if (!effStartTime || !effEndTime) throw new BadRequestError("start or end time required");
+    if (!firstDay && !date) throw new BadRequestError("A job date is required");
+
+    const jobDate = firstDay?.date ?? toUtcDay(date);
     if (jobDate < toUtcDay(new Date())) {
         throw new BadRequestError("Job date cannot be in the past");
     }
@@ -453,7 +468,7 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
     // A draft was never actually scheduled work — it doesn't count against
     // the plan's monthly job cap until it's published (see planLimits.ts).
     if (jobStatus !== "draft") {
-        await assertCanCreateJob(companyId);
+        await assertCanCreateJob(companyId, scheduleDays?.length ?? 1);
     }
     if (isRecurring) {
         await assertFeatureEnabledForCompany(companyId, "recurringJobs");
@@ -547,9 +562,9 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
         address: address ?? (siteDoc ? formatAddress(siteDoc.address) : undefined) ?? "",
         ...(finalCoordinates ? { coordinates: finalCoordinates } : {}),
         date: jobDate,
-        startTime,
-        endTime,
-        minutes: jobDurationMinutes(startTime, endTime),
+        startTime: effStartTime,
+        endTime: effEndTime,
+        minutes: jobDurationMinutes(effStartTime, effEndTime),
         requiredWorkers: requiredWorkers ?? 1,
         priority: priority ?? "medium",
         ...(supervisor ? { supervisor } : {}),
@@ -745,6 +760,146 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
             templateJob,
             generatedJobs,
             generatedCount: generatedJobs.length,
+        });
+        return;
+    }
+
+    // ── Several days: one job per picked date, linked by bookingGroup ───────
+    if (scheduleDays) {
+        const bookingGroup = randomUUID();
+        let jobs: any[] = [];
+        try {
+            jobs = await Job.create(
+                scheduleDays.map(d => ({
+                    ...baseJobFields,
+                    date: d.date,
+                    startTime: d.startTime,
+                    endTime: d.endTime,
+                    minutes: jobDurationMinutes(d.startTime, d.endTime),
+                    status: jobStatus,
+                    bookingGroup,
+                }))
+            );
+            if (workerIds.length) {
+                const assignmentNow = new Date();
+                await JobAssignment.insertMany(
+                    jobs.flatMap(job =>
+                        workerIds.map((workerId, idx) => {
+                            const autoAcceptForWorker = !!job.autoAccept || !!realWorkers[idx].autoAcceptAssignments;
+                            return {
+                                job: job._id,
+                                worker: workerId,
+                                createdBy: currentUserId,
+                                ...assignmentPay(Number(baseJobFields.payRate), customPayRates.get(realWorkers[idx].email)),
+                                company: req.user.company_id,
+                                fullname: realWorkers[idx].fullname,
+                                ...(autoAcceptForWorker ? { status: "accepted", acceptedAt: assignmentNow } : {}),
+                            };
+                        })
+                    )
+                );
+            }
+        } catch (err) {
+            // All or nothing: never leave half a booking behind
+            const ids = jobs.map(j => j._id);
+            if (ids.length) {
+                await JobAssignment.deleteMany({ job: { $in: ids } });
+                await Job.deleteMany({ _id: { $in: ids } });
+            }
+            throw err;
+        }
+
+        await Promise.all(
+            jobs.flatMap(job => [
+                logActivity({
+                    job: job._id,
+                    type: "job_created",
+                    actor: currentUserId,
+                    metadata: {
+                        bookingGroup,
+                        bookingDays: jobs.length,
+                        ...(quoteDoc ? { sourceQuote: quoteDoc._id.toString(), quoteNumber: quoteDoc.quoteNumber } : {}),
+                    },
+                }),
+                ...(workerIds.length
+                    ? [logActivity({ job: job._id, type: "workers_assigned", actor: currentUserId, workers: workerIds })]
+                    : []),
+            ])
+        );
+
+        const daysLabel = describeDays(
+            jobs.map(j => j.date),
+            (d, pattern) => dayjs(d).utc().format(pattern)
+        );
+
+        // One summary per worker for the whole booking, not one per day —
+        // same reasoning as the recurring branch above. Drafts notify nobody.
+        if (jobStatus !== "draft" && workerIds.length) {
+            const notifyingCompany = await Company.findById(req.user.company_id).select("name emailSettings").lean();
+            const first = jobs[0];
+            const summary = `${first.title} — ${daysLabel}`;
+            Promise.all(
+                realWorkers.map(w =>
+                    Promise.all([
+                        sendMultiDayShiftsAssigned({
+                            worker: { email: w.email, fullname: w.fullname },
+                            job: { title: first.title, location: first.location },
+                            days: jobs.map(j => ({ date: j.date, startTime: j.startTime, endTime: j.endTime })),
+                            daysLabel,
+                            company: notifyingCompany ?? { name: "OnClockly" },
+                            autoAccepted: !!first.autoAccept || !!w.autoAcceptAssignments,
+                        }),
+                        sendPushToUser(w._id.toString(), {
+                            title: `Booked for ${jobs.length} shifts`,
+                            body: summary,
+                            tag: `booking-assigned-${bookingGroup}`,
+                            url: "/worker/jobs",
+                        }),
+                        sendExpoPushToUser(w._id.toString(), {
+                            title: `Booked for ${jobs.length} shifts`,
+                            body: summary,
+                            tag: `booking-assigned-${bookingGroup}`,
+                            url: "/worker/jobs",
+                        }),
+                        notifyUser({
+                            userId: w._id.toString(),
+                            companyId: req.user.company_id,
+                            event: "job_assigned",
+                            title: `Booked for ${jobs.length} shifts`,
+                            body: summary,
+                            link: "/worker/jobs",
+                        }),
+                    ])
+                )
+            ).catch(err => console.error(`Failed to send booking-assigned notification(s) for booking ${bookingGroup}:`, err));
+        }
+
+        // Open shifts: one heads-up (for the first day) rather than a push
+        // per day — every day still shows in the open-shifts list.
+        if (jobStatus !== "draft" && jobs[0].openToClaims) {
+            notifyEligibleWorkersOfOpenShift(jobs[0]).catch(err =>
+                console.error(`Failed to send open-shift notification(s) for booking ${bookingGroup}:`, err)
+            );
+        }
+
+        if (jobs[0].client && jobStatus !== "draft") {
+            await notifyClientBooking({
+                companyId: req.user.company_id, clientId: jobs[0].client,
+                event: "job_scheduled",
+                title: "New booking scheduled",
+                body: `${jobs[0].title} — ${daysLabel}`,
+                link: "/bookings",
+            });
+        }
+
+        res.status(StatusCodes.CREATED).json({
+            success: true,
+            // `job` = the first day, so callers that open "the job" after
+            // creating still work; `jobs` has every day.
+            job: jobs[0],
+            jobs,
+            bookingGroup,
+            createdCount: jobs.length,
         });
         return;
     }
