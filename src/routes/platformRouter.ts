@@ -39,6 +39,8 @@ import {
   retryCompanyPayment,
   getFeatureFlagCatalog,
   updateCompanyFeatureFlags,
+  getCompanyApiKeys,
+  revokeCompanyApiKey,
   getSupportAccess,
   startSupportAccess,
   endSupportAccess,
@@ -97,6 +99,8 @@ router.patch("/companies/:companyId/tags", SUPPORT, mutationLimiter, updateCompa
 router.post("/companies/:companyId/trial/extend", BILLING, mutationLimiter, extendCompanyTrial);
 router.post("/companies/:companyId/billing/retry-payment", BILLING, mutationLimiter, retryCompanyPayment);
 router.patch("/companies/:companyId/feature-flags", SUPER, mutationLimiter, updateCompanyFeatureFlags);
+router.get("/companies/:companyId/api-keys", getCompanyApiKeys);
+router.post("/companies/:companyId/api-keys/:keyId/revoke", SUPPORT, mutationLimiter, revokeCompanyApiKey);
 router.get("/companies/:companyId/support-access", SUPPORT, getSupportAccess);
 router.post("/companies/:companyId/support-access", SUPPORT, mutationLimiter, startSupportAccess);
 router.post("/companies/:companyId/support-access/end", SUPPORT, mutationLimiter, endSupportAccess);

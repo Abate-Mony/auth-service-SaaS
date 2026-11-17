@@ -24,6 +24,7 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "company.trial.extended",
   "company.payment.retried",
   "company.feature_flags.changed",
+  "company.api_key.revoked",
   "company.support_access.started",
   "company.support_access.ended",
   "company.data.exported",

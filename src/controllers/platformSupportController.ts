@@ -14,6 +14,7 @@ import RecurringJob from "../models/recurringJobModel.js";
 import TimeOffRequest from "../models/TimeOffRequest.js";
 import PlatformCompanyNote from "../models/PlatformCompanyNote.js";
 import PlatformSupportSession from "../models/PlatformSupportSession.js";
+import ApiKey from "../models/apiKeyModel.js";
 import { recordPlatformAudit } from "../services/platformAudit.service.js";
 import { parseOrThrow, reasonSchema, requireObjectId } from "./platformController.js";
 import { GRANT_STATUSES, getStripe } from "./billingController.js";
@@ -215,6 +216,53 @@ export const updateCompanyFeatureFlags: MiddlewareFn = async (req, res) => {
     company: companyId as string, reason, before, after: { flags: company.featureFlags }, result: "success",
   });
   res.status(StatusCodes.OK).json({ success: true, flags: company.featureFlags });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// API keys — the company's own external-integration credentials
+// (apiKeyController.ts is the company's self-service version of this).
+// Never exposes keyHash; the raw key was only ever shown once, to the
+// company itself, at creation time.
+// ─────────────────────────────────────────────────────────────────────────
+
+const serializeApiKeyForPlatform = (k: any) => ({
+  id: k._id.toString(),
+  name: k.name,
+  keyPrefix: k.keyPrefix,
+  isActive: k.isActive,
+  lastUsedAt: k.lastUsedAt,
+  createdAt: k.createdAt,
+  revokedAt: k.revokedAt,
+});
+
+// GET /platform/companies/:companyId/api-keys
+export const getCompanyApiKeys: MiddlewareFn = async (req, res) => {
+  const { companyId } = req.params;
+  requireObjectId(companyId, "company id");
+  const keys = await ApiKey.find({ company: companyId }).sort({ createdAt: -1 }).lean();
+  res.status(StatusCodes.OK).json({ success: true, data: keys.map(serializeApiKeyForPlatform) });
+};
+
+// POST /platform/companies/:companyId/api-keys/:keyId/revoke
+// For a leaked key or an integration misbehaving — the company can already
+// revoke its own keys; this lets support act on their behalf (e.g. from an
+// abuse report) without waiting on them.
+export const revokeCompanyApiKey: MiddlewareFn = async (req, res) => {
+  const { companyId, keyId } = req.params;
+  requireObjectId(companyId, "company id");
+  requireObjectId(keyId, "api key id");
+  const { reason } = parseOrThrow(reasonSchema, req.body);
+  const key = await ApiKey.findOne({ _id: keyId, company: companyId });
+  if (!key) throw new NotFoundError("API key not found.");
+  if (!key.isActive) throw new BadRequestError("This key is already revoked.");
+  key.isActive = false;
+  key.revokedAt = new Date();
+  await key.save();
+  await recordPlatformAudit({
+    req, actor: actorOf(req), action: "company.api_key.revoked", targetType: "Company", targetId: companyId as string,
+    company: companyId as string, reason, metadata: { keyId: key._id.toString(), keyName: key.name }, result: "success",
+  });
+  res.status(StatusCodes.OK).json({ success: true, msg: `"${key.name}" revoked.`, apiKey: serializeApiKeyForPlatform(key) });
 };
 
 // ─────────────────────────────────────────────────────────────────────────
