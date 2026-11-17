@@ -15,6 +15,9 @@ import PlatformErrorLog, { PLATFORM_ERROR_SOURCES } from "../models/PlatformErro
 import CronJobStatus from "../models/CronJobStatus.js";
 import PlatformAnnouncement, { ANNOUNCEMENT_AUDIENCES, ANNOUNCEMENT_SEVERITIES } from "../models/PlatformAnnouncement.js";
 import { recordPlatformAudit } from "../services/platformAudit.service.js";
+import { getCompanyHealth } from "../services/companyHealth.service.js";
+import Notification from "../models/Notification.js";
+import { PLATFORM_TAGS } from "../utils/featureFlags.js";
 import { getEffectiveMaxWorkers } from "../utils/planLimits.js";
 import { PLANS } from "../utils/constant.js";
 import { PLATFORM_ROLES, PlatformRole } from "../utils/platformRoles.js";
@@ -29,7 +32,7 @@ import {
 // Shared helpers
 // ─────────────────────────────────────────────────────────────────────────
 
-const parseOrThrow = <T>(schema: z.ZodSchema<T>, body: unknown): T => {
+export const parseOrThrow = <T>(schema: z.ZodSchema<T>, body: unknown): T => {
   try {
     return schema.parse(body);
   } catch (err) {
@@ -44,7 +47,7 @@ const parseOrThrow = <T>(schema: z.ZodSchema<T>, body: unknown): T => {
 // getAllJobs. Hard-capped at 100 per page regardless of what's requested —
 // these routes intentionally query across every tenant, so they need more
 // discipline than a normal per-company list endpoint.
-const parsePagination = (query: Record<string, string | undefined>) => {
+export const parsePagination = (query: Record<string, string | undefined>) => {
   const page = Math.max(1, Number(query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(query.limit) || 25));
   const skip = (page - 1) * limit;
@@ -56,7 +59,7 @@ const parsePagination = (query: Record<string, string | undefined>) => {
 // the param back to `string` for the rest of each handler after validating
 // it's both a single value and a real ObjectId, instead of re-casting at
 // every later use site.
-function requireObjectId(id: string | string[], label: string): asserts id is string {
+export function requireObjectId(id: string | string[], label: string): asserts id is string {
   if (Array.isArray(id) || !mongoose.Types.ObjectId.isValid(id)) {
     throw new BadRequestError(`Invalid ${label}.`);
   }
@@ -79,7 +82,7 @@ function serializeEmailSettings(emailSettings: any) {
   };
 }
 
-const reasonSchema = z.object({ reason: z.string().trim().min(1, "A reason is required.").max(500) });
+export const reasonSchema = z.object({ reason: z.string().trim().min(1, "A reason is required.").max(500) });
 
 // ─────────────────────────────────────────────────────────────────────────
 // Overview
@@ -164,9 +167,14 @@ const COMPANY_STATUS_VALUES = ["active", "suspended", "disabled"] as const;
 // GET /platform/companies
 export const getPlatformCompanies: MiddlewareFn = async (req, res) => {
   const { page, limit, skip } = parsePagination(req.query as Record<string, string | undefined>);
-  const { search, status, plan, sort } = req.query as Record<string, string | undefined>;
+  const { search, status, plan, sort, health, tag } = req.query as Record<string, string | undefined>;
 
   const query: Record<string, unknown> = {};
+  if (tag) {
+    if (!(PLATFORM_TAGS as readonly string[]).includes(tag)) throw new BadRequestError("Invalid tag filter.");
+    query.platformTags = tag;
+  }
+  if (health && !["healthy", "watch", "at_risk"].includes(health)) throw new BadRequestError("Invalid health filter.");
   if (status) {
     if (!(COMPANY_STATUS_VALUES as readonly string[]).includes(status)) {
       throw new BadRequestError("Invalid status filter.");
@@ -191,10 +199,26 @@ export const getPlatformCompanies: MiddlewareFn = async (req, res) => {
   };
   const sortKey = (sort && SORT_WHITELIST[sort]) || "-createdAt";
 
-  const [companies, total] = await Promise.all([
-    Company.find(query).sort(sortKey).skip(skip).limit(limit).populate("owner", "fullname email").lean(),
-    Company.countDocuments(query),
-  ]);
+  // Health is computed, not stored, so filtering by it narrows the id list
+  // first (fine at platform scale) and then pages over the matches.
+  let pageQuery: Record<string, unknown> = query;
+  let total: number;
+  if (health) {
+    const ids = (await Company.find(query).sort(sortKey).select("_id").lean()).map(c => c._id.toString());
+    const healthById = await getCompanyHealth(ids);
+    const matching = ids.filter(id => healthById.get(id)?.level === health);
+    total = matching.length;
+    pageQuery = { _id: { $in: matching.slice(skip, skip + limit) } };
+  } else {
+    total = await Company.countDocuments(query);
+  }
+  const companies = await Company.find(pageQuery)
+    .sort(sortKey)
+    .skip(health ? 0 : skip)
+    .limit(limit)
+    .populate("owner", "fullname email")
+    .lean();
+  const healthByCompany = await getCompanyHealth(companies.map(c => c._id.toString()));
 
   const workerCounts = await User.aggregate([
     { $match: { company: { $in: companies.map(c => c._id) }, role: "worker", isActive: true } },
@@ -218,6 +242,12 @@ export const getPlatformCompanies: MiddlewareFn = async (req, res) => {
           unlimited: limit === -1,
         },
         status: c.status ?? "active",
+        tags: (c as any).platformTags ?? [],
+        health: (() => {
+          const h = healthByCompany.get(c._id.toString());
+          return h ? { level: h.level, score: h.score, reasons: h.reasons } : null;
+        })(),
+        deletionScheduledAt: (c as any).deletionScheduledAt ?? null,
         createdAt: c.createdAt,
       };
     }),
@@ -247,10 +277,24 @@ export const getPlatformCompanyDetail: MiddlewareFn = async (req, res) => {
 
   const limit = getEffectiveMaxWorkers({ plan: company.plan as any, maxWorkers: company.maxWorkers });
   const owner = company.owner as any;
+  const health = (await getCompanyHealth([companyId])).get(companyId) ?? null;
+  const c = company as any;
 
   res.status(StatusCodes.OK).json({
     success: true,
     company: {
+      tags: c.platformTags ?? [],
+      featureFlags: c.featureFlags ?? [],
+      health,
+      billing: {
+        stripeCustomerId: c.stripeCustomerId ?? null,
+        stripeDashboardUrl: c.stripeCustomerId ? `https://dashboard.stripe.com/customers/${c.stripeCustomerId}` : null,
+        subscriptionStatus: c.subscriptionStatus ?? null,
+        currentPeriodEnd: c.currentPeriodEnd ?? null,
+        cancelAtPeriodEnd: !!c.cancelAtPeriodEnd,
+        trialEndsAt: c.trialEndsAt ?? null,
+      },
+      deletionScheduledAt: c.deletionScheduledAt ?? null,
       id: company._id.toString(),
       name: company.name,
       businessType: company.businessType,
@@ -407,12 +451,24 @@ export const getPlatformUserDetail: MiddlewareFn = async (req, res) => {
   requireObjectId(userId, "user id");
 
   const user = await User.findById(userId)
-    .select("fullname email role platformRole isActive createdAt lastLogin company")
+    .select("fullname email role platformRole isActive isVerified phone createdAt lastLogin company +sessions pushSubscriptions expoPushTokens")
     .populate("company", "name")
     .lean();
   if (!user) throw new NotFoundError("User not found.");
 
   const c = user.company as any;
+  const now = Date.now();
+  const sessions = ((user as any).sessions ?? [])
+    .filter((s: any) => new Date(s.expiresAt).getTime() > now)
+    .map((s: any) => ({ createdAt: s.createdAt ?? null, expiresAt: s.expiresAt }))
+    .sort((a: any, b: any) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime());
+  const lastNotification = await Notification.findOne({ user: userId }).sort({ createdAt: -1 }).select("title createdAt").lean();
+  // Same phone on another account (ignoring the schema's placeholder)
+  const phone = (user as any).phone as string | undefined;
+  const duplicates =
+    phone && phone !== "0000-0000-0000"
+      ? await User.find({ phone, _id: { $ne: user._id } }).select("fullname email company").populate("company", "name").limit(10).lean()
+      : [];
   res.status(StatusCodes.OK).json({
     success: true,
     user: {
@@ -425,6 +481,18 @@ export const getPlatformUserDetail: MiddlewareFn = async (req, res) => {
       accountStatus: user.isActive === false ? "disabled" : "active",
       createdAt: user.createdAt,
       lastLoginAt: user.lastLogin ?? null,
+      isVerified: !!(user as any).isVerified,
+      phone: phone && phone !== "0000-0000-0000" ? phone : null,
+      sessions,
+      push: {
+        web: (user as any).pushSubscriptions?.length ?? 0,
+        mobile: (user as any).expoPushTokens?.length ?? 0,
+        lastNotification: lastNotification ? { title: lastNotification.title, createdAt: lastNotification.createdAt } : null,
+      },
+      possibleDuplicates: duplicates.map((d: any) => ({
+        id: d._id.toString(), name: d.fullname, email: d.email,
+        company: d.company ? { id: d.company._id.toString(), name: d.company.name } : null,
+      })),
       // Deliberately excluded: password, refreshToken, resetToken,
       // verification tokens — none of those fields are selected above.
     },

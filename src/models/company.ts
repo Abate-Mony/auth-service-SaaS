@@ -126,6 +126,20 @@ const CompanySchema = new Schema(
     trialEndsAt: { type: Date, default: null, index: true },
     trialUsedAt: { type: Date, default: null },
 
+    // ── Platform-admin only (see platformSupportController.ts) ───────────
+    // Internal labels for support/sales ("vip", "at_risk"…). Never shown to
+    // the company itself.
+    platformTags: { type: [String], default: [] },
+    // Per-company feature flags (keys from utils/featureFlags.ts). Read by
+    // the tenant app via the company profile to switch features on early.
+    featureFlags: { type: [String], default: [] },
+    // Scheduled deletion (GDPR / closed account). The company is disabled
+    // when scheduled and purged by utils/purgeScheduledCompanies.ts once
+    // this date passes — unless cancelled first, which restores
+    // statusBeforeDeletion.
+    deletionScheduledAt: { type: Date, default: null, index: true },
+    statusBeforeDeletion: { type: String, default: null },
+
     // ── Time & attendance ──────────────────────────────────────────────
     clockInGraceMinutes: { type: Number, default: 30 },
     lateThresholdMinutes: { type: Number, default: 10 },
