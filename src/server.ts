@@ -298,6 +298,12 @@ const start = async (): Promise<void> => {
     cron.schedule("*/10 * * * *", () => {
       runCronJob("checkPendingEmailDomains", "schedule");
     });
+    // 3am UTC — deletes companies whose scheduled deletion (30-day grace,
+    // set from the platform) has passed. Dry run unless
+    // COMPANY_PURGE_ENABLED=true. See purgeScheduledCompanies.ts.
+    cron.schedule("0 3 * * *", () => {
+      runCronJob("purgeScheduledCompanies", "schedule");
+    });
   } catch (err) {
     console.error(err);
   }

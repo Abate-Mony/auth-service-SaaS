@@ -22,7 +22,7 @@ import { logPlatformError } from "../utils/logPlatformError.js";
 // future `npm update stripe` must not silently change either without this
 // being bumped deliberately.
 let _stripe: Stripe | null = null;
-function getStripe(): Stripe {
+export function getStripe(): Stripe {
     if (!_stripe) {
         _stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
             apiVersion: "2026-09-30.endive",

@@ -708,6 +708,45 @@ export async function sendVerificationEmail({
   });
 }
 
+/** Tells a company owner that OnClockly support opened read-only access to their account. */
+export async function sendSupportAccessNotice({
+  email,
+  fullname,
+  companyName,
+  supportEmail,
+  reason,
+  minutes,
+}: {
+  email: string;
+  fullname: string;
+  companyName: string;
+  supportEmail: string;
+  reason: string;
+  minutes: number;
+}) {
+  const firstName = fullname.split(" ")[0];
+  const body = `
+    <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#475569;">
+      Hi ${firstName}, a member of the OnClockly support team has opened <strong>read-only</strong> access to
+      ${companyName}'s account for ${minutes} minutes to help with an issue. They can view jobs and invoices but can't change anything.
+    </p>
+    <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
+      ${detailRow("Support agent", supportEmail)}
+      ${detailRow("Reason", reason)}
+    </table>
+    <p style="margin:20px 0 0;font-size:13px;color:#94A3B8;">If you didn't expect this, reply to this email.</p>`;
+
+  await sendMail({
+    to: email,
+    subject: `OnClockly support accessed ${companyName}`,
+    text:
+      `Hi ${firstName},\n\n` +
+      `A member of the OnClockly support team (${supportEmail}) has opened read-only access to ${companyName}'s account for ${minutes} minutes.\n` +
+      `Reason: ${reason}\n\nIf you didn't expect this, reply to this email.`,
+    html: layout({ heading: "Support accessed your account", body }),
+  });
+}
+
 export async function sendPasswordResetEmail({
   email,
   fullname,

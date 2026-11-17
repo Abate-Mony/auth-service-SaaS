@@ -17,6 +17,27 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "error_log.resolved",
   "announcement.created",
   "announcement.updated",
+  // Support tools (platformSupportController.ts)
+  "company.note.added",
+  "company.note.deleted",
+  "company.tags.changed",
+  "company.trial.extended",
+  "company.payment.retried",
+  "company.feature_flags.changed",
+  "company.api_key.revoked",
+  "company.support_access.started",
+  "company.support_access.ended",
+  "company.data.exported",
+  "company.deletion.scheduled",
+  "company.deletion.cancelled",
+  "company.purged",
+  "user.password_reset.sent",
+  "user.verification.resent",
+  "user.email.changed",
+  "user.sessions.revoked",
+  "user.test_notification.sent",
+  "user.company.moved",
+  "user.anonymised",
 ] as const;
 export type PlatformAuditAction = (typeof PLATFORM_AUDIT_ACTIONS)[number];
 

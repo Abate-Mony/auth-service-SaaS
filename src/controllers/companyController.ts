@@ -104,7 +104,8 @@ const COMPANY_PROFILE_FIELDS = ["name", "businessType", "website", "registration
 // companyProfileSchema below can never accept it. Same pattern as
 // getCompanySettings's own COMPANY_READ_ONLY_EXTRA_FIELDS. Changing it goes
 // through Billing (plan/maxWorkers), not this endpoint.
-const COMPANY_PROFILE_READ_ONLY_EXTRA_FIELDS = ["size"] as const;
+// featureFlags: set by platform admins, read by the app to switch features on early
+const COMPANY_PROFILE_READ_ONLY_EXTRA_FIELDS = ["size", "featureFlags"] as const;
 
 const companyProfileSchema = z
     .object({
