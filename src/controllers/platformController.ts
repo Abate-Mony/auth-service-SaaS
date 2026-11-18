@@ -6,6 +6,7 @@ import { MiddlewareFn } from "../interfaces/expresstype.js";
 import Company from "../models/company.js";
 import User from "../models/userModel.js";
 import Job from "../models/jobModel.js";
+import JobAssignment from "../models/JobAssignment.js";
 import Client from "../models/clientModel.js";
 import Site from "../models/siteModel.js";
 import Quote from "../models/quoteModel.js";
@@ -394,6 +395,103 @@ export const getPlatformCompanyEmail: MiddlewareFn = async (req, res) => {
   if (!company) throw new NotFoundError("Company not found.");
 
   res.status(StatusCodes.OK).json({ success: true, settings: serializeEmailSettings(company.emailSettings) });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Cross-company usage & email rollups — PlatformUsage.tsx / PlatformEmails.tsx
+// were shipped as pure mock data (no aggregation endpoint existed across
+// every company, only the per-company versions above). These two routes
+// are the real thing; see each one's own comment for what's still honestly
+// out of reach (e.g. "emails sent" — nothing logs a successful send, only
+// failures via PlatformErrorLog).
+// ─────────────────────────────────────────────────────────────────────────
+
+// GET /platform/usage — platform-wide, distinct from
+// getPlatformCompanyUsage above (which is scoped to one company).
+export const getPlatformUsage: MiddlewareFn = async (_req, res) => {
+  const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const [companiesActive, workersActive, jobsCreated30d, clockEvents30d, emailFailures30d] = await Promise.all([
+    Company.countDocuments({ status: "active" }),
+    User.countDocuments({ role: "worker", isActive: true }),
+    // Job.company is schema-typed String (see planLimits.ts's own note) —
+    // irrelevant here since this counts across every company.
+    Job.countDocuments({ isDeleted: false, isTemplate: false, createdAt: { $gte: since30d } }),
+    // A clock-in is the closest real proxy this app has for "a shift
+    // actually worked" — no separate event log exists, so this counts
+    // JobAssignment documents that have one, which is the same thing.
+    JobAssignment.countDocuments({ checkedInAt: { $gte: since30d } }),
+    PlatformErrorLog.countDocuments({ source: "email", createdAt: { $gte: since30d } }),
+  ]);
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    usage: { companiesActive, workersActive, jobsCreated30d, clockEvents30d, emailFailures30d },
+  });
+};
+
+// GET /platform/email-domains — every company that has attempted to
+// connect a custom sending domain (domainStatus != "not_connected"; the
+// vast majority of companies stay on the shared default sender and never
+// show up here, same as the per-company Email tab's own distinction).
+// Row actions on the frontend call the existing
+// retryEmailDomainVerification/resetEmailDomain routes below with each
+// row's own companyId — no new mutation needed, this is read-only.
+export const getPlatformEmailDomains: MiddlewareFn = async (_req, res) => {
+  const startOfToday = new Date();
+  startOfToday.setUTCHours(0, 0, 0, 0);
+
+  const [companies, verified, pending, failed, failedToday] = await Promise.all([
+    // $in, not $ne: "not_connected" — a company whose document predates this
+    // field has emailSettings.domainStatus entirely missing in the raw DB
+    // doc (Mongoose's schema default only applies on create, and .lean()
+    // skips hydration), so $ne would wrongly let it through as if it had
+    // attempted a connection.
+    Company.find({ "emailSettings.domainStatus": { $in: ["pending", "verified", "failed"] } })
+      .select("name emailSettings")
+      .sort({ "emailSettings.lastVerificationCheckAt": -1 })
+      .lean(),
+    Company.countDocuments({ "emailSettings.domainStatus": "verified" }),
+    Company.countDocuments({ "emailSettings.domainStatus": "pending" }),
+    Company.countDocuments({ "emailSettings.domainStatus": "failed" }),
+    PlatformErrorLog.countDocuments({ source: "email", createdAt: { $gte: startOfToday } }),
+  ]);
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    data: companies.map(c => {
+      const s = (c.emailSettings ?? {}) as any;
+      return {
+        companyId: c._id.toString(),
+        companyName: c.name,
+        domain: s.sendingDomain ?? "",
+        status: s.domainStatus ?? "not_connected",
+        sender: s.senderEmail ?? "",
+        verifiedAt: s.verifiedAt ?? null,
+        lastCheckedAt: s.lastVerificationCheckAt ?? null,
+      };
+    }),
+    metrics: { verified, pending, failed, failedToday },
+  });
+};
+
+// GET /platform/email-domains/:companyId/records — live DNS records for a
+// company's connected domain, straight from fetchResendDomain (the same
+// call retryEmailDomainVerification already makes, just also surfacing the
+// records it already gets back instead of discarding them). resendDomainId
+// itself stays server-side only, same rule as serializeEmailSettings.
+export const getPlatformEmailDomainRecords: MiddlewareFn = async (req, res) => {
+  const { companyId } = req.params;
+  requireObjectId(companyId, "company id");
+
+  const company = await Company.findById(companyId).select("emailSettings");
+  if (!company) throw new NotFoundError("Company not found.");
+
+  const settings = (company.emailSettings ?? {}) as any;
+  if (!settings.resendDomainId) throw new BadRequestError("This company has no sending domain connected.");
+
+  const fetched = await fetchResendDomain(settings.resendDomainId);
+  res.status(StatusCodes.OK).json({ success: true, status: fetched.status, records: fetched.records });
 };
 
 // ─────────────────────────────────────────────────────────────────────────

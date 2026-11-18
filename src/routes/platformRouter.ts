@@ -34,6 +34,9 @@ import {
   disableMaintenanceMode,
   bulkUpdateCompanyStatus,
   getPlatformMetricsTrend,
+  getPlatformUsage,
+  getPlatformEmailDomains,
+  getPlatformEmailDomainRecords,
 } from "../controllers/platformController.js";
 import {
   getCompanyNotes,
@@ -89,6 +92,8 @@ const mutationLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60 });
 
 router.get("/overview", getPlatformOverview);
 router.get("/feature-flags", getFeatureFlagCatalog);
+router.get("/usage", getPlatformUsage);
+router.get("/email-domains", getPlatformEmailDomains);
 
 router.get("/companies", getPlatformCompanies);
 // Bulk routes MUST be registered before the /:companyId/... routes below —
@@ -132,6 +137,7 @@ router.post("/users/:userId/test-notification", SUPPORT, mutationLimiter, sendUs
 router.patch("/users/:userId/company", SUPER, mutationLimiter, moveUserCompany);
 router.post("/users/:userId/anonymise", SUPER, mutationLimiter, anonymiseUser);
 
+router.get("/email-domains/:companyId/records", getPlatformEmailDomainRecords);
 router.post("/email-domains/:companyId/retry-verification", SUPPORT, mutationLimiter, retryEmailDomainVerification);
 router.post("/email-domains/:companyId/reset", SUPPORT, mutationLimiter, resetEmailDomain);
 
