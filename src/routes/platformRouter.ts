@@ -29,6 +29,11 @@ import {
   getPlatformAnnouncements,
   createPlatformAnnouncement,
   updatePlatformAnnouncement,
+  getPlatformMaintenanceStatus,
+  enableMaintenanceMode,
+  disableMaintenanceMode,
+  bulkUpdateCompanyStatus,
+  getPlatformMetricsTrend,
 } from "../controllers/platformController.js";
 import {
   getCompanyNotes,
@@ -56,6 +61,7 @@ import {
   sendUserTestNotification,
   moveUserCompany,
   anonymiseUser,
+  bulkUpdateCompanyTags,
 } from "../controllers/platformSupportController.js";
 
 const router = Router();
@@ -85,6 +91,11 @@ router.get("/overview", getPlatformOverview);
 router.get("/feature-flags", getFeatureFlagCatalog);
 
 router.get("/companies", getPlatformCompanies);
+// Bulk routes MUST be registered before the /:companyId/... routes below —
+// otherwise Express would match "/companies/bulk/status" against
+// "/companies/:companyId/status" first, with companyId="bulk".
+router.patch("/companies/bulk/status", SUPER, mutationLimiter, bulkUpdateCompanyStatus);
+router.patch("/companies/bulk/tags", SUPPORT, mutationLimiter, bulkUpdateCompanyTags);
 router.get("/companies/:companyId", getPlatformCompanyDetail);
 router.patch("/companies/:companyId/status", SUPER, mutationLimiter, updateCompanyStatus);
 router.patch("/companies/:companyId/plan", BILLING, mutationLimiter, updateCompanyPlanOverride);
@@ -130,6 +141,11 @@ router.get("/audit", getPlatformAuditList);
 router.get("/audit/:eventId", getPlatformAuditDetail);
 
 router.get("/system", getPlatformSystem);
+router.get("/system/maintenance", getPlatformMaintenanceStatus);
+router.post("/system/maintenance/enable", SUPER, mutationLimiter, enableMaintenanceMode);
+router.post("/system/maintenance/disable", SUPER, mutationLimiter, disableMaintenanceMode);
+
+router.get("/metrics/trend", getPlatformMetricsTrend);
 
 router.get("/cron", getPlatformCronJobs);
 router.post("/cron/:name/run", SUPER, mutationLimiter, runPlatformCronJob);

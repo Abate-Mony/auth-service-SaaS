@@ -50,3 +50,13 @@ export class ConflictError extends Error {
     this.code = code;
   }
 }
+export class ServiceUnavailableError extends Error {
+  statusCode: number;
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "ServiceUnavailableError";
+    this.statusCode = StatusCodes.SERVICE_UNAVAILABLE;
+    this.code = code;
+  }
+}

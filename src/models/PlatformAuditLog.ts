@@ -38,6 +38,8 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "user.test_notification.sent",
   "user.company.moved",
   "user.anonymised",
+  "platform.maintenance_mode.enabled",
+  "platform.maintenance_mode.disabled",
 ] as const;
 export type PlatformAuditAction = (typeof PLATFORM_AUDIT_ACTIONS)[number];
 
