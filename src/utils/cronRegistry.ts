@@ -14,6 +14,7 @@ import { expireTrials } from "./expireTrials.js";
 import { checkPendingEmailDomains } from "./checkPendingEmailDomains.js";
 import { purgeScheduledCompanies } from "./purgeScheduledCompanies.js";
 import { generateRecurringInvoices } from "../services/invoice/recurringInvoiceGenerator.js";
+import { captureDailyMetricsSnapshot } from "./captureDailyMetricsSnapshot.js";
 
 export interface CronJobDefinition {
   name: string;
@@ -47,6 +48,7 @@ CRON_JOBS: CronJobDefinition[] = [
   { name: "expireTrials", label: "Expire trials", schedule: "Daily at 02:00 UTC", fn: expireTrials },
   { name: "checkPendingEmailDomains", label: "Check pending email domains", schedule: "Every 10 minutes", fn: checkPendingEmailDomains },
   { name: "purgeScheduledCompanies", label: "Delete companies past their scheduled deletion date (dry run unless COMPANY_PURGE_ENABLED=true)", schedule: "Daily at 03:00 UTC", fn: purgeScheduledCompanies },
+  { name: "captureDailyMetricsSnapshot", label: "Capture daily platform metrics snapshot", schedule: "Daily at 23:55 UTC", fn: captureDailyMetricsSnapshot },
 ];
 
 const CRON_JOBS_BY_NAME = new Map(CRON_JOBS.map(job => [job.name, job]));

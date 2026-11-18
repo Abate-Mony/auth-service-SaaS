@@ -29,6 +29,14 @@ import {
   getPlatformAnnouncements,
   createPlatformAnnouncement,
   updatePlatformAnnouncement,
+  getPlatformMaintenanceStatus,
+  enableMaintenanceMode,
+  disableMaintenanceMode,
+  bulkUpdateCompanyStatus,
+  getPlatformMetricsTrend,
+  getPlatformUsage,
+  getPlatformEmailDomains,
+  getPlatformEmailDomainRecords,
 } from "../controllers/platformController.js";
 import {
   getCompanyNotes,
@@ -56,6 +64,7 @@ import {
   sendUserTestNotification,
   moveUserCompany,
   anonymiseUser,
+  bulkUpdateCompanyTags,
 } from "../controllers/platformSupportController.js";
 
 const router = Router();
@@ -83,8 +92,15 @@ const mutationLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60 });
 
 router.get("/overview", getPlatformOverview);
 router.get("/feature-flags", getFeatureFlagCatalog);
+router.get("/usage", getPlatformUsage);
+router.get("/email-domains", getPlatformEmailDomains);
 
 router.get("/companies", getPlatformCompanies);
+// Bulk routes MUST be registered before the /:companyId/... routes below —
+// otherwise Express would match "/companies/bulk/status" against
+// "/companies/:companyId/status" first, with companyId="bulk".
+router.patch("/companies/bulk/status", SUPER, mutationLimiter, bulkUpdateCompanyStatus);
+router.patch("/companies/bulk/tags", SUPPORT, mutationLimiter, bulkUpdateCompanyTags);
 router.get("/companies/:companyId", getPlatformCompanyDetail);
 router.patch("/companies/:companyId/status", SUPER, mutationLimiter, updateCompanyStatus);
 router.patch("/companies/:companyId/plan", BILLING, mutationLimiter, updateCompanyPlanOverride);
@@ -121,6 +137,7 @@ router.post("/users/:userId/test-notification", SUPPORT, mutationLimiter, sendUs
 router.patch("/users/:userId/company", SUPER, mutationLimiter, moveUserCompany);
 router.post("/users/:userId/anonymise", SUPER, mutationLimiter, anonymiseUser);
 
+router.get("/email-domains/:companyId/records", getPlatformEmailDomainRecords);
 router.post("/email-domains/:companyId/retry-verification", SUPPORT, mutationLimiter, retryEmailDomainVerification);
 router.post("/email-domains/:companyId/reset", SUPPORT, mutationLimiter, resetEmailDomain);
 
@@ -130,6 +147,11 @@ router.get("/audit", getPlatformAuditList);
 router.get("/audit/:eventId", getPlatformAuditDetail);
 
 router.get("/system", getPlatformSystem);
+router.get("/system/maintenance", getPlatformMaintenanceStatus);
+router.post("/system/maintenance/enable", SUPER, mutationLimiter, enableMaintenanceMode);
+router.post("/system/maintenance/disable", SUPER, mutationLimiter, disableMaintenanceMode);
+
+router.get("/metrics/trend", getPlatformMetricsTrend);
 
 router.get("/cron", getPlatformCronJobs);
 router.post("/cron/:name/run", SUPER, mutationLimiter, runPlatformCronJob);

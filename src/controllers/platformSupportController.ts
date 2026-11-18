@@ -130,6 +130,55 @@ export const updateCompanyTags: MiddlewareFn = async (req, res) => {
   res.status(StatusCodes.OK).json({ success: true, tags: company.platformTags });
 };
 
+const bulkTagsSchema = z.object({
+  companyIds: z.array(z.string()).min(1).max(100),
+  tags: z.array(z.enum(PLATFORM_TAGS)).max(PLATFORM_TAGS.length),
+  reason: z.string().trim().max(500).optional(),
+});
+
+// PATCH /platform/companies/bulk/tags — same per-id try/catch and
+// partial-success shape as bulkUpdateCompanyStatus in platformController.ts.
+// Reason stays optional here, matching updateCompanyTags's own convention
+// above — bulk doesn't introduce a stricter rule than the single-row action
+// it's built from.
+export const bulkUpdateCompanyTags: MiddlewareFn = async (req, res) => {
+  const data = parseOrThrow(bulkTagsSchema, req.body);
+  data.companyIds.forEach(id => requireObjectId(id, "company id"));
+
+  const succeeded: string[] = [];
+  const failed: { companyId: string; error: string }[] = [];
+
+  for (const companyId of data.companyIds) {
+    try {
+      const company = await Company.findById(companyId).select("platformTags");
+      if (!company) throw new Error("Company not found.");
+
+      const before = { tags: [...(company.platformTags ?? [])] };
+      company.platformTags = [...new Set(data.tags)];
+      await company.save();
+
+      await recordPlatformAudit({
+        req,
+        actor: actorOf(req),
+        action: "company.tags.changed",
+        targetType: "Company",
+        targetId: companyId,
+        company: companyId,
+        reason: data.reason || null,
+        before,
+        after: { tags: company.platformTags },
+        result: "success",
+        metadata: { bulk: true },
+      });
+      succeeded.push(companyId);
+    } catch (err) {
+      failed.push({ companyId, error: err instanceof Error ? err.message : "Unknown error" });
+    }
+  }
+
+  res.status(StatusCodes.OK).json({ success: failed.length === 0, succeeded, failed });
+};
+
 // ─────────────────────────────────────────────────────────────────────────
 // Trial & billing
 // ─────────────────────────────────────────────────────────────────────────

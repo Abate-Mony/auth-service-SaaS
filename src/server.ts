@@ -26,6 +26,8 @@ import cors from "cors";
 import { authenticateUser } from "./middleware/authMiddleware.js";
 import { loadRestriction } from "./middleware/restrictionMiddleware.js";
 import { enforceCompanyStatus } from "./middleware/companyStatusMiddleware.js";
+import { enforceMaintenanceMode } from "./middleware/maintenanceModeMiddleware.js";
+import { getMaintenanceStatusPublic } from "./controllers/systemStatusController.js";
 import platformRouter from "./routes/platformRouter.js";
 import jobRouter from "./routes/jobRouter.js";
 import aiRouter from "./routes/aiRouter.js";
@@ -82,6 +84,12 @@ app.post(
 );
 
 app.use(express.json());
+
+// Single chokepoint for the emergency maintenance-mode kill switch — see
+// maintenanceModeMiddleware.ts for the allowlist (platform routes, auth,
+// health, plans, the public status probe below, and the Stripe webhook
+// above stay reachable; everything else 503s while enabled).
+app.use(enforceMaintenanceMode);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const filepath = path.resolve(__dirname, "../public/");
@@ -152,6 +160,10 @@ app.get("/api/v1/health", (_req, res) => {
     db: dbConnected,
   });
 });
+// Public, unauthenticated — the maintenance-mode blocking page polls this
+// to know when to send a blocked tenant back. Deliberately returns only
+// enabled/message, never who enabled it or when, since anyone can call it.
+app.get("/api/v1/system/maintenance", getMaintenanceStatusPublic);
 // DONE WITH USERS DOCUMENTATION ON POSTMAN
 app.use(`/api/v1/users`,
   authenticateUser,
@@ -303,6 +315,11 @@ const start = async (): Promise<void> => {
     // COMPANY_PURGE_ENABLED=true. See purgeScheduledCompanies.ts.
     cron.schedule("0 3 * * *", () => {
       runCronJob("purgeScheduledCompanies", "schedule");
+    });
+    // 23:55 UTC — late in the day so that day's counts are as complete as
+    // possible before being frozen. See captureDailyMetricsSnapshot.ts.
+    cron.schedule("55 23 * * *", () => {
+      runCronJob("captureDailyMetricsSnapshot", "schedule");
     });
   } catch (err) {
     console.error(err);

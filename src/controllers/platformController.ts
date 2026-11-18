@@ -6,6 +6,7 @@ import { MiddlewareFn } from "../interfaces/expresstype.js";
 import Company from "../models/company.js";
 import User from "../models/userModel.js";
 import Job from "../models/jobModel.js";
+import JobAssignment from "../models/JobAssignment.js";
 import Client from "../models/clientModel.js";
 import Site from "../models/siteModel.js";
 import Quote from "../models/quoteModel.js";
@@ -14,6 +15,8 @@ import PlatformAuditLog, { PLATFORM_AUDIT_ACTIONS } from "../models/PlatformAudi
 import PlatformErrorLog, { PLATFORM_ERROR_SOURCES } from "../models/PlatformErrorLog.js";
 import CronJobStatus from "../models/CronJobStatus.js";
 import PlatformAnnouncement, { ANNOUNCEMENT_AUDIENCES, ANNOUNCEMENT_SEVERITIES } from "../models/PlatformAnnouncement.js";
+import PlatformSettings from "../models/PlatformSettings.js";
+import PlatformMetricsSnapshot from "../models/PlatformMetricsSnapshot.js";
 import { recordPlatformAudit } from "../services/platformAudit.service.js";
 import { getCompanyHealth } from "../services/companyHealth.service.js";
 import Notification from "../models/Notification.js";
@@ -395,6 +398,103 @@ export const getPlatformCompanyEmail: MiddlewareFn = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────
+// Cross-company usage & email rollups — PlatformUsage.tsx / PlatformEmails.tsx
+// were shipped as pure mock data (no aggregation endpoint existed across
+// every company, only the per-company versions above). These two routes
+// are the real thing; see each one's own comment for what's still honestly
+// out of reach (e.g. "emails sent" — nothing logs a successful send, only
+// failures via PlatformErrorLog).
+// ─────────────────────────────────────────────────────────────────────────
+
+// GET /platform/usage — platform-wide, distinct from
+// getPlatformCompanyUsage above (which is scoped to one company).
+export const getPlatformUsage: MiddlewareFn = async (_req, res) => {
+  const since30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const [companiesActive, workersActive, jobsCreated30d, clockEvents30d, emailFailures30d] = await Promise.all([
+    Company.countDocuments({ status: "active" }),
+    User.countDocuments({ role: "worker", isActive: true }),
+    // Job.company is schema-typed String (see planLimits.ts's own note) —
+    // irrelevant here since this counts across every company.
+    Job.countDocuments({ isDeleted: false, isTemplate: false, createdAt: { $gte: since30d } }),
+    // A clock-in is the closest real proxy this app has for "a shift
+    // actually worked" — no separate event log exists, so this counts
+    // JobAssignment documents that have one, which is the same thing.
+    JobAssignment.countDocuments({ checkedInAt: { $gte: since30d } }),
+    PlatformErrorLog.countDocuments({ source: "email", createdAt: { $gte: since30d } }),
+  ]);
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    usage: { companiesActive, workersActive, jobsCreated30d, clockEvents30d, emailFailures30d },
+  });
+};
+
+// GET /platform/email-domains — every company that has attempted to
+// connect a custom sending domain (domainStatus != "not_connected"; the
+// vast majority of companies stay on the shared default sender and never
+// show up here, same as the per-company Email tab's own distinction).
+// Row actions on the frontend call the existing
+// retryEmailDomainVerification/resetEmailDomain routes below with each
+// row's own companyId — no new mutation needed, this is read-only.
+export const getPlatformEmailDomains: MiddlewareFn = async (_req, res) => {
+  const startOfToday = new Date();
+  startOfToday.setUTCHours(0, 0, 0, 0);
+
+  const [companies, verified, pending, failed, failedToday] = await Promise.all([
+    // $in, not $ne: "not_connected" — a company whose document predates this
+    // field has emailSettings.domainStatus entirely missing in the raw DB
+    // doc (Mongoose's schema default only applies on create, and .lean()
+    // skips hydration), so $ne would wrongly let it through as if it had
+    // attempted a connection.
+    Company.find({ "emailSettings.domainStatus": { $in: ["pending", "verified", "failed"] } })
+      .select("name emailSettings")
+      .sort({ "emailSettings.lastVerificationCheckAt": -1 })
+      .lean(),
+    Company.countDocuments({ "emailSettings.domainStatus": "verified" }),
+    Company.countDocuments({ "emailSettings.domainStatus": "pending" }),
+    Company.countDocuments({ "emailSettings.domainStatus": "failed" }),
+    PlatformErrorLog.countDocuments({ source: "email", createdAt: { $gte: startOfToday } }),
+  ]);
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    data: companies.map(c => {
+      const s = (c.emailSettings ?? {}) as any;
+      return {
+        companyId: c._id.toString(),
+        companyName: c.name,
+        domain: s.sendingDomain ?? "",
+        status: s.domainStatus ?? "not_connected",
+        sender: s.senderEmail ?? "",
+        verifiedAt: s.verifiedAt ?? null,
+        lastCheckedAt: s.lastVerificationCheckAt ?? null,
+      };
+    }),
+    metrics: { verified, pending, failed, failedToday },
+  });
+};
+
+// GET /platform/email-domains/:companyId/records — live DNS records for a
+// company's connected domain, straight from fetchResendDomain (the same
+// call retryEmailDomainVerification already makes, just also surfacing the
+// records it already gets back instead of discarding them). resendDomainId
+// itself stays server-side only, same rule as serializeEmailSettings.
+export const getPlatformEmailDomainRecords: MiddlewareFn = async (req, res) => {
+  const { companyId } = req.params;
+  requireObjectId(companyId, "company id");
+
+  const company = await Company.findById(companyId).select("emailSettings");
+  if (!company) throw new NotFoundError("Company not found.");
+
+  const settings = (company.emailSettings ?? {}) as any;
+  if (!settings.resendDomainId) throw new BadRequestError("This company has no sending domain connected.");
+
+  const fetched = await fetchResendDomain(settings.resendDomainId);
+  res.status(StatusCodes.OK).json({ success: true, status: fetched.status, records: fetched.records });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
 // Users (cross-tenant)
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -533,6 +633,58 @@ export const updateCompanyStatus: MiddlewareFn = async (req, res) => {
   });
 
   res.status(StatusCodes.OK).json({ success: true, msg: "Company status updated.", company: { id: companyId, status: company.status } });
+};
+
+const bulkCompanyStatusSchema = reasonSchema.extend({
+  companyIds: z.array(z.string()).min(1).max(100),
+  status: z.enum(COMPANY_STATUS_VALUES),
+});
+
+// PATCH /platform/companies/bulk/status — applies an existing per-row
+// action (updateCompanyStatus) to up to 100 companies in one call. A
+// dedicated bulk endpoint rather than the frontend firing N parallel
+// requests: mutationLimiter is 60/15min per admin, so N individual calls
+// from the client would burn the whole window on one click. Each company
+// still gets its own recordPlatformAudit row (tagged metadata.bulk: true)
+// so the per-company audit trail stays exactly as meaningful as a
+// one-at-a-time change — only the mechanism, not the audited action, is
+// different. One bad id reports as a partial failure, never aborts the rest.
+export const bulkUpdateCompanyStatus: MiddlewareFn = async (req, res) => {
+  const data = parseOrThrow(bulkCompanyStatusSchema, req.body);
+  data.companyIds.forEach(id => requireObjectId(id, "company id"));
+
+  const succeeded: string[] = [];
+  const failed: { companyId: string; error: string }[] = [];
+
+  for (const companyId of data.companyIds) {
+    try {
+      const company = await Company.findById(companyId).select("status");
+      if (!company) throw new Error("Company not found.");
+
+      const before = { status: company.status ?? "active" };
+      company.status = data.status;
+      await company.save();
+
+      await recordPlatformAudit({
+        req,
+        actor: req.platformActor!,
+        action: "company.status.changed",
+        targetType: "Company",
+        targetId: companyId,
+        company: companyId,
+        reason: data.reason,
+        before,
+        after: { status: company.status },
+        result: "success",
+        metadata: { bulk: true },
+      });
+      succeeded.push(companyId);
+    } catch (err) {
+      failed.push({ companyId, error: err instanceof Error ? err.message : "Unknown error" });
+    }
+  }
+
+  res.status(StatusCodes.OK).json({ success: failed.length === 0, succeeded, failed });
 };
 
 const companyPlanSchema = reasonSchema.extend({ plan: z.enum(PLANS) });
@@ -708,7 +860,7 @@ export const resetEmailDomain: MiddlewareFn = async (req, res) => {
 // GET /platform/audit
 export const getPlatformAuditList: MiddlewareFn = async (req, res) => {
   const { page, limit, skip } = parsePagination(req.query as Record<string, string | undefined>);
-  const { actor, action, company, targetType, result, from, to } = req.query as Record<string, string | undefined>;
+  const { actor, action, company, targetType, targetId, result, from, to, search } = req.query as Record<string, string | undefined>;
 
   const query: Record<string, unknown> = {};
   if (actor) {
@@ -724,6 +876,9 @@ export const getPlatformAuditList: MiddlewareFn = async (req, res) => {
     query.company = company;
   }
   if (targetType) query.targetType = targetType;
+  // Exact match — for deep-linking from a known id (e.g. a company's own
+  // ObjectId). Independent of and composable with `search` below.
+  if (targetId) query.targetId = targetId;
   if (result) {
     if (!["success", "failed", "denied"].includes(result)) throw new BadRequestError("Invalid result filter.");
     query.result = result;
@@ -733,6 +888,20 @@ export const getPlatformAuditList: MiddlewareFn = async (req, res) => {
     if (from) createdAt.$gte = new Date(from);
     if (to) createdAt.$lte = new Date(to);
     query.createdAt = createdAt;
+  }
+  if (search) {
+    // The frontend's search box has sent this since PlatformAudit.tsx was
+    // built, but nothing here ever read it — this was a dead filter, not a
+    // feature. actorEmail/targetId/targetType aren't indexed, but audit log
+    // query volume is low enough that a regex scan alongside the existing
+    // createdAt-sorted query is fine; revisit with a compound index only if
+    // that stops being true.
+    const escaped = search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    query.$or = [
+      { actorEmail: { $regex: escaped, $options: "i" } },
+      { targetId: { $regex: escaped, $options: "i" } },
+      { targetType: { $regex: escaped, $options: "i" } },
+    ];
   }
 
   const [records, total] = await Promise.all([
@@ -804,6 +973,124 @@ export const getPlatformSystem: MiddlewareFn = async (_req, res) => {
       api: { status: "operational" },
       database: { status: dbState === 1 ? "operational" : "degraded" },
     },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Maintenance mode — emergency kill switch. The public, unauthenticated
+// probe tenant clients poll lives separately in systemStatusController.ts;
+// these three routes are the platform-admin side (full detail on read,
+// super_admin-gated mutations). Enforcement itself happens once, globally,
+// in maintenanceModeMiddleware.ts.
+// ─────────────────────────────────────────────────────────────────────────
+
+// GET /platform/system/maintenance
+export const getPlatformMaintenanceStatus: MiddlewareFn = async (_req, res) => {
+  const settings = await PlatformSettings.findOne({ key: "global" }).select("maintenanceMode").lean();
+  const mm = settings?.maintenanceMode;
+  res.status(StatusCodes.OK).json({
+    success: true,
+    maintenanceMode: {
+      enabled: !!mm?.enabled,
+      message: mm?.message ?? null,
+      enabledAt: mm?.enabledAt ?? null,
+      enabledBy: mm?.enabledBy ?? null,
+    },
+  });
+};
+
+const enableMaintenanceSchema = reasonSchema.extend({
+  message: z.string().trim().max(500).optional(),
+});
+
+// POST /platform/system/maintenance/enable
+export const enableMaintenanceMode: MiddlewareFn = async (req, res) => {
+  const data = parseOrThrow(enableMaintenanceSchema, req.body);
+
+  const existing = await PlatformSettings.findOne({ key: "global" }).select("maintenanceMode").lean();
+  const before = { enabled: !!existing?.maintenanceMode?.enabled };
+
+  await PlatformSettings.updateOne(
+    { key: "global" },
+    {
+      $set: {
+        "maintenanceMode.enabled": true,
+        "maintenanceMode.message": data.message ?? null,
+        "maintenanceMode.enabledAt": new Date(),
+        "maintenanceMode.enabledBy": req.platformActor!.id,
+      },
+    },
+    { upsert: true }
+  );
+
+  await recordPlatformAudit({
+    req,
+    actor: req.platformActor!,
+    action: "platform.maintenance_mode.enabled",
+    targetType: "PlatformSettings",
+    targetId: "global",
+    reason: data.reason,
+    before,
+    after: { enabled: true, message: data.message ?? null },
+    result: "success",
+  });
+
+  res.status(StatusCodes.OK).json({ success: true, msg: "Maintenance mode enabled." });
+};
+
+// POST /platform/system/maintenance/disable
+export const disableMaintenanceMode: MiddlewareFn = async (req, res) => {
+  const data = parseOrThrow(reasonSchema, req.body);
+
+  const existing = await PlatformSettings.findOne({ key: "global" }).select("maintenanceMode").lean();
+  const before = { enabled: !!existing?.maintenanceMode?.enabled };
+
+  await PlatformSettings.updateOne(
+    { key: "global" },
+    { $set: { "maintenanceMode.enabled": false, "maintenanceMode.message": null, "maintenanceMode.enabledAt": null, "maintenanceMode.enabledBy": null } },
+    { upsert: true }
+  );
+
+  await recordPlatformAudit({
+    req,
+    actor: req.platformActor!,
+    action: "platform.maintenance_mode.disabled",
+    targetType: "PlatformSettings",
+    targetId: "global",
+    reason: data.reason,
+    before,
+    after: { enabled: false },
+    result: "success",
+  });
+
+  res.status(StatusCodes.OK).json({ success: true, msg: "Maintenance mode disabled." });
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// Metrics trend — fed by captureDailyMetricsSnapshot.ts's daily cron.
+// Starts recording from whenever that job's first run landed; no history
+// exists before that and none is fabricated here. See
+// PlatformMetricsSnapshot.ts's own comment.
+// ─────────────────────────────────────────────────────────────────────────
+
+// GET /platform/metrics/trend?days=30
+export const getPlatformMetricsTrend: MiddlewareFn = async (req, res) => {
+  const { days: daysParam } = req.query as Record<string, string | undefined>;
+  const days = Math.min(90, Math.max(1, Number(daysParam) || 30));
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const snapshots = await PlatformMetricsSnapshot.find({ date: { $gte: since } }).sort({ date: 1 }).lean();
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    data: snapshots.map(s => ({
+      date: s.date,
+      companiesTotal: s.companiesTotal,
+      companiesActive: s.companiesActive,
+      companiesNew: s.companiesNew,
+      workersActive: s.workersActive,
+      jobsCreated: s.jobsCreated,
+    })),
   });
 };
 
