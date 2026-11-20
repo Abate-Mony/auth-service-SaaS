@@ -5,6 +5,7 @@ import {
   deleteJob,
   deleteJobAttachment,
   duplicateJob,
+  exportJobs,
   getAllJobs,
   getJob,
   updateJob,
@@ -18,6 +19,7 @@ const router = Router();
 router.route("/")
   .get(getAllJobs)
   .post(createJob);
+ router.route("/export").get(authorizePermissions("admin", "manager"), exportJobs);
  router.route("/duplicate-job/:id").
  post(authorizePermissions("admin","manager"),duplicateJob)
 router.route("/:id")

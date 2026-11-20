@@ -16,6 +16,7 @@ import BookingRequest from "../models/BookingRequest.js";
 import JobChangeRequest from "../models/JobChangeRequest.js";
 import userModel from "../models/userModel.js";
 import { toUtcDay } from "../utils/dates.js";
+import { attentionReasons, bookingPositions, describeRepeat, escapeRegExp, staffingFor, toCsv } from "../utils/jobListing.js";
 import { generateOccurrences } from "../utils/generateOccurrences.js";
 import { logActivity, logActivityMany } from "../utils/logActivity.js";
 import { assertCanCreateJob, assertFeatureEnabledForCompany } from "../utils/planLimits.js";
@@ -1021,47 +1022,77 @@ export const createJob: MiddlewareFn = async (req, res): Promise<void> => {
 
     res.status(StatusCodes.CREATED).json({ success: true, job });
 };
-export const getAllJobs: MiddlewareFn = async (
-    req,
-    res
-): Promise<void> => {
-    const {
-        search,
-        status,
-        priority,
-        // Matches the Jobs page Select's own default display ("Sort: Date
-        // ↑") — without this the two would silently disagree until the
-        // manager actually touched the control. Ascending (soonest shift
-        // first) rather than descending: opening the list should surface
-        // what's coming up next, not bury it under far-future jobs.
-        sort = "date_asc",
-        page = "1", limit: limitQuery = "100",
-        client,
-        unassigned,
-        start,
-        end,
-        sourceQuote,
-    } = req.query as Record<string, string | undefined>;
-    const limit = Number(limitQuery) || 10;
+// ── Jobs list ────────────────────────────────────────────────────────────
+// Every filter is an optional query param (all URL-driven on the Jobs page):
+//   search, status, priority, client, site, worker, unassigned, unfilled,
+//   attention, start, end, sourceQuote, sort, page, limit
+// Shared by getAllJobs (paged JSON) and exportJobs (CSV of every match).
 
-    const query: Record<string, unknown> = {
+type ListParams = Record<string, string | undefined>;
+
+const parseId = (value: unknown, label: string) => {
+    if (typeof value !== "string" || !mongoose.Types.ObjectId.isValid(value)) {
+        throw new BadRequestError(`Invalid ${label} id.`);
+    }
+    // A real ObjectId, not the string: these filters also feed $match in
+    // aggregations (the status-tab counts), which don't cast like find() does.
+    return new mongoose.Types.ObjectId(value);
+};
+
+/** Live assignment statuses grouped per job, for the given job ids. */
+const assignmentStatusesByJob = async (jobIds: unknown[]) => {
+    const rows = await JobAssignment.aggregate<{ _id: mongoose.Types.ObjectId; statuses: string[] }>([
+        { $match: { job: { $in: jobIds }, isDeleted: false } },
+        { $group: { _id: "$job", statuses: { $push: "$status" } } },
+    ]);
+    return new Map(rows.map(r => [r._id.toString(), r.statuses]));
+};
+
+/**
+ * Job ids (from those matching `base`) that need a manager's attention,
+ * and/or that still have open places. Only upcoming draft/published jobs
+ * are considered — see attentionReasons().
+ */
+const upcomingProblemIds = async (base: Record<string, unknown>) => {
+    const today = toUtcDay(new Date());
+    const candidates = await Job.find({
+        ...base,
+        status: { $in: ["draft", "published"] },
+        date: { ...(base.date as object | undefined), $gte: maxDate((base.date as any)?.$gte, today) },
+    })
+        .select("_id status date startTime endTime minutes requiredWorkers")
+        .lean();
+    const statuses = await assignmentStatusesByJob(candidates.map(j => j._id));
+    const attention = new Set<string>();
+    const unfilled = new Set<string>();
+    for (const j of candidates) {
+        const id = j._id.toString();
+        const staffing = staffingFor(j.requiredWorkers, statuses.get(id) ?? []);
+        if (staffing.open > 0) unfilled.add(id);
+        if (attentionReasons(j as any, staffing, today).length) attention.add(id);
+    }
+    return { attention, unfilled };
+};
+
+const maxDate = (a: Date | undefined, b: Date) => (a && a > b ? a : b);
+
+async function buildJobListQuery(companyId: string, params: ListParams) {
+    const { search, status, priority, client, site, worker, unassigned, unfilled, attention, start, end, sourceQuote } = params;
+
+    // Everything except the status tab, so the tabs can show their own counts.
+    const base: Record<string, unknown> = {
         isDeleted: false,
         // A recurring schedule's hidden template (status: "draft",
-        // isTemplate: true — see createJob) was never meant to be visible
-        // anywhere; it exists purely so generateOccurrences has something to
-        // copy from. Unconditional (not tucked behind the status filter
-        // below), so it stays excluded even when a manager explicitly picks
-        // "Draft" or "All" — otherwise it shows up looking like a real job
-        // with zero workers assigned, when the actual assigned worker is on
-        // the generated occurrences instead.
+        // isTemplate: true — see createJob) is never shown anywhere; it only
+        // exists for generateOccurrences to copy from. Excluded even when
+        // "Draft" or "All" is picked, or it looks like a real unstaffed job.
         isTemplate: { $ne: true },
-        // createdBy: req.user.user_id
-        company: req.user.company_id
+        company: companyId,
     };
+    const and: Record<string, unknown>[] = [];
 
-    // job.date is always normalised to UTC midnight (toUtcDay), so plain
-    // $gte/$lte bounds are exact — same pattern as workerController.ts's
-    // getMyJobs. Inclusive on both ends: "end" is a whole calendar day.
+    // job.date is always UTC midnight (toUtcDay), so plain bounds are exact.
+    // Inclusive on both ends: "end" is a whole calendar day.
     if (start || end) {
         const dateFilter: Record<string, Date> = {};
         try {
@@ -1070,129 +1101,229 @@ export const getAllJobs: MiddlewareFn = async (
         } catch {
             throw new BadRequestError("Invalid start or end date");
         }
-        query.date = dateFilter;
+        base.date = dateFilter;
+    }
+    if (client) base.client = parseId(client, "client");
+    if (site) base.site = parseId(site, "site");
+    // Powers "Jobs created from this quote" on the Quote detail page.
+    if (sourceQuote) base.sourceQuote = parseId(sourceQuote, "quote");
+    if (priority && priority !== "all") base.priority = priority;
+
+    if (search && search.trim()) {
+        // Title, location/address, site name, or the client's name — so
+        // "acme" finds every Acme job even when "Acme" isn't in the title.
+        const rx = { $regex: escapeRegExp(search.trim().slice(0, 100)), $options: "i" };
+        const [clientIds, siteIds] = await Promise.all([
+            Client.find({ company: companyId, name: rx }).distinct("_id"),
+            Site.find({ company: companyId, name: rx }).distinct("_id"),
+        ]);
+        and.push({
+            $or: [
+                { title: rx }, { location: rx }, { address: rx }, { "siteSnapshot.name": rx },
+                ...(clientIds.length ? [{ client: { $in: clientIds } }] : []),
+                ...(siteIds.length ? [{ site: { $in: siteIds } }] : []),
+            ],
+        });
+    }
+    if (worker) {
+        const workerJobIds = await JobAssignment.distinct("job", {
+            worker: parseId(worker, "worker"),
+            isDeleted: false,
+            status: { $nin: ["declined", "cancelled"] },
+        });
+        and.push({ _id: { $in: workerJobIds } });
     }
     if (unassigned && unassigned !== "false") {
-        // Jobs with zero active assignments — exclude any job id that has
-        // at least one non-deleted JobAssignment linked to it.
-        const assignedJobIds = await JobAssignment.distinct("job", { isDeleted: false });
-        query._id = { $nin: assignedJobIds };
+        // Nobody at all on the job (declined/cancelled don't count as on it).
+        const assignedJobIds = await JobAssignment.distinct("job", {
+            isDeleted: false,
+            status: { $nin: ["declined", "cancelled"] },
+        });
+        and.push({ _id: { $nin: assignedJobIds } });
     }
-    if (client) {
-        if (typeof client !== "string" || !mongoose.Types.ObjectId.isValid(client)) {
-            throw new BadRequestError("Invalid client id.");
-        }
-        query.client = client;
-    }
-    // Powers "Jobs created from this quote" on the Quote detail page.
-    if (sourceQuote) {
-        if (typeof sourceQuote !== "string" || !mongoose.Types.ObjectId.isValid(sourceQuote)) {
-            throw new BadRequestError("Invalid quote id.");
-        }
-        query.sourceQuote = sourceQuote;
-    }
-    if (search) {
-        query.title = {
-            $regex: search,
-            $options: "i",
-        };
+    if (and.length) base.$and = and;
+
+    const wantsUnfilled = !!unfilled && unfilled !== "false";
+    const wantsAttention = !!attention && attention !== "false";
+    if (wantsUnfilled || wantsAttention) {
+        const problems = await upcomingProblemIds(base);
+        const ids = [
+            ...(wantsUnfilled ? [[...problems.unfilled]] : []),
+            ...(wantsAttention ? [[...problems.attention]] : []),
+        ];
+        base.$and = [...and, ...ids.map(list => ({ _id: { $in: list.map(id => new mongoose.Types.ObjectId(id)) } }))];
     }
 
-    if (status && status !== "all") {
-        query.status = status;
-    }
+    const query: Record<string, unknown> = { ...base };
+    if (status && status !== "all") query.status = status;
+    return { base, query };
+}
 
-    if (priority && priority !== "all") {
-        query.priority = priority;
-    }
+// Plain fields Mongo can sort natively. date_* sort by the shift date —
+// more useful for a jobs list than createdAt (newest/oldest kept for
+// back-compat). Ties broken by start time so a day's jobs read in order.
+const NATIVE_SORTS: Record<string, Record<string, 1 | -1>> = {
+    newest: { createdAt: -1 },
+    oldest: { createdAt: 1 },
+    a_z: { title: 1 },
+    z_a: { title: -1 },
+    date_desc: { date: -1, startTime: -1 },
+    date_asc: { date: 1, startTime: 1 },
+    title_asc: { title: 1 },
+};
+// priority/status have a meaningful order that isn't alphabetical, so they
+// are ranked in memory. Fine at one company's scale.
+const RANK_SORTS: Record<string, { field: "priority" | "status"; order: Record<string, number>; direction: 1 | -1 }> = {
+    priority_desc: { field: "priority", order: { low: 0, medium: 1, high: 2, urgent: 3 }, direction: -1 },
+    status_asc: { field: "status", order: { draft: 0, published: 1, completed: 2, cancelled: 3 }, direction: 1 },
+};
 
-    // Plain string fields Mongo can sort natively. date_desc/date_asc sort by
-    // the job's actual shift date — more useful for a jobs list than
-    // createdAt, which newest/oldest (kept for back-compat) still use.
-    const NATIVE_SORTS: Record<string, string> = {
-        newest: "-createdAt",
-        oldest: "createdAt",
-        a_z: "title",
-        z_a: "-title",
-        date_desc: "-date",
-        date_asc: "date",
-        title_asc: "title",
-    };
-
-    // priority/status are enums with a meaningful order that isn't
-    // alphabetical (Mongo would put "high" before "low" before "medium"
-    // before "urgent" — not what "sort by priority" means). Ranked and
-    // sorted in memory instead of natively.
-    const RANK_SORTS: Record<string, { field: "priority" | "status"; order: Record<string, number>; direction: 1 | -1 }> = {
-        priority_desc: { field: "priority", order: { low: 0, medium: 1, high: 2, urgent: 3 }, direction: -1 },
-        status_asc: { field: "status", order: { draft: 0, published: 1, completed: 2, cancelled: 3 }, direction: 1 },
-    };
-
-    const currentPage = Number(page);
-    const skip = (currentPage - 1) * limit;
-    const rankSort = sort ? RANK_SORTS[sort] : undefined;
-
-    let jobs: InstanceType<typeof Job>[];
-    let totalJobs: number;
-
+async function findJobs(query: Record<string, unknown>, sort: string, skip: number, limit: number) {
+    const rankSort = RANK_SORTS[sort];
     if (rankSort) {
-        // Fine at this app's scale (one company's jobs) — revisit with an
-        // aggregation $addFields rank if that ever stops being true.
-        const allMatching = await Job.find(query).populate("client", "name");
-        allMatching.sort((a: any, b: any) => {
+        const all = await Job.find(query).populate("client", "name").populate("site", "name");
+        all.sort((a: any, b: any) => {
             const ra = rankSort.order[a[rankSort.field]] ?? -1;
             const rb = rankSort.order[b[rankSort.field]] ?? -1;
-            return (ra - rb) * rankSort.direction;
+            return (ra - rb) * rankSort.direction || a.date - b.date;
         });
-        totalJobs = allMatching.length;
-        jobs = allMatching.slice(skip, skip + limit);
-    } else {
-        jobs = await Job.find(query)
+        return { jobs: all.slice(skip, skip + limit), total: all.length };
+    }
+    const [jobs, total] = await Promise.all([
+        Job.find(query)
             .populate("client", "name")
-            .sort(NATIVE_SORTS[sort ?? "newest"] ?? "-createdAt")
+            .populate("site", "name")
+            .sort(NATIVE_SORTS[sort] ?? NATIVE_SORTS.date_asc)
             .skip(skip)
-            .limit(limit);
-        totalJobs = await Job.countDocuments(query);
+            .limit(limit),
+        Job.countDocuments(query),
+    ]);
+    return { jobs, total };
+}
+
+/** Adds workers, staffing, attention reasons and multi-day / repeat labels to each job. */
+async function enrichJobs(jobs: InstanceType<typeof Job>[], companyId: string) {
+    const ids = jobs.map(j => j._id);
+    const assignments = await JobAssignment.find({ job: { $in: ids }, isDeleted: false })
+        .populate("worker", "fullname email profilePhoto worker")
+        .lean();
+
+    // Flatten the populated worker onto the assignment — same shape getJob
+    // returns: { fullname, email, ... } directly, no nested `worker`.
+    const byJob = new Map<string, any[]>();
+    for (const { worker, ...rest } of assignments) {
+        const flat = {
+            ...rest,
+            email: (worker as any)?.email,
+            profilePhoto: (worker as any)?.profilePhoto ?? null,
+            worker: (worker as any)?._id,
+        };
+        const key = rest.job.toString();
+        byJob.set(key, [...(byJob.get(key) ?? []), flat]);
     }
 
-    const assignments = await JobAssignment.find({
-        job: {
-            $in: jobs.map(job => job._id),
-        },
-        isDeleted: false,
-    }).populate("worker", "fullname email profilePhoto worker").lean();
+    const groups = [...new Set(jobs.map(j => j.bookingGroup).filter(Boolean))] as string[];
+    const recurringIds = [...new Set(jobs.map(j => j.recurringJob?.toString()).filter(Boolean))];
+    const [groupJobs, recurring] = await Promise.all([
+        groups.length
+            ? Job.find({ company: companyId, bookingGroup: { $in: groups }, isDeleted: false })
+                .select("_id bookingGroup date").lean()
+            : [],
+        recurringIds.length
+            ? recurringJobModel.find({ _id: { $in: recurringIds } }).select("frequency interval").lean()
+            : [],
+    ]);
+    const positions = bookingPositions(groupJobs as any);
+    const repeatById = new Map<string, string | null>((recurring as any[]).map(r => [r._id.toString(), describeRepeat(r.frequency, r.interval)]));
+    const today = toUtcDay(new Date());
 
-    // Flatten the populated worker onto the assignment — same shape as
-    // getJob returns: { fullname, email, ... } directly, no nested `worker`.
-    const flatAssignments = assignments.map(({ worker, ...rest }) => ({
-        ...rest,
-        email: (worker as any)?.email,
-        profilePhoto: (worker as any)?.profilePhoto ?? null,
-        worker: (worker as any)?._id,
-    }));
+    return jobs.map(job => {
+        const id = job._id.toString();
+        const workers = byJob.get(id) ?? [];
+        const staffing = staffingFor(job.requiredWorkers, workers.map(w => w.status));
+        return {
+            ...job.toObject(),
+            workers,
+            staffing,
+            attention: attentionReasons(job as any, staffing, today),
+            bookingPosition: positions.get(id) ?? null,
+            repeat: job.recurringJob ? repeatById.get(job.recurringJob.toString()) ?? null : null,
+        };
+    });
+}
 
-    const assignmentMap = flatAssignments.reduce((acc, assignment) => {
-        const key = assignment.job.toString();
+export const getAllJobs: MiddlewareFn = async (req, res): Promise<void> => {
+    const params = req.query as ListParams;
+    const companyId = String(req.user.company_id);
+    const sort = params.sort ?? "date_asc";
+    const limit = Math.min(200, Math.max(1, Number(params.limit) || 100));
+    const currentPage = Math.max(1, Number(params.page) || 1);
 
-        if (!acc[key]) {
-            acc[key] = [];
-        }
+    const { base, query } = await buildJobListQuery(companyId, params);
+    const [{ jobs, total }, counts, problems] = await Promise.all([
+        findJobs(query, sort, (currentPage - 1) * limit, limit),
+        Job.aggregate<{ _id: string; n: number }>([{ $match: base }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
+        // Badge for the "Needs attention" chip: same filters, any status tab.
+        upcomingProblemIds(base),
+    ]);
 
-        acc[key].push(assignment);
+    const statusCounts: Record<string, number> = { all: 0, draft: 0, published: 0, completed: 0, cancelled: 0 };
+    for (const c of counts) {
+        statusCounts[c._id] = c.n;
+        statusCounts.all += c.n;
+    }
 
-        return acc;
-    }, {} as Record<string, typeof flatAssignments>);
-    const result = jobs.map(job => ({
-        ...job.toObject(),
-        workers: assignmentMap[job._id.toString()] ?? [],
-    }));
     res.status(StatusCodes.OK).json({
         success: true,
-        jobs: result,
-        totalJobs,
-        totalPages: Math.ceil(totalJobs / limit),
+        jobs: await enrichJobs(jobs, companyId),
+        totalJobs: total,
+        totalPages: Math.ceil(total / limit),
         currentPage,
+        statusCounts,
+        attentionCount: problems.attention.size,
     });
+};
+
+const EXPORT_LIMIT = 5000;
+
+// GET /jobs/export — the same filters as the list, every match, as CSV.
+export const exportJobs: MiddlewareFn = async (req, res): Promise<void> => {
+    const params = req.query as ListParams;
+    const companyId = String(req.user.company_id);
+    const { query } = await buildJobListQuery(companyId, params);
+    const { jobs, total } = await findJobs(query, params.sort ?? "date_asc", 0, EXPORT_LIMIT);
+    const rows = await enrichJobs(jobs, companyId);
+
+    const csv = toCsv([
+        ["Date", "Start", "End", "Hours", "Title", "Client", "Site", "Location", "Status", "Priority",
+            "Workers needed", "Confirmed", "Invited", "Workers", "Booking", "Repeats"],
+        ...rows.map((j: any) => [
+            dayjs.utc(j.date).format("YYYY-MM-DD"),
+            j.startTime,
+            j.endTime,
+            Math.round(((j.minutes ?? 0) / 60) * 100) / 100,
+            j.title,
+            j.client?.name ?? "",
+            j.site?.name ?? j.siteSnapshot?.name ?? "",
+            j.location,
+            j.status,
+            j.priority,
+            j.staffing.required,
+            j.staffing.filled,
+            j.staffing.pending,
+            j.workers
+                .filter((w: any) => w.status !== "declined" && w.status !== "cancelled")
+                .map((w: any) => w.fullname ?? w.email)
+                .join("; "),
+            j.bookingPosition ? `Day ${j.bookingPosition.day} of ${j.bookingPosition.of}` : "",
+            j.repeat ?? "",
+        ]),
+    ]);
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="jobs-${dayjs().format("YYYY-MM-DD")}.csv"`);
+    if (total > EXPORT_LIMIT) res.setHeader("X-Export-Truncated", String(total));
+    res.status(StatusCodes.OK).send("﻿" + csv);
 };
 export const duplicateJob: MiddlewareFn = async (req, res) => {
     const { id } = req.params;
@@ -1213,11 +1344,34 @@ export const duplicateJob: MiddlewareFn = async (req, res) => {
     delete jobData.updatedAt;
     delete jobData.__v;
 
+    // "Copy to next week" sends { shiftDays: 7 }: same job, a week later,
+    // same title. A plain duplicate keeps the date and says "(Copy)".
+    const shiftDays = Number(req.body?.shiftDays ?? 0);
+    if (!Number.isInteger(shiftDays) || shiftDays < 0 || shiftDays > 366) {
+        throw new BadRequestError("shiftDays must be a whole number of days between 0 and 366.");
+    }
+    await assertCanCreateJob(companyId, 1);
+
     const duplicatedJob = await Job.create({
         ...jobData,
 
-        // Optional: make it obvious this is a duplicate
-        title: `${jobData.title} (Copy)`,
+        title: shiftDays ? jobData.title : `${jobData.title} (Copy)`,
+        date: shiftDays ? dayjs.utc(jobData.date).add(shiftDays, "day").toDate() : jobData.date,
+        // A copy is its own booking — keeping the group would turn
+        // "Day 1 of 3" into "Day 1 of 4" on the originals.
+        bookingGroup: null,
+        // Fresh job: none of the source's reminders/alerts/billing apply.
+        invoice: null,
+        billingStatus: jobData.billingStatus === "not_billable" ? "not_billable" : "pending",
+        clientReminderSentAt: null,
+        unfilledDayBeforeAlertSentAt: null,
+        unfilledUrgentAlertSentAt: null,
+        creatorStartingSoonAlertSentAt: null,
+        clientCompletedNotifiedAt: null,
+        clientRating: undefined,
+        clientReviewComment: undefined,
+        clientReviewedAt: undefined,
+        checklist: (jobData.checklist ?? []).map((i: any) => ({ text: i.text, done: false, completedBy: null, completedAt: null })),
 
         // Usually safer to reset these
         status: "draft",
@@ -1238,7 +1392,8 @@ export const duplicateJob: MiddlewareFn = async (req, res) => {
         createdBy: req.user.user_id,
     });
 
-    const jobAssignments = await JobAssignment.find({ job: job._id, isDeleted: false });
+    // Only people still on the source job — not those who declined or were removed.
+    const jobAssignments = await JobAssignment.find({ job: job._id, isDeleted: false, status: { $nin: ["declined", "cancelled"] } });
 
     if (jobAssignments.length) {
         const autoAcceptWorkerIds = new Set(

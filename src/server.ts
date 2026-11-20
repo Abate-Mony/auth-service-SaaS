@@ -117,6 +117,8 @@ app.use(
   cors({
     origin: ALLOWED_ORIGINS,
     credentials: true,
+    // Lets the web app read these off download responses (jobs export).
+    exposedHeaders: ["Content-Disposition", "X-Export-Truncated"],
   })
 );
 cloudinary.config({
