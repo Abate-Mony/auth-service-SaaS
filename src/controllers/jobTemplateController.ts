@@ -45,7 +45,7 @@ const templateSchema = z.object({
     openToClaims: z.boolean().default(false),
     requiresApproval: z.boolean().default(true),
     autoAccept: z.boolean().default(false),
-}).strict();
+}); // Unknown keys (e.g. _id, company, timestamps echoed back) are dropped, not rejected.
 
 /** Times come as a pair or not at all; the price field that isn't used is zeroed. */
 const normalise = <T extends Partial<z.infer<typeof templateSchema>>>(data: T): T => {
@@ -109,7 +109,11 @@ export const createJobTemplate: MiddlewareFn = async (req, res) => {
 
 export const updateJobTemplate: MiddlewareFn = async (req, res) => {
     const template = await findOwnTemplate(req);
-    const data = parseOrThrow(templateSchema.partial(), req.body);
+    // Only fields actually sent — .partial() alone would still fill in
+    // the schema defaults and silently reset everything else.
+    const sent = Object.keys(req.body ?? {});
+    const parsed = parseOrThrow(templateSchema.partial(), req.body);
+    const data = Object.fromEntries(Object.entries(parsed).filter(([k]) => sent.includes(k))) as typeof parsed;
     if (!Object.keys(data).length) throw new BadRequestError("No valid fields provided.");
     // Check the pair/price rules against the merged result, not just the patch.
     const merged = normalise({ ...template.toObject(), ...data } as any);
