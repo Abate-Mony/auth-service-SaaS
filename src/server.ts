@@ -53,6 +53,7 @@ import recurringJobRouter from "./routes/recurringJobRouter.js";
 import clientRouter from "./routes/clientRouter.js";
 import leadRouter from "./routes/leadRouter.js";
 import siteRouter from "./routes/siteRouter.js";
+import jobTemplateRouter from "./routes/jobTemplateRouter.js";
 import invoiceRouter from "./routes/invoiceRouter.js";
 import invoiceTemplateRouter from "./routes/invoiceTemplateRouter.js";
 import quoteRouter from "./routes/quoteRouter.js";
@@ -219,6 +220,7 @@ app.use("/api/v1/recurring-jobs", authenticateUser, loadRestriction, enforceComp
 app.use("/api/v1/clients", authenticateUser, loadRestriction, enforceCompanyStatus, clientRouter)
 app.use("/api/v1/leads", authenticateUser, loadRestriction, enforceCompanyStatus, leadRouter)
 app.use("/api/v1/sites", authenticateUser, loadRestriction, enforceCompanyStatus, siteRouter)
+app.use("/api/v1/job-templates", authenticateUser, loadRestriction, enforceCompanyStatus, jobTemplateRouter)
 app.use("/api/v1/invoices", authenticateUser, loadRestriction, enforceCompanyStatus, invoiceRouter)
 app.use("/api/v1/invoice-templates", authenticateUser, loadRestriction, enforceCompanyStatus, invoiceTemplateRouter)
 // Not wrapped in authenticateUser at this level — the public quote
