@@ -48,6 +48,58 @@ export const getRecurringJobs: MiddlewareFn = async (req, res) => {
         },
       },
       { $unwind: { path: "$templateJob", preserveNullAndEmptyArrays: true } },
+      // Who the schedule is for and who usually does it, for the list cards.
+      // Added as new top-level fields (clientInfo / siteInfo / workers) so
+      // templateJob.client stays the plain id existing callers expect.
+      {
+        $lookup: {
+          from: "clients",
+          localField: "templateJob.client",
+          foreignField: "_id",
+          as: "clientInfo",
+        },
+      },
+      {
+        $lookup: {
+          from: "sites",
+          localField: "templateJob.site",
+          foreignField: "_id",
+          as: "siteInfo",
+        },
+      },
+      {
+        $lookup: {
+          from: "users",
+          localField: "defaultWorkers",
+          foreignField: "_id",
+          as: "workers",
+        },
+      },
+      {
+        // Keep only what the cards show — never whole user/client documents.
+        $addFields: {
+          clientInfo: {
+            $let: {
+              vars: { c: { $first: "$clientInfo" } },
+              in: { $cond: [{ $ifNull: ["$$c", false] }, { _id: "$$c._id", name: "$$c.name" }, null] },
+            },
+          },
+          // Fall back to the name saved on the job if the site was deleted.
+          siteInfo: {
+            $let: {
+              vars: { s: { $first: "$siteInfo" } },
+              in: {
+                $cond: [
+                  { $ifNull: ["$$s", false] },
+                  { _id: "$$s._id", name: "$$s.name", city: "$$s.address.city", postcode: "$$s.address.postcode" },
+                  { $cond: [{ $ifNull: ["$templateJob.siteSnapshot.name", false] }, { name: "$templateJob.siteSnapshot.name" }, null] },
+                ],
+              },
+            },
+          },
+          workers: { $map: { input: "$workers", as: "w", in: { _id: "$$w._id", fullname: "$$w.fullname" } } },
+        },
+      },
       {
         $lookup: {
           from: "jobs",
