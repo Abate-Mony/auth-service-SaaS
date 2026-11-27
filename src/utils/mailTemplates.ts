@@ -427,18 +427,24 @@ export async function sendUnfilledShiftUrgentAlert({
   manager,
   job,
   company,
+  minutesUntilStart,
 }: {
   manager: { email: string; fullname: string };
   job: ShiftJob;
   company: CompanyRef;
+  minutesUntilStart?: number;
 }) {
   const firstName = manager.fullname.split(" ")[0];
+  const startsIn =
+    minutesUntilStart === undefined || minutesUntilStart >= 50
+      ? "in about an hour"
+      : `in ${Math.max(1, Math.round(minutesUntilStart))} minute${Math.round(minutesUntilStart) === 1 ? "" : "s"}`;
   const when = dayjs(job.date).tz(TZ).format("dddd D MMMM");
   const link = `${process.env.CLIENT_URL}/jobs/${job._id}`;
 
   const body = `
     <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#DC2626;font-weight:600;">
-      Hi ${firstName}, this shift starts in about an hour and still has nobody confirmed.
+      Hi ${firstName}, this shift starts ${startsIn} and still has nobody confirmed.
     </p>
 
     <table style="width:100%;border-collapse:collapse;background:#F8FAFC;border-radius:12px;padding:4px 16px;">
@@ -456,7 +462,7 @@ export async function sendUnfilledShiftUrgentAlert({
     subject: `Urgent — unfilled shift starting soon: ${job.title}`,
     text:
       `Hi ${firstName},\n\n` +
-      `This shift starts in about an hour and still has nobody confirmed.\n\n` +
+      `This shift starts ${startsIn} and still has nobody confirmed.\n\n` +
       `Job: ${job.title}\n` +
       `Date: ${when}\n` +
       `Time: ${job.startTime} – ${job.endTime}\n` +

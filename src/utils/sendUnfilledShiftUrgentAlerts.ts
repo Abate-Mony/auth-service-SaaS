@@ -6,6 +6,7 @@
 // and nothing goes out.
 import Job from "../models/jobModel.js";
 import JobAssignment from "../models/JobAssignment.js";
+import { STAFFED_STATUSES } from "./assignmentStatus.js";
 import userModel from "../models/userModel.js";
 import { scheduledStartOf } from "./dates.js";
 import { MANAGEMENT_ROLES } from "./roles.js";
@@ -49,7 +50,11 @@ export async function sendUnfilledShiftUrgentAlerts() {
       (
         await JobAssignment.distinct("job", {
           job: { $in: dueJobs.map(job => job._id) },
-          status: "accepted",
+          // Anyone who has said yes counts — including a worker who has
+          // already clocked in early ("in-progress") or finished. Checking
+          // only "accepted" made a shift look unfilled the moment its
+          // worker clocked in, and the alert fired anyway.
+          status: { $in: STAFFED_STATUSES },
           isDeleted: false,
         })
       ).map(id => id.toString())
@@ -91,6 +96,7 @@ export async function sendUnfilledShiftUrgentAlerts() {
                         minutes: job.minutes,
                       },
                       company: job.company,
+                      minutesUntilStart: (scheduledStartOf(job).getTime() - Date.now()) / 60000,
                     })
                   : Promise.resolve(),
                 canPush
