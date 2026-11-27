@@ -10,6 +10,7 @@
 import dayjs from "./dayjsSetup.js";
 import Job from "../models/jobModel.js";
 import JobAssignment from "../models/JobAssignment.js";
+import { STAFFED_STATUSES } from "./assignmentStatus.js";
 import Company from "../models/company.js";
 import userModel from "../models/userModel.js";
 import { TZ } from "./dates.js";
@@ -61,7 +62,11 @@ export async function sendUnfilledShiftDayBeforeAlerts() {
       (
         await JobAssignment.distinct("job", {
           job: { $in: dueJobs.map(job => job._id) },
-          status: "accepted",
+          // Anyone who has said yes counts — including a worker who has
+          // already clocked in early ("in-progress") or finished. Checking
+          // only "accepted" made a shift look unfilled the moment its
+          // worker clocked in, and the alert fired anyway.
+          status: { $in: STAFFED_STATUSES },
           isDeleted: false,
         })
       ).map(id => id.toString())
