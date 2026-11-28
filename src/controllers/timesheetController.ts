@@ -12,7 +12,7 @@ import { TZ } from "../utils/dates.js";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
 import { isManagementRole } from "../utils/roles.js";
-import { splitAssignmentPay } from "../utils/pay.js";
+import { approvedOvertimeMinutesOf, splitAssignmentPay } from "../utils/pay.js";
 import { fetchImageBuffer } from "../utils/fetchImageBuffer.js";
 
 dayjs.extend(utc);
@@ -282,8 +282,12 @@ const streamTimesheetPdf = async (
           // shift. Only approved overtime counts toward the overtime
           // summary; pending/rejected extra time is left off entirely.
           const approvedTotal = assignment.approvedMinutes ?? workedMinutes;
-          const approvedOvertimeMinutes =
-            assignment.overtimeStatus === "approved" ? (assignment.overtimeMinutes ?? 0) : 0;
+          const approvedOvertimeMinutes = approvedOvertimeMinutesOf({
+            payableMinutes: approvedTotal,
+            overtimeMinutes: assignment.overtimeMinutes,
+            overtimeStatus: assignment.overtimeStatus,
+            actualMinutes: assignment.actualMinutes ?? workedMinutes,
+          });
           const pendingOvertimeMinutes =
             assignment.overtimeStatus === "pending" ? (assignment.overtimeMinutes ?? 0) : 0;
           // Worked but not paid because a manager declined the extra time.
@@ -299,6 +303,7 @@ const streamTimesheetPdf = async (
               overtimeMinutes: assignment.overtimeMinutes,
               overtimeStatus: assignment.overtimeStatus,
               payRate: assignment.payRate,
+              actualMinutes: assignment.actualMinutes ?? workedMinutes,
             },
             overtimeMultiplier
           );

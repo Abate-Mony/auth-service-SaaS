@@ -23,6 +23,30 @@ export interface AssignmentPayInput {
   overtimeMinutes?: number | null;
   overtimeStatus?: string | null;
   payRate?: number | null;
+  /** Time actually worked (after breaks). Needed to read an "adjust" correctly. */
+  actualMinutes?: number | null;
+}
+
+/**
+ * The overtime a manager actually allowed.
+ *
+ * overtimeMinutes is the extra time the worker *recorded* beyond the
+ * scheduled length, and it isn't changed by the review. "Approve" pays all
+ * of it, but "adjust" (pay a set number of minutes, e.g. cut 2h22 down to
+ * 2h on a 1h30 job) also marks the overtime approved — so using
+ * overtimeMinutes as-is reported 52 minutes of overtime when only 30 were
+ * paid, mislabelling regular time as overtime (and overpaying it whenever
+ * the overtime multiplier is above 1).
+ *
+ * The scheduled part is actualMinutes − overtimeMinutes; whatever is paid
+ * beyond that is the allowed overtime, never more than what was recorded.
+ */
+export function approvedOvertimeMinutesOf(a: AssignmentPayInput): number {
+  if (a.overtimeStatus !== "approved") return 0;
+  const recorded = Math.max(0, a.overtimeMinutes ?? 0);
+  if (a.actualMinutes == null) return recorded;
+  const scheduled = Math.max(0, a.actualMinutes - recorded);
+  return Math.min(recorded, Math.max(0, a.payableMinutes - scheduled));
 }
 
 export interface PaySplit {
@@ -35,7 +59,7 @@ export interface PaySplit {
 
 export function splitAssignmentPay(a: AssignmentPayInput, overtimeMultiplier: number): PaySplit {
   const rate = a.payRate ?? 0;
-  const overtimeMinutes = a.overtimeStatus === "approved" ? (a.overtimeMinutes ?? 0) : 0;
+  const overtimeMinutes = approvedOvertimeMinutesOf(a);
   const regularMinutes = Math.max(0, a.payableMinutes - overtimeMinutes);
   const regularPay = (regularMinutes / 60) * rate;
   const overtimePay = (overtimeMinutes / 60) * rate * overtimeMultiplier;

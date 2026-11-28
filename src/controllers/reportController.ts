@@ -39,6 +39,7 @@ type LeanAssignment = {
   breaks?: { startedAt?: Date | null; endedAt?: Date | null }[];
   approvedMinutes?: number | null;
   overtimeMinutes?: number;
+  actualMinutes?: number | null;
   overtimeStatus?: string;
   payRate?: number;
 };
@@ -96,7 +97,7 @@ const getJobsAndAssignments = async (companyId: string, start: Date, end: Date) 
 
   const assignments = jobIds.length
     ? await JobAssignment.find({ job: { $in: jobIds }, isDeleted: false })
-        .select("job worker fullname status checkedInAt checkedOutAt breaks approvedMinutes overtimeMinutes overtimeStatus payRate")
+        .select("job worker fullname status checkedInAt checkedOutAt breaks approvedMinutes actualMinutes overtimeMinutes overtimeStatus payRate")
         .lean<LeanAssignment[]>()
     : [];
 
@@ -253,7 +254,7 @@ export const getReportsPayroll: MiddlewareFn = async (req, res) => {
       regularPay: 0,
       overtimePay: 0,
     };
-    const split = splitAssignmentPay({ payableMinutes: payableMinutesOf(a), overtimeMinutes: a.overtimeMinutes, overtimeStatus: a.overtimeStatus, payRate: a.payRate }, overtimeMultiplier);
+    const split = splitAssignmentPay({ payableMinutes: payableMinutesOf(a), overtimeMinutes: a.overtimeMinutes, overtimeStatus: a.overtimeStatus, payRate: a.payRate, actualMinutes: a.actualMinutes }, overtimeMultiplier);
     entry.regularMinutes += split.regularMinutes;
     entry.overtimeMinutes += split.overtimeMinutes;
     entry.regularPay += split.regularPay;
