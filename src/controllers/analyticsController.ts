@@ -8,6 +8,7 @@ import JobAssignment from "../models/JobAssignment.js";
 import Company from "../models/company.js";
 import userModel from "../models/userModel.js";
 import { scheduledEndOf, scheduledStartOf, TZ } from "../utils/dates.js";
+import { approvedOvertimeMinutesOf } from "../utils/pay.js";
 
 type RangeKey = "7d" | "30d" | "90d" | "year";
 const RANGE_KEYS: RangeKey[] = ["7d", "30d", "90d", "year"];
@@ -32,6 +33,7 @@ type LeanAssignment = {
   breaks?: { startedAt?: Date | null; endedAt?: Date | null }[];
   approvedMinutes?: number | null;
   overtimeMinutes?: number;
+  actualMinutes?: number | null;
   overtimeStatus?: string;
 };
 
@@ -54,7 +56,12 @@ const payableMinutesOf = (a: LeanAssignment): number =>
 
 const overtimeSplitOf = (a: LeanAssignment): { regular: number; overtime: number } => {
   const payable = payableMinutesOf(a);
-  const approvedOvertime = a.overtimeStatus === "approved" ? (a.overtimeMinutes ?? 0) : 0;
+  const approvedOvertime = approvedOvertimeMinutesOf({
+    payableMinutes: payable,
+    overtimeMinutes: a.overtimeMinutes,
+    overtimeStatus: a.overtimeStatus,
+    actualMinutes: a.actualMinutes ?? workedMinutesOf(a),
+  });
   return { regular: Math.max(0, payable - approvedOvertime), overtime: approvedOvertime };
 };
 
@@ -165,7 +172,7 @@ export const getAnalytics: MiddlewareFn = async (req, res) => {
 
   const rangeAssignments = rangeJobIds.length
     ? await JobAssignment.find({ job: { $in: rangeJobIds }, isDeleted: false })
-        .select("job worker status checkedInAt checkedOutAt breaks approvedMinutes overtimeMinutes overtimeStatus")
+        .select("job worker status checkedInAt checkedOutAt breaks approvedMinutes actualMinutes overtimeMinutes overtimeStatus")
         .lean<LeanAssignment[]>()
     : [];
 
@@ -347,7 +354,7 @@ export const getAnalytics: MiddlewareFn = async (req, res) => {
   const overtimeJobIds = overtimeJobs.map(j => j._id);
   const overtimeAssignments = overtimeJobIds.length
     ? await JobAssignment.find({ job: { $in: overtimeJobIds }, isDeleted: false, status: "completed" })
-        .select("job checkedInAt checkedOutAt breaks approvedMinutes overtimeMinutes overtimeStatus")
+        .select("job checkedInAt checkedOutAt breaks approvedMinutes actualMinutes overtimeMinutes overtimeStatus")
         .lean<LeanAssignment[]>()
     : [];
 

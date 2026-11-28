@@ -350,6 +350,7 @@ export const getWorkerDashboardStats: MiddlewareFn = async (req, res) => {
                                 overtimeMinutes: 1,
                                 overtimeStatus: 1,
                                 payRate: 1,
+                                actualMinutes: 1,
                             },
                         },
                     ],
@@ -382,6 +383,7 @@ export const getWorkerDashboardStats: MiddlewareFn = async (req, res) => {
         overtimeMinutes?: number;
         overtimeStatus?: string;
         payRate?: number;
+        actualMinutes?: number;
     }[] = result.monthlyAssignments ?? [];
 
     let totalMinutes = 0;
@@ -714,7 +716,7 @@ export const getMyEarnings: MiddlewareFn = async (req, res) => {
             // manager-approved overtime, under-reporting what they'd
             // actually be paid.
             const split = splitAssignmentPay(
-                { payableMinutes: minutes, overtimeMinutes: row.overtimeMinutes, overtimeStatus: row.overtimeStatus, payRate: rate },
+                { payableMinutes: minutes, overtimeMinutes: row.overtimeMinutes, overtimeStatus: row.overtimeStatus, payRate: rate, actualMinutes: row.actualMinutes },
                 overtimeMultiplier
             );
             earned.amount += split.totalPay;
