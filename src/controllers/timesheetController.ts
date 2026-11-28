@@ -7,9 +7,16 @@ import { StatusCodes } from "http-status-codes";
 import userModel from "../models/userModel.js";
 import Company from "../models/company.js";
 import { generateTimesheetPdf, TimesheetPdfRow } from "../utils/timesheetPdf.js";
+import { cleanAddress, cleanJobTitle } from "../utils/timesheetFormat.js";
+import { TZ } from "../utils/dates.js";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
 import { isManagementRole } from "../utils/roles.js";
 import { splitAssignmentPay } from "../utils/pay.js";
 import { fetchImageBuffer } from "../utils/fetchImageBuffer.js";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 type Period = "weekly" | "biweekly" | "monthly";
 
@@ -251,6 +258,7 @@ const streamTimesheetPdf = async (
     let overtimePay = 0;
     const overtimeMultiplier = company.overtimeMultiplier ?? 1.5;
 
+    const tz = company.timezone || TZ;
     const rows: TimesheetPdfRow[] =
       assignments
         .filter(
@@ -262,79 +270,28 @@ const streamTimesheetPdf = async (
         .map((assignment: any) => {
           const job = assignment.job;
 
-          const grossMinutes =
-            dayjs(
-              assignment.checkedOutAt
-            ).diff(
-              dayjs(
-                assignment.checkedInAt
-              ),
-              "minute"
-            );
-
-          const breakMinutes =
-            (
-              assignment.breaks ?? []
-            ).reduce(
-              (
-                total: number,
-                breakItem: any
-              ) => {
-                if (
-                  !breakItem.startedAt ||
-                  !breakItem.endedAt
-                ) {
-                  return total;
-                }
-
-                return (
-                  total +
-                  dayjs(
-                    breakItem.endedAt
-                  ).diff(
-                    dayjs(
-                      breakItem.startedAt
-                    ),
-                    "minute"
-                  )
-                );
-              },
-              0
-            );
-
-          const workedMinutes =
-            Math.max(
-              0,
-              grossMinutes -
-              breakMinutes
-            );
+          const grossMinutes = dayjs(assignment.checkedOutAt).diff(dayjs(assignment.checkedInAt), "minute");
+          const breakMinutes = (assignment.breaks ?? []).reduce((total: number, b: any) => {
+            if (!b.startedAt || !b.endedAt) return total;
+            return total + dayjs(b.endedAt).diff(dayjs(b.startedAt), "minute");
+          }, 0);
+          const workedMinutes = Math.max(0, grossMinutes - breakMinutes);
 
           // approvedMinutes is what payroll actually pays for — capped
           // below workedMinutes until a manager approves an over-running
           // shift. Only approved overtime counts toward the overtime
           // summary; pending/rejected extra time is left off entirely.
-          const approvedTotal =
-            assignment.approvedMinutes ??
-            workedMinutes;
-
+          const approvedTotal = assignment.approvedMinutes ?? workedMinutes;
           const approvedOvertimeMinutes =
-            assignment.overtimeStatus === "approved"
-              ? (assignment.overtimeMinutes ?? 0)
-              : 0;
-
+            assignment.overtimeStatus === "approved" ? (assignment.overtimeMinutes ?? 0) : 0;
           const pendingOvertimeMinutes =
-            assignment.overtimeStatus === "pending"
-              ? (assignment.overtimeMinutes ?? 0)
-              : 0;
+            assignment.overtimeStatus === "pending" ? (assignment.overtimeMinutes ?? 0) : 0;
+          // Worked but not paid because a manager declined the extra time.
+          const declinedOvertimeMinutes =
+            assignment.overtimeStatus === "rejected" ? Math.max(0, workedMinutes - approvedTotal) : 0;
 
-          overtimeMinutes +=
-            approvedOvertimeMinutes;
-
-          regularMinutes += Math.max(
-            0,
-            approvedTotal -
-            approvedOvertimeMinutes
-          );
+          overtimeMinutes += approvedOvertimeMinutes;
+          regularMinutes += Math.max(0, approvedTotal - approvedOvertimeMinutes);
 
           const paySplit = splitAssignmentPay(
             {
@@ -345,42 +302,33 @@ const streamTimesheetPdf = async (
             },
             overtimeMultiplier
           );
-
           regularPay += paySplit.regularPay;
           overtimePay += paySplit.overtimePay;
 
+          // job.date is UTC midnight for the shift's calendar day; fall
+          // back to the clock-in day in the company's time zone.
+          const dayKey = job.date
+            ? dayjs.utc(job.date).format("YYYY-MM-DD")
+            : dayjs(assignment.checkedInAt).tz(tz).format("YYYY-MM-DD");
+
           return {
-            date:
-              job.date ??
-              assignment.checkedInAt,
-
-            jobTitle: job.title,
-
-            location:
-              job.address
-                ? `${job.location}, ${job.address}`
-                : job.location ?? "—",
-
-            /*
-             * PDF shows actual check-in/out.
-             * If you want scheduled time instead,
-             * use job.startTime/job.endTime.
-             */
-            startTime: dayjs(
-              assignment.checkedInAt
-            ).format("HH:mm"),
-
-            endTime: dayjs(
-              assignment.checkedOutAt
-            ).format("HH:mm"),
-
+            dayKey,
+            jobTitle: cleanJobTitle(job.title),
+            address: cleanAddress(job.siteSnapshot?.name, job.location, job.address),
+            // Actual clock-in/out, shown in the company's time zone (not
+            // the server's, which would be an hour out during BST).
+            startTime: dayjs(assignment.checkedInAt).tz(tz).format("HH:mm"),
+            endTime: dayjs(assignment.checkedOutAt).tz(tz).format("HH:mm"),
             breakMinutes,
-
-            workedMinutes: approvedTotal,
-
+            paidMinutes: approvedTotal,
+            approvedOvertimeMinutes,
+            declinedOvertimeMinutes,
             pendingOvertimeMinutes,
+            payRate: assignment.payRate,
           };
-        });
+        })
+        // Shift order, not clock-in order (a late-night clock-in can sort oddly).
+        .sort((a, b) => a.dayKey.localeCompare(b.dayKey) || a.startTime.localeCompare(b.startTime));
 
     const logoBuffer = await fetchImageBuffer(company.logo?.url);
 
@@ -413,6 +361,7 @@ const streamTimesheetPdf = async (
           regularPay,
           overtimePay,
           currency: company.currency ?? "GBP",
+          overtimeMultiplier,
         },
 
         logoBuffer,
