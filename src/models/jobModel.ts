@@ -1,5 +1,6 @@
 import mongoose, { InferSchemaType, Schema } from "mongoose";
 import { FileRefSchema } from "./shared/fileRefSchema.js";
+import { tidyAddress } from "../utils/addressFormat.js";
 
 const JobSchema = new Schema(
     {
@@ -278,6 +279,26 @@ JobSchema.pre("validate", async function () {
     this.chargeAmount = 0;
   }
 });
+
+// Store addresses without repeated parts, whichever way a job is written
+// (create, save, insertMany for recurring occurrences, or an update).
+JobSchema.pre("validate", function () {
+  if (this.isModified("address") && this.address) this.address = tidyAddress(this.address);
+  if (this.isModified("location") && this.location) this.location = tidyAddress(this.location);
+});
+
+const tidyUpdateAddresses = function (this: mongoose.Query<unknown, unknown>) {
+  const update = this.getUpdate() as Record<string, any> | null;
+  if (!update || Array.isArray(update)) return;
+  for (const target of [update, update.$set].filter(Boolean)) {
+    for (const key of ["address", "location"]) {
+      if (typeof target[key] === "string") target[key] = tidyAddress(target[key]);
+    }
+  }
+};
+JobSchema.pre("findOneAndUpdate", tidyUpdateAddresses);
+JobSchema.pre("updateOne", tidyUpdateAddresses);
+JobSchema.pre("updateMany", tidyUpdateAddresses);
 
 export type Job = InferSchemaType<typeof JobSchema>;
 export default mongoose.model("Job", JobSchema);

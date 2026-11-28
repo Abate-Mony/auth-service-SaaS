@@ -1,38 +1,25 @@
 // Pure formatting helpers for the timesheet PDF (timesheetPdf.ts). No I/O,
 // so they're unit-tested directly (tests/timesheet-format.test.cjs).
 
-const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+import { tidyAddress } from "./addressFormat.js";
+
 const COUNTRY = /^(uk|u\.k\.|united kingdom|england|great britain|gb)$/i;
 // A part that's essentially just a phone number ("07479391536", "+44 7479 391536").
 const PHONE = /^\+?[\d\s()-]{9,}$/;
 
 /**
- * One tidy address line from a job's location + address. Those fields are
- * often built by joining several geocoder outputs, so the same place comes
- * through repeatedly ("Calne, UK, Calne, UK, Calne"), and sometimes with a
- * phone number typed into it. Drops countries and phone numbers, then any
- * part already contained in a longer part, keeping the original order.
+ * One tidy address line for printing, from a job's site name, location and
+ * address: repeats removed (tidyAddress), plus countries and phone numbers
+ * dropped since they're noise on a timesheet.
  */
 export function cleanAddress(...sources: (string | null | undefined)[]): string {
-    const parts = sources
+    const joined = sources
         .filter((s): s is string => !!s && s.trim() !== "" && s.trim() !== "—")
         .flatMap(s => s.split(","))
-        .map(p => p.trim().replace(/\s+/g, " "))
-        .filter(p => p && !COUNTRY.test(p) && !PHONE.test(p));
-
-    const kept: string[] = [];
-    parts.forEach((part, i) => {
-        const key = squash(part);
-        if (!key) return;
-        // Contained in a longer (or an earlier identical) part → redundant.
-        const redundant = parts.some((other, j) => {
-            const o = squash(other);
-            if (j === i || !o.includes(key)) return false;
-            return o.length > key.length || j < i;
-        });
-        if (!redundant) kept.push(part);
-    });
-    return kept.join(", ");
+        .map(p => p.trim())
+        .filter(p => p && !COUNTRY.test(p) && !PHONE.test(p))
+        .join(", ");
+    return tidyAddress(joined);
 }
 
 /** Strip the "(Copy)" suffix duplicating a job used to add. */

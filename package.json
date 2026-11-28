@@ -16,6 +16,8 @@
     "migrate:recurring-job-company:dry-run": "node dist/scripts/backfillRecurringJobCompany.js --dry-run",
     "migrate:claimed-pay-rates": "node dist/scripts/backfillClaimedAssignmentPayRates.js",
     "migrate:claimed-pay-rates:dry-run": "node dist/scripts/backfillClaimedAssignmentPayRates.js --dry-run",
+    "migrate:tidy-job-addresses": "node dist/scripts/tidyJobAddresses.js",
+    "migrate:tidy-job-addresses:dry-run": "node dist/scripts/tidyJobAddresses.js --dry-run",
     "seed:invoice-templates": "node dist/scripts/seedInvoiceTemplates.js",
     "platform:grant": "node dist/scripts/grantPlatformRole.js",
     "platform:revoke": "node dist/scripts/revokePlatformRole.js",
